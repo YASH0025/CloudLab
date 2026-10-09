@@ -1,0 +1,140 @@
+import { z } from "zod";
+import { normalizeCidr, parseCidr } from "./cidr";
+import type { FieldDef } from "./types";
+
+/**
+ * Builds a Zod schema from field definitions. The same schema validates the
+ * console form (React Hook Form) and the API input, so the two never drift.
+ */
+
+const emptyToUndefined = (v: unknown) =>
+  typeof v === "string" && v.trim() === "" ? undefined : typeof v === "string" ? v.trim() : v;
+
+function fieldSchema(field: FieldDef): z.ZodType {
+  const required = field.required ?? false;
+  let schema: z.ZodType;
+
+  switch (field.type) {
+    case "string": {
+      let s = z.string();
+      if (field.minLength !== undefined)
+        s = s.min(field.minLength, `${field.label} must be at least ${field.minLength} characters.`);
+      if (field.maxLength !== undefined)
+        s = s.max(field.maxLength, `${field.label} must be at most ${field.maxLength} characters.`);
+      if (field.pattern)
+        s = s.regex(new RegExp(field.pattern), field.patternMessage ?? `${field.label} has an invalid format.`);
+      schema = s;
+      break;
+    }
+    case "number": {
+      let n = z.number({ error: `${field.label} must be a number.` }).int(`${field.label} must be a whole number.`);
+      if (field.min !== undefined) n = n.min(field.min, `${field.label} must be at least ${field.min}.`);
+      if (field.max !== undefined) n = n.max(field.max, `${field.label} must be at most ${field.max}.`);
+      schema = z.preprocess(
+        (v) => (typeof v === "string" ? (v.trim() === "" ? undefined : Number(v)) : v),
+        n,
+      );
+      if (!required) return schema.optional();
+      return schema;
+    }
+    case "boolean":
+      return z.boolean().default((field.default as boolean | undefined) ?? false);
+    case "enum": {
+      const values = (field.options ?? []).map((o) => o.value);
+      schema = z
+        .string()
+        .refine((v) => values.length === 0 || values.includes(v), `Choose a valid ${field.label.toLowerCase()}.`);
+      break;
+    }
+    case "cidr": {
+      schema = z.string().superRefine((value, ctx) => {
+        const parsed = parseCidr(value);
+        if (!parsed) {
+          ctx.addIssue({ code: "custom", message: `Enter a CIDR block like 10.0.0.0/16.` });
+          return;
+        }
+        if (field.prefix && (parsed.prefix < field.prefix.min || parsed.prefix > field.prefix.max)) {
+          ctx.addIssue({
+            code: "custom",
+            message: `The block size must be between /${field.prefix.min} and /${field.prefix.max}.`,
+          });
+          return;
+        }
+        const normalized = normalizeCidr(value);
+        if (normalized !== value.trim()) {
+          ctx.addIssue({
+            code: "custom",
+            message: `${value} is not a network address. Did you mean ${normalized}?`,
+          });
+        }
+      });
+      break;
+    }
+    case "ref": {
+      if (field.ref?.multiple) {
+        let arr = z.array(z.string());
+        if (required) arr = arr.min(1, `Select at least one ${field.label.toLowerCase()}.`);
+        return arr.default([]);
+      }
+      schema = z.string();
+      break;
+    }
+    case "list": {
+      const item = buildSchema(field.item ?? []);
+      let arr = z.array(item);
+      if (field.maxItems !== undefined) arr = arr.max(field.maxItems, `At most ${field.maxItems} entries.`);
+      return arr.default([]);
+    }
+    default:
+      schema = z.unknown();
+  }
+
+  const withPre = z.preprocess(emptyToUndefined, schema);
+  if (!required) return withPre.optional();
+  return z.preprocess(
+    emptyToUndefined,
+    z
+      .unknown()
+      .refine((v) => v !== undefined && v !== null, `${field.label} is required.`)
+      // The refine above guarantees a value, so it is safe to hand on to the typed schema.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .pipe(schema as z.ZodType<any, any>),
+  );
+}
+
+export function buildSchema(fields: FieldDef[]) {
+  const shape: Record<string, z.ZodType> = {};
+  for (const field of fields) {
+    const schema = fieldSchema(field);
+    shape[field.key] =
+      field.default === undefined
+        ? schema
+        : z.preprocess((v) => (v === undefined || v === "" ? structuredClone(field.default) : v), schema);
+  }
+  return z.object(shape);
+}
+
+/** Default form values for a set of fields. */
+export function defaultValues(fields: FieldDef[]): Record<string, unknown> {
+  const values: Record<string, unknown> = {};
+  for (const field of fields) {
+    if (field.default !== undefined) values[field.key] = field.default;
+    else if (field.type === "boolean") values[field.key] = false;
+    else if (field.type === "list" || (field.type === "ref" && field.ref?.multiple)) values[field.key] = [];
+    else if (field.type === "enum" && field.required && field.options?.length) values[field.key] = field.options[0].value;
+    else values[field.key] = "";
+  }
+  return values;
+}
+
+/** Collects the IDs referenced by ref fields, used for dependency tracking. */
+export function collectRefs(fields: FieldDef[], config: Record<string, unknown>): string[] {
+  const ids = new Set<string>();
+  for (const field of fields) {
+    if (field.type !== "ref") continue;
+    const value = config[field.key];
+    if (typeof value === "string" && value) ids.add(value);
+    if (Array.isArray(value)) for (const v of value) if (typeof v === "string" && v) ids.add(v);
+  }
+  return [...ids];
+}
