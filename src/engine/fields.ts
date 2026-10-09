@@ -5,7 +5,13 @@ import type { FieldDef } from "./types";
 /**
  * Builds a Zod schema from field definitions. The same schema validates the
  * console form (React Hook Form) and the API input, so the two never drift.
+ *
+ * Issues carry `params.kind` so the engine can turn them into the error
+ * code the real API would return (MissingParameter, InvalidVpc.Range...).
  */
+
+export type IssueKind = "missing" | "enum" | "cidr-format" | "cidr-range" | "cidr-host-bits";
+const kind = (k: IssueKind) => ({ kind: k });
 
 // Empty strings and nulls both mean "not set" (null is how a form clears a field over JSON).
 const emptyToUndefined = (v: unknown) =>
@@ -38,7 +44,7 @@ function fieldSchema(field: FieldDef): z.ZodType {
       if (!required) return z.preprocess(toNumber, n.optional());
       return z.preprocess(
         toNumber,
-        z.unknown().refine((v) => v !== undefined, `${field.label} is required.`).pipe(n),
+        z.unknown().refine((v) => v !== undefined, { message: `${field.label} is required.`, params: kind("missing") }).pipe(n),
       );
     }
     case "boolean":
@@ -47,38 +53,49 @@ function fieldSchema(field: FieldDef): z.ZodType {
       const values = (field.options ?? []).map((o) => o.value);
       schema = z
         .string()
-        .refine((v) => values.length === 0 || values.includes(v), `Choose a valid ${field.label.toLowerCase()}.`);
+        .refine((v) => values.length === 0 || values.includes(v), {
+          message: `Choose a valid ${field.label.toLowerCase()}.`,
+          params: kind("enum"),
+        });
       break;
     }
     case "cidr": {
-      schema = z.string().superRefine((value, ctx) => {
-        const parsed = parseCidr(value);
-        if (!parsed) {
-          ctx.addIssue({ code: "custom", message: `Enter a CIDR block like 10.0.0.0/16.` });
-          return;
-        }
-        if (field.prefix && (parsed.prefix < field.prefix.min || parsed.prefix > field.prefix.max)) {
-          ctx.addIssue({
-            code: "custom",
-            message: `The block size must be between /${field.prefix.min} and /${field.prefix.max}.`,
-          });
-          return;
-        }
-        const normalized = normalizeCidr(value);
-        if (normalized !== value.trim()) {
-          ctx.addIssue({
-            code: "custom",
-            message: `${value} is not a network address. Did you mean ${normalized}?`,
-          });
-        }
-      });
+      schema = z
+        .string()
+        .superRefine((value, ctx) => {
+          const parsed = parseCidr(value);
+          if (!parsed) {
+            ctx.addIssue({ code: "custom", message: `Enter a CIDR block like 10.0.0.0/16.`, params: kind("cidr-format") });
+            return;
+          }
+          if (field.prefix && (parsed.prefix < field.prefix.min || parsed.prefix > field.prefix.max)) {
+            ctx.addIssue({
+              code: "custom",
+              message: `The block size must be between /${field.prefix.min} and /${field.prefix.max}.`,
+              params: kind("cidr-range"),
+            });
+            return;
+          }
+          const normalized = normalizeCidr(value);
+          if (!field.canonicalize && normalized !== value.trim()) {
+            ctx.addIssue({
+              code: "custom",
+              message: `${value} is not a network address. Did you mean ${normalized}?`,
+              params: kind("cidr-host-bits"),
+            });
+          }
+        })
+        // Like the real API, some fields quietly fix host bits: 10.0.0.5/16 becomes 10.0.0.0/16.
+        .transform((value) => (field.canonicalize ? (normalizeCidr(value) ?? value) : value.trim()));
       break;
     }
     case "ref": {
       if (field.ref?.multiple) {
-        let arr = z.array(z.string());
-        if (required) arr = arr.min(1, `Select at least one ${field.label.toLowerCase()}.`);
-        return arr.default([]);
+        const arr = z.array(z.string());
+        if (!required) return arr.default([]);
+        return arr
+          .refine((a) => a.length > 0, { message: `Select at least one ${field.label.toLowerCase()}.`, params: kind("missing") })
+          .default([]);
       }
       schema = z.string();
       break;
@@ -99,7 +116,7 @@ function fieldSchema(field: FieldDef): z.ZodType {
     emptyToUndefined,
     z
       .unknown()
-      .refine((v) => v !== undefined && v !== null, `${field.label} is required.`)
+      .refine((v) => v !== undefined && v !== null, { message: `${field.label} is required.`, params: kind("missing") })
       // The refine above guarantees a value, so it is safe to hand on to the typed schema.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       .pipe(schema as z.ZodType<any, any>),

@@ -1,10 +1,15 @@
 import { EngineError } from "../errors";
 import type { ResourceTypeDef, ServiceDef } from "../types";
 
-/** Bucket naming rules, checked one by one so the learner sees exactly which rule failed. */
+/**
+ * Bucket naming rules. Like the real service, any broken rule gives the same
+ * terse error; the specific rule goes into `details` for the console form.
+ */
 function checkBucketName(name: string) {
-  const fail = (message: string) => {
-    throw new EngineError("InvalidBucketName", `Bucket name '${name}': ${message}`);
+  const fail = (rule: string) => {
+    throw new EngineError("InvalidBucketName", "The specified bucket is not valid.", 400, [
+      { field: "name", message: `Bucket names ${rule}` },
+    ]);
   };
   if (name.length < 3 || name.length > 63) fail("must be between 3 and 63 characters long.");
   if (!/^[a-z0-9.-]+$/.test(name)) fail("may only contain lowercase letters, numbers, dots and hyphens.");
@@ -25,6 +30,7 @@ const bucket: ResourceTypeDef = {
   idPrefix: "bucket",
   idFromName: true,
   notFoundCode: "NoSuchBucket",
+  apiNoun: "bucket",
   fields: [
     {
       key: "name",
@@ -46,7 +52,7 @@ const bucket: ResourceTypeDef = {
         { value: "Enabled", label: "Enabled" },
         { value: "Suspended", label: "Suspended" },
       ],
-      description: "Keep every version of an object. Once enabled, it can be suspended but not disabled.",
+      description: "Keep every version of an object. Once enabled, it can be suspended but never disabled.",
     },
     {
       key: "blockPublicAccess",
@@ -67,25 +73,26 @@ const bucket: ResourceTypeDef = {
       const taken = await ctx.existsGlobally(name);
       if (taken) {
         throw taken.accountId === ctx.accountId
-          ? new EngineError("BucketAlreadyOwnedByYou", `You already own a bucket named '${name}'.`, 409)
+          ? new EngineError(
+              "BucketAlreadyOwnedByYou",
+              "Your previous request to create the named bucket succeeded and you already own it.",
+              409,
+            )
           : new EngineError(
               "BucketAlreadyExists",
-              `The bucket name '${name}' is already taken by another account. Bucket names are global; try another.`,
+              "The requested bucket name is not available. The bucket namespace is shared by all users of the system. Please select a different name and try again.",
               409,
             );
       }
     }
+    // The real API only accepts Enabled or Suspended, so "back to Disabled" can't even be expressed.
     const before = existing?.config.versioning;
     if ((before === "Enabled" || before === "Suspended") && config.versioning === "Disabled") {
       throw new EngineError(
-        "IllegalVersioningConfigurationException",
-        "Versioning cannot be disabled once it has been enabled. Suspend it instead.",
-      );
-    }
-    if (!existing && config.versioning === "Suspended") {
-      throw new EngineError(
-        "IllegalVersioningConfigurationException",
-        "A new bucket's versioning can be Disabled or Enabled, not Suspended.",
+        "MalformedXML",
+        "The XML you provided was not well-formed or did not validate against our published schema",
+        400,
+        [{ field: "versioning", message: "Once enabled, versioning can be suspended but never disabled." }],
       );
     }
   },

@@ -57,6 +57,19 @@ Supported commands:
 
 Every instance page has a **reachability check**: pick HTTP, HTTPS, SSH, ping or any protocol/port/source, and CloudLab walks the same chain a real network would (instance state → public IP → subnet route table → route → internet gateway → security group rules). Each link passes or fails with an explanation and, when it fails, the exact fix. Network ACLs are not simulated yet.
 
+## Errors match AWS
+
+Error codes, messages and behaviour follow the real APIs, checked against AWS's EC2 error-code reference and API docs:
+
+- Validation uses the API's codes: `MissingParameter: The request must contain the parameter groupDescription`, `InvalidParameterValue: Value (x) for parameter availabilityZone is invalid. Subnets can currently only be created in the following availability zones: …`, `InvalidVpc.Range` / `InvalidSubnet.Range: The CIDR '10.0.0.0/8' is invalid.`
+- IDs are checked for format first (`InvalidVpcID.Malformed: Invalid id: "vpc-nope" (expecting "vpc-...")`), then existence (`InvalidVpcID.NotFound: The vpc ID 'vpc-…' does not exist`). Resources in another region count as not found.
+- `DependencyViolation: The vpc 'vpc-…' has dependencies and cannot be deleted.`, `IncorrectInstanceState: The instance 'i-…' is not in a state from which it can be stopped.`, `RouteAlreadyExists`, `Resource.AlreadyAssociated`, `Gateway.NotAttached`, `InvalidAMIID.NotFound`, S3's `BucketAlreadyExists`, `NoSuchBucket`, `InvalidBucketName`, `MalformedXML`, …
+- Behaviour too: VPC and subnet CIDRs are canonicalized (`10.0.0.5/16` becomes `10.0.0.0/16`), stopping a stopped instance is a no-op, deleting a subnet removes its route table association, and an attached internet gateway can't be deleted.
+- The terminal prints `An error occurred (Code) when calling the Operation operation: message`, uses the CLI's usage-error layout and `Unknown options: --x`, supports `--dry-run`, and uses its exit codes (252 usage, 254 service error).
+- HTTP status follows the service: EC2 errors are 400; S3 uses 404 for `NoSuchBucket` and 409 for name conflicts.
+
+The console form still shows a friendly message on the field that caused the error, and the Guide explains any error in plain language.
+
 ## Stack
 
 - **Next.js** (App Router) for the UI and API route handlers

@@ -26,7 +26,7 @@ function resolveFields(fields: FieldDef[], region: string): FieldDef[] {
 /** A type definition with region-dependent options filled in and server-only hooks removed. */
 export function resolveTypeDef(def: ResourceTypeDef, region: string): ResolvedTypeDef {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const { validate, derive, ...data } = def;
+  const { validate, derive, invalidValue, dependencyMessage, canDelete, ...data } = def;
   return { ...data, fields: resolveFields(def.fields, region) };
 }
 

@@ -16,6 +16,11 @@ export const internetGateway: ResourceTypeDef = {
     "Connects a VPC to the internet. Attach it to a VPC, then add a route to it in a route table.",
   idPrefix: "igw",
   notFoundCode: "InvalidInternetGatewayID.NotFound",
+  apiNoun: "internetGateway",
+  canDelete: (igw) =>
+    igw.config.vpcId
+      ? new EngineError("DependencyViolation", `The internetGateway '${igw.id}' has dependencies and cannot be deleted.`)
+      : undefined,
   fields: [
     { key: "name", label: "Name tag", type: "string", maxLength: 255, placeholder: "main-igw" },
     {
@@ -36,11 +41,7 @@ export const internetGateway: ResourceTypeDef = {
     if (before === after) return;
 
     if (before && after) {
-      throw new EngineError(
-        "Resource.AlreadyAssociated",
-        `${existing!.id} is already attached to ${before}. Detach it first, then attach it to ${after}.`,
-        409,
-      );
+      throw new EngineError("Resource.AlreadyAssociated", `resource ${existing!.id} is already attached to network ${before}`);
     }
 
     if (before && !after) {
@@ -51,8 +52,9 @@ export const internetGateway: ResourceTypeDef = {
       if (exposed.length > 0) {
         throw new EngineError(
           "DependencyViolation",
-          `Network ${before} has mapped public addresses (${exposed.map((i) => i.id).join(", ")}). Terminate those instances or release their public IPs before detaching.`,
-          409,
+          `Network ${before} has some mapped public address(es). Please unmap those public address(es) before detaching the gateway.`,
+          400,
+          { dependents: exposed.map((i) => i.id) },
         );
       }
     }
@@ -62,11 +64,7 @@ export const internetGateway: ResourceTypeDef = {
         (g) => g.id !== existing?.id && g.config.vpcId === after,
       );
       if (taken) {
-        throw new EngineError(
-          "Resource.AlreadyAssociated",
-          `${after} already has internet gateway ${taken.id} attached. A VPC can have only one.`,
-          409,
-        );
+        throw new EngineError("Resource.AlreadyAssociated", `resource ${after} is already attached to network gateway ${taken.id}`);
       }
     }
   },
@@ -84,6 +82,11 @@ export const routeTable: ResourceTypeDef = {
     "Decides where traffic leaving a subnet goes. Every table has an implicit local route for traffic inside the VPC.",
   idPrefix: "rtb",
   notFoundCode: "InvalidRouteTableID.NotFound",
+  apiNoun: "routeTable",
+  canDelete: (rt) =>
+    ((rt.config.subnetIds as string[]) ?? []).length > 0
+      ? new EngineError("DependencyViolation", `The routeTable '${rt.id}' has dependencies and cannot be deleted.`)
+      : undefined,
   fields: [
     { key: "name", label: "Name tag", type: "string", maxLength: 255, placeholder: "public-rt" },
     {
@@ -122,7 +125,8 @@ export const routeTable: ResourceTypeDef = {
       key: "subnetIds",
       label: "Associated subnets",
       type: "ref",
-      ref: { service: "networking", type: "subnet", multiple: true },
+      // Deleting a subnet quietly removes its association, as in the real API.
+      ref: { service: "networking", type: "subnet", multiple: true, weak: true },
       description:
         "Subnets that use this table. Subnets not associated with any table use the VPC's main table, which only routes locally.",
     },
@@ -141,11 +145,7 @@ export const routeTable: ResourceTypeDef = {
     const seen = new Set<string>();
     for (const route of routes) {
       if (seen.has(route.destination)) {
-        throw new EngineError(
-          "RouteAlreadyExists",
-          `The route table already has a route for ${route.destination}.`,
-          409,
-        );
+        throw new EngineError("RouteAlreadyExists", `The route identified by ${route.destination} already exists.`);
       }
       seen.add(route.destination);
 
@@ -153,22 +153,18 @@ export const routeTable: ResourceTypeDef = {
       if (dest && vpcBlock && cidrContains(vpcBlock, dest)) {
         throw new EngineError(
           "InvalidParameterValue",
-          `${route.destination} is inside the VPC range ${vpc!.config.cidrBlock}, which the local route already covers.`,
+          `The destination CIDR block ${route.destination} is equal to or more specific than one of this VPC's CIDR blocks. This route can target only an interface or an instance.`,
         );
       }
 
       const gateway = await ctx.get(route.gatewayId);
       if (!gateway || gateway.type !== "internet-gateway") {
-        throw new EngineError(
-          "InvalidInternetGatewayID.NotFound",
-          `The internet gateway '${route.gatewayId}' does not exist.`,
-          404,
-        );
+        throw new EngineError("InvalidGatewayID.NotFound", `The gateway ID '${route.gatewayId}' does not exist`);
       }
       if (gateway.config.vpcId !== vpcId) {
         throw new EngineError(
           "InvalidParameterValue",
-          `Route table and gateway ${gateway.id} belong to different networks. Attach ${gateway.id} to ${vpcId} first.`,
+          `route table ${existing?.id ?? "in " + vpcId} and network gateway ${gateway.id} belong to different networks`,
         );
       }
     }
@@ -179,7 +175,7 @@ export const routeTable: ResourceTypeDef = {
       if (subnet && subnet.config.vpcId !== vpcId) {
         throw new EngineError(
           "InvalidParameterValue",
-          `Subnet ${subnetId} is in ${subnet.config.vpcId}, but this route table is in ${vpcId}.`,
+          `Route table ${existing?.id ?? "in " + vpcId} and subnet ${subnetId} belong to different networks`,
         );
       }
       const other = tables.find(
@@ -188,8 +184,7 @@ export const routeTable: ResourceTypeDef = {
       if (other) {
         throw new EngineError(
           "Resource.AlreadyAssociated",
-          `Subnet ${subnetId} is already associated with ${other.id}. A subnet can use only one route table.`,
-          409,
+          `the specified association for route table ${other.id} conflicts with an existing association`,
         );
       }
     }

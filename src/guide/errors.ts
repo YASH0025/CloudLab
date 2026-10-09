@@ -13,12 +13,36 @@ const EXPLANATIONS: Record<string, ErrorExplanation> = {
     fix: "Open the resource's 'Used by' list, remove or detach those first, then try again.",
   },
   "InvalidSubnet.Range": {
-    meaning: "The subnet's address range isn't inside its VPC's range.",
-    fix: "Pick a CIDR inside the VPC's block, e.g. 10.0.1.0/24 for a 10.0.0.0/16 VPC.",
+    meaning: "The subnet's CIDR isn't usable: it's outside the VPC's range, or bigger than /16 or smaller than /28.",
+    fix: "Pick a block between /16 and /28 inside the VPC's range, e.g. 10.0.1.0/24 for a 10.0.0.0/16 VPC.",
   },
   "InvalidSubnet.Conflict": {
     meaning: "The subnet's address range overlaps another subnet in the same VPC.",
     fix: "Choose a range nobody else uses, e.g. move from 10.0.1.0/24 to 10.0.2.0/24.",
+  },
+  IncorrectInstanceState: {
+    meaning: "The instance is in the wrong state for this action, e.g. changing its type while it's running.",
+    fix: "Check the instance's state; stop it (or wait for it to finish starting) and try again.",
+  },
+  "InvalidVpc.Range": {
+    meaning: "The VPC's CIDR block is too big or too small. VPCs must be between /16 (65,536 addresses) and /28 (16).",
+    fix: "Use a size between /16 and /28, e.g. 10.0.0.0/16.",
+  },
+  RouteAlreadyExists: {
+    meaning: "The route table already has a route for that destination.",
+    fix: "Edit or delete the existing route instead of adding another.",
+  },
+  MalformedXML: {
+    meaning: "The request contained a value the service doesn't accept. For versioning, only Enabled or Suspended are valid once it has been turned on.",
+    fix: "Use Suspended to stop versioning; it can't go back to Disabled.",
+  },
+  DryRunOperation: {
+    meaning: "Not really an error: with --dry-run, AWS only checks whether you could run the command.",
+    fix: "Remove --dry-run to actually run it.",
+  },
+  InvalidID: {
+    meaning: "That doesn't look like any kind of resource ID.",
+    fix: "IDs start with a prefix such as vpc-, subnet-, sg- or i-. Copy the ID from a describe command.",
   },
   IncorrectState: {
     meaning: "The resource is in the wrong state for this action, e.g. resizing a running server.",
@@ -33,11 +57,11 @@ const EXPLANATIONS: Record<string, ErrorExplanation> = {
     fix: "Use the existing bucket or pick another name.",
   },
   InvalidBucketName: {
-    meaning: "The name breaks a bucket naming rule.",
+    meaning: "The name breaks a bucket naming rule (the service doesn't say which one).",
     fix: "Use 3–63 lowercase letters, numbers, dots or hyphens, starting and ending with a letter or number.",
   },
   "Resource.AlreadyAssociated": {
-    meaning: "The resource is already connected to something and can only be connected to one.",
+    meaning: "The resource is already connected to something, and can only be connected to one (a VPC has one internet gateway; a subnet uses one route table).",
     fix: "Disconnect it from the current one first.",
   },
   "InvalidGroup.Duplicate": {
@@ -51,10 +75,6 @@ const EXPLANATIONS: Record<string, ErrorExplanation> = {
   "InvalidPermission.NotFound": {
     meaning: "You tried to remove a rule that doesn't exist.",
     fix: "Describe the security group to see its rules, then match one exactly.",
-  },
-  RouteAlreadyExists: {
-    meaning: "The route table already has a route for that destination.",
-    fix: "Edit the existing route instead of adding another.",
   },
   "Gateway.NotAttached": {
     meaning: "The internet gateway isn't attached to that VPC.",
@@ -92,6 +112,12 @@ const EXPLANATIONS: Record<string, ErrorExplanation> = {
 
 export function explainError(code: string): ErrorExplanation | undefined {
   if (EXPLANATIONS[code]) return EXPLANATIONS[code];
+  if (code.endsWith(".Malformed")) {
+    return {
+      meaning: "The ID isn't in the right format, so the service couldn't even look it up.",
+      fix: "Real IDs are a prefix plus hex digits, e.g. vpc-0a1b2c3d4e5f67890. Copy it rather than typing it.",
+    };
+  }
   if (code.endsWith(".NotFound") || code === "NoSuchBucket" || code === "ResourceNotFound") {
     return {
       meaning: "The ID you used doesn't exist in this account and region.",

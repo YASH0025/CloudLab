@@ -1,13 +1,17 @@
 /**
- * Errors raised by the engine. Codes follow the style of real cloud APIs
- * (e.g. "DependencyViolation", "InvalidSubnet.Conflict") so learners see
- * the kind of message they would meet in practice.
+ * Errors raised by the engine. Codes and messages follow the real APIs
+ * (EC2's DependencyViolation, InvalidVpcID.NotFound, S3's NoSuchBucket...)
+ * so learners see exactly what they would meet at work.
+ *
+ * Like EC2, client errors use HTTP 400 unless a service uses something else
+ * (S3 returns 404 for NoSuchBucket and 409 for bucket name conflicts).
  */
 export class EngineError extends Error {
   constructor(
     public readonly code: string,
     message: string,
     public readonly status: number = 400,
+    /** Field-level problems for the console form: [{ field, message }]. */
     public readonly details?: unknown,
   ) {
     super(message);
@@ -16,27 +20,27 @@ export class EngineError extends Error {
 }
 
 export const errors = {
-  validation: (message: string, details?: unknown) =>
-    new EngineError("ValidationError", message, 400, details),
-  invalidParameter: (message: string) =>
-    new EngineError("InvalidParameterValue", message, 400),
-  notFound: (code: string, id: string) =>
-    new EngineError(code, `The resource '${id}' does not exist.`, 404),
+  /** `MissingParameter: The request must contain the parameter cidrBlock` */
+  missingParameter: (param: string, details?: unknown) =>
+    new EngineError("MissingParameter", `The request must contain the parameter ${param}`, 400, details),
+  /** `InvalidParameterValue: Value (x) for parameter y is invalid. <reason>` */
+  invalidValue: (param: string, value: unknown, reason?: string, details?: unknown) =>
+    new EngineError(
+      "InvalidParameterValue",
+      `Value (${typeof value === "string" ? value : JSON.stringify(value)}) for parameter ${param} is invalid.${reason ? ` ${reason}` : ""}`,
+      400,
+      details,
+    ),
+  invalidParameter: (message: string, details?: unknown) => new EngineError("InvalidParameterValue", message, 400, details),
+  /** e.g. `InvalidVpcID.NotFound: The vpc ID 'vpc-123' does not exist` */
+  notFound: (code: string, message: string) => new EngineError(code, message, code === "NoSuchBucket" ? 404 : 400),
+  /** e.g. `InvalidVpcID.Malformed: Invalid id: "abc" (expecting "vpc-...")` */
+  malformed: (code: string, id: string, prefix: string) =>
+    new EngineError(code, `Invalid id: "${id}" (expecting "${prefix}-...")`),
   unknownType: (service: string, type: string) =>
-    new EngineError("UnknownResourceType", `Unknown resource type '${service}/${type}'.`, 400),
-  dependency: (id: string, dependents: string[]) =>
-    new EngineError(
-      "DependencyViolation",
-      `The resource '${id}' has dependent objects and cannot be deleted: ${dependents.join(", ")}.`,
-      409,
-      { dependents },
-    ),
-  incorrectState: (id: string, state: string | null, wanted: string) =>
-    new EngineError(
-      "IncorrectState",
-      `The resource '${id}' is in state '${state ?? "none"}' and cannot ${wanted}.`,
-      409,
-    ),
+    new EngineError("InvalidAction", `Unknown resource type '${service}/${type}'.`, 400),
+  dependency: (message: string, dependents: string[]) =>
+    new EngineError("DependencyViolation", message, 400, { dependents }),
   unsupportedAction: (action: string) =>
-    new EngineError("UnsupportedOperation", `The action '${action}' is not supported for this resource.`, 400),
+    new EngineError("InvalidAction", `The action '${action}' is not valid for this resource.`, 400),
 };

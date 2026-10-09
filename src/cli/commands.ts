@@ -1,7 +1,6 @@
 import { REGIONS, availabilityZones } from "@/engine/catalog";
 import type { Engine } from "@/engine/engine";
 import { EngineError } from "@/engine/errors";
-import { getTypeDef } from "@/engine/registry";
 import type { Resource } from "@/engine/types";
 import { parseShorthand, UsageError } from "./parse";
 import * as present from "./present";
@@ -68,13 +67,9 @@ export interface Command {
 
 // ---------- helpers ----------
 
-/** Loads a resource of a given type in the current region, or fails like the real API would. */
-async function load(ctx: CliContext, service: string, type: string, id: string, noun: string): Promise<Resource> {
-  const r = await ctx.engine.get(ctx.accountId, id).catch(() => null);
-  if (!r || r.service !== service || r.type !== type || r.region !== ctx.region) {
-    throw new EngineError(getTypeDef(service, type).notFoundCode, `The ${noun} ID '${id}' does not exist`, 404);
-  }
-  return r;
+/** Loads a resource of a given type in the current region, failing exactly as the real API would. */
+function load(ctx: CliContext, service: string, type: string, id: string): Promise<Resource> {
+  return ctx.engine.getTyped(ctx.accountId, id, service, type, ctx.region);
 }
 
 async function listOf(ctx: CliContext, service: string, type: string) {
@@ -105,20 +100,16 @@ function applyFilters(args: Args, items: Resource[]): Resource[] {
       if (name === "availability-zone") return r.config.availabilityZone ?? r.attributes.availabilityZone;
       if (name === "tag:Name") return r.name;
       if (name === "group-name") return r.config.name;
-      throw new UsageError(`filter '${name}' is not supported in CloudLab yet`);
+      throw new EngineError("InvalidParameterValue", `The filter '${name}' is invalid`);
     };
     return acc.filter((r) => values.includes(String(pick(r))));
   }, items);
 }
 
-async function describe(
-  ctx: CliContext,
-  args: Args,
-  opts: { service: string; type: string; idsOption: string; noun: string },
-) {
+async function describe(ctx: CliContext, args: Args, opts: { service: string; type: string; idsOption: string }) {
   const ids = args.list(opts.idsOption);
   const items = ids.length
-    ? await Promise.all(ids.map((id) => load(ctx, opts.service, opts.type, id, opts.noun)))
+    ? await Promise.all(ids.map((id) => load(ctx, opts.service, opts.type, id)))
     : await listOf(ctx, opts.service, opts.type);
   return applyFilters(args, items);
 }
@@ -147,7 +138,7 @@ function ruleFromArgs(args: Args): Rule {
   const fromPort = Number(from);
   const toPort = Number(to);
   if (!Number.isInteger(fromPort) || !Number.isInteger(toPort)) {
-    throw new EngineError("InvalidParameterValue", `Invalid port '${port}'. Use a number like 80 or a range like 8000-8080.`);
+    throw new EngineError("InvalidParameterValue", `Invalid value '${port}' for portRange. Must specify both from and to ports with TCP/UDP.`);
   }
   return { protocol, fromPort, toPort, cidr };
 }
@@ -161,7 +152,7 @@ async function instanceAction(ctx: CliContext, args: Args, action: string) {
   if (ids.length === 0) throw new UsageError("the following arguments are required: --instance-ids");
   const changes = [];
   for (const id of ids) {
-    const before = await load(ctx, "compute", "instance", id, "instance");
+    const before = await load(ctx, "compute", "instance", id);
     const after = await ctx.engine.runAction(ctx.accountId, id, action);
     changes.push({
       CurrentState: present.instanceState(after.state),
@@ -179,12 +170,8 @@ function bucketFromUri(uri: string | undefined): string {
   return m[1];
 }
 
-async function loadBucket(ctx: CliContext, name: string) {
-  const r = await ctx.engine.get(ctx.accountId, name).catch(() => null);
-  if (!r || r.service !== "storage" || r.type !== "bucket") {
-    throw new EngineError("NoSuchBucket", "The specified bucket does not exist", 404);
-  }
-  return r;
+function loadBucket(ctx: CliContext, name: string) {
+  return ctx.engine.getTyped(ctx.accountId, name, "storage", "bucket");
 }
 
 // ---------- commands ----------
@@ -244,7 +231,11 @@ export const COMMANDS: Command[] = [
     usage: "--cidr-block <cidr> [--tag-specifications ResourceType=vpc,Tags=[{Key=Name,Value=<name>}]]",
     mutates: true,
     async run(args, ctx) {
-      const r = await create(ctx, "networking", "vpc", { cidrBlock: args.required("cidr-block"), name: nameTag(args) });
+      const cidrBlock = args.one("cidr-block");
+      if (!cidrBlock) {
+        throw new EngineError("MissingParameter", "Either 'cidrBlock' or 'ipv4IpamPoolId' should be provided.");
+      }
+      const r = await create(ctx, "networking", "vpc", { cidrBlock, name: nameTag(args) });
       return { Vpc: present.vpc(r, pctx(ctx)) };
     },
   }),
@@ -256,7 +247,7 @@ export const COMMANDS: Command[] = [
     usage: "[--vpc-ids <id> ...] [--filters Name=tag:Name,Values=<name>]",
     mutates: false,
     async run(args, ctx) {
-      const items = await describe(ctx, args, { service: "networking", type: "vpc", idsOption: "vpc-ids", noun: "vpc" });
+      const items = await describe(ctx, args, { service: "networking", type: "vpc", idsOption: "vpc-ids" });
       return { Vpcs: items.map((r) => present.vpc(r, pctx(ctx))) };
     },
   }),
@@ -268,7 +259,7 @@ export const COMMANDS: Command[] = [
     usage: "--vpc-id <id>",
     mutates: true,
     async run(args, ctx) {
-      const r = await load(ctx, "networking", "vpc", args.required("vpc-id"), "vpc");
+      const r = await load(ctx, "networking", "vpc", args.required("vpc-id"));
       await ctx.engine.remove(ctx.accountId, r.id);
     },
   }),
@@ -282,7 +273,7 @@ export const COMMANDS: Command[] = [
     usage: "--vpc-id <id> --cidr-block <cidr> [--availability-zone <az>]",
     mutates: true,
     async run(args, ctx) {
-      const vpc = await load(ctx, "networking", "vpc", args.required("vpc-id"), "vpc");
+      const vpc = await load(ctx, "networking", "vpc", args.required("vpc-id"));
       const r = await create(ctx, "networking", "subnet", {
         vpcId: vpc.id,
         cidrBlock: args.required("cidr-block"),
@@ -300,7 +291,7 @@ export const COMMANDS: Command[] = [
     usage: "[--subnet-ids <id> ...] [--filters Name=vpc-id,Values=<id>]",
     mutates: false,
     async run(args, ctx) {
-      const items = await describe(ctx, args, { service: "networking", type: "subnet", idsOption: "subnet-ids", noun: "subnet" });
+      const items = await describe(ctx, args, { service: "networking", type: "subnet", idsOption: "subnet-ids" });
       return { Subnets: items.map((r) => present.subnet(r, pctx(ctx))) };
     },
   }),
@@ -312,7 +303,7 @@ export const COMMANDS: Command[] = [
     usage: "--subnet-id <id> --map-public-ip-on-launch | --no-map-public-ip-on-launch",
     mutates: true,
     async run(args, ctx) {
-      const r = await load(ctx, "networking", "subnet", args.required("subnet-id"), "subnet");
+      const r = await load(ctx, "networking", "subnet", args.required("subnet-id"));
       const value = args.bool("map-public-ip-on-launch");
       if (value === undefined) {
         throw new UsageError("one of --map-public-ip-on-launch or --no-map-public-ip-on-launch is required");
@@ -328,7 +319,7 @@ export const COMMANDS: Command[] = [
     usage: "--subnet-id <id>",
     mutates: true,
     async run(args, ctx) {
-      const r = await load(ctx, "networking", "subnet", args.required("subnet-id"), "subnet");
+      const r = await load(ctx, "networking", "subnet", args.required("subnet-id"));
       await ctx.engine.remove(ctx.accountId, r.id);
     },
   }),
@@ -353,8 +344,8 @@ export const COMMANDS: Command[] = [
     usage: "--internet-gateway-id <id> --vpc-id <id>",
     mutates: true,
     async run(args, ctx) {
-      const igw = await load(ctx, "networking", "internet-gateway", args.required("internet-gateway-id"), "internetGateway");
-      const vpc = await load(ctx, "networking", "vpc", args.required("vpc-id"), "vpc");
+      const igw = await load(ctx, "networking", "internet-gateway", args.required("internet-gateway-id"));
+      const vpc = await load(ctx, "networking", "vpc", args.required("vpc-id"));
       await ctx.engine.update(ctx.accountId, igw.id, { vpcId: vpc.id });
     },
   }),
@@ -366,7 +357,7 @@ export const COMMANDS: Command[] = [
     usage: "--internet-gateway-id <id> --vpc-id <id>",
     mutates: true,
     async run(args, ctx) {
-      const igw = await load(ctx, "networking", "internet-gateway", args.required("internet-gateway-id"), "internetGateway");
+      const igw = await load(ctx, "networking", "internet-gateway", args.required("internet-gateway-id"));
       const vpcId = args.required("vpc-id");
       if (igw.config.vpcId !== vpcId) {
         throw new EngineError("Gateway.NotAttached", `resource ${igw.id} is not attached to network ${vpcId}`);
@@ -386,7 +377,6 @@ export const COMMANDS: Command[] = [
         service: "networking",
         type: "internet-gateway",
         idsOption: "internet-gateway-ids",
-        noun: "internetGateway",
       });
       return { InternetGateways: items.map((r) => present.internetGateway(r, pctx(ctx))) };
     },
@@ -399,10 +389,7 @@ export const COMMANDS: Command[] = [
     usage: "--internet-gateway-id <id>",
     mutates: true,
     async run(args, ctx) {
-      const igw = await load(ctx, "networking", "internet-gateway", args.required("internet-gateway-id"), "internetGateway");
-      if (igw.config.vpcId) {
-        throw new EngineError("DependencyViolation", `The internetGateway '${igw.id}' has dependencies and cannot be deleted.`, 409);
-      }
+      const igw = await load(ctx, "networking", "internet-gateway", args.required("internet-gateway-id"));
       await ctx.engine.remove(ctx.accountId, igw.id);
     },
   }),
@@ -416,7 +403,7 @@ export const COMMANDS: Command[] = [
     usage: "--vpc-id <id>",
     mutates: true,
     async run(args, ctx) {
-      const vpc = await load(ctx, "networking", "vpc", args.required("vpc-id"), "vpc");
+      const vpc = await load(ctx, "networking", "vpc", args.required("vpc-id"));
       const r = await create(ctx, "networking", "route-table", { vpcId: vpc.id, name: nameTag(args) });
       return { RouteTable: await present.routeTable(r, pctx(ctx)) };
     },
@@ -429,7 +416,7 @@ export const COMMANDS: Command[] = [
     usage: "--route-table-id <id> --destination-cidr-block <cidr> --gateway-id <igw-id>",
     mutates: true,
     async run(args, ctx) {
-      const rt = await load(ctx, "networking", "route-table", args.required("route-table-id"), "routeTable");
+      const rt = await load(ctx, "networking", "route-table", args.required("route-table-id"));
       const destination = args.required("destination-cidr-block");
       const gatewayId = args.required("gateway-id");
       const routes = (rt.config.routes as { destination: string; gatewayId: string }[]) ?? [];
@@ -445,15 +432,11 @@ export const COMMANDS: Command[] = [
     usage: "--route-table-id <id> --destination-cidr-block <cidr>",
     mutates: true,
     async run(args, ctx) {
-      const rt = await load(ctx, "networking", "route-table", args.required("route-table-id"), "routeTable");
+      const rt = await load(ctx, "networking", "route-table", args.required("route-table-id"));
       const destination = args.required("destination-cidr-block");
       const routes = (rt.config.routes as { destination: string; gatewayId: string }[]) ?? [];
       if (!routes.some((r) => r.destination === destination)) {
-        throw new EngineError(
-          "InvalidRoute.NotFound",
-          `no route with destination-cidr-block ${destination} in route table ${rt.id}`,
-          404,
-        );
+        throw new EngineError("InvalidRoute.NotFound", `no route with destination-cidr-block ${destination} in route table ${rt.id}`);
       }
       await ctx.engine.update(ctx.accountId, rt.id, { routes: routes.filter((r) => r.destination !== destination) });
     },
@@ -466,8 +449,8 @@ export const COMMANDS: Command[] = [
     usage: "--route-table-id <id> --subnet-id <id>",
     mutates: true,
     async run(args, ctx) {
-      const rt = await load(ctx, "networking", "route-table", args.required("route-table-id"), "routeTable");
-      const subnet = await load(ctx, "networking", "subnet", args.required("subnet-id"), "subnet");
+      const rt = await load(ctx, "networking", "route-table", args.required("route-table-id"));
+      const subnet = await load(ctx, "networking", "subnet", args.required("subnet-id"));
       const subnetIds = (rt.config.subnetIds as string[]) ?? [];
       await ctx.engine.update(ctx.accountId, rt.id, { subnetIds: [...new Set([...subnetIds, subnet.id])] });
       return { AssociationId: present.associationId(subnet.id), AssociationState: { State: "associated" } };
@@ -487,7 +470,7 @@ export const COMMANDS: Command[] = [
         ((t.config.subnetIds as string[]) ?? []).includes(subnetId),
       );
       if (!rt) {
-        throw new EngineError("InvalidAssociationID.NotFound", `The association ID '${assoc}' does not exist`, 404);
+        throw new EngineError("InvalidAssociationID.NotFound", `The association ID '${assoc}' does not exist`);
       }
       await ctx.engine.update(ctx.accountId, rt.id, {
         subnetIds: ((rt.config.subnetIds as string[]) ?? []).filter((s) => s !== subnetId),
@@ -506,7 +489,6 @@ export const COMMANDS: Command[] = [
         service: "networking",
         type: "route-table",
         idsOption: "route-table-ids",
-        noun: "routeTable",
       });
       return { RouteTables: await Promise.all(items.map((r) => present.routeTable(r, pctx(ctx)))) };
     },
@@ -519,14 +501,7 @@ export const COMMANDS: Command[] = [
     usage: "--route-table-id <id>",
     mutates: true,
     async run(args, ctx) {
-      const rt = await load(ctx, "networking", "route-table", args.required("route-table-id"), "routeTable");
-      if (((rt.config.subnetIds as string[]) ?? []).length > 0) {
-        throw new EngineError(
-          "DependencyViolation",
-          `The routeTable '${rt.id}' has dependencies and cannot be deleted. Disassociate its subnets first.`,
-          409,
-        );
-      }
+      const rt = await load(ctx, "networking", "route-table", args.required("route-table-id"));
       await ctx.engine.remove(ctx.accountId, rt.id);
     },
   }),
@@ -542,9 +517,9 @@ export const COMMANDS: Command[] = [
     async run(args, ctx) {
       const vpcId = args.one("vpc-id");
       if (!vpcId) {
-        throw new EngineError("VPCIdNotSpecified", "No default VPC for this user. Pass --vpc-id.");
+        throw new EngineError("VPCIdNotSpecified", "No default VPC for this user");
       }
-      const vpc = await load(ctx, "networking", "vpc", vpcId, "vpc");
+      const vpc = await load(ctx, "networking", "vpc", vpcId);
       const r = await create(ctx, "networking", "security-group", {
         name: args.required("group-name"),
         description: args.required("description"),
@@ -561,14 +536,13 @@ export const COMMANDS: Command[] = [
     usage: "--group-id <id> --protocol tcp|udp|icmp|all --port <port|from-to> --cidr <cidr>",
     mutates: true,
     async run(args, ctx) {
-      const sg = await load(ctx, "networking", "security-group", args.required("group-id"), "security group");
+      const sg = await load(ctx, "networking", "security-group", args.required("group-id"));
       const rule = ruleFromArgs(args);
       const rules = (sg.config.inboundRules as Rule[]) ?? [];
       if (rules.some((r) => sameRule(r, rule))) {
         throw new EngineError(
           "InvalidPermission.Duplicate",
-          `the specified rule "peer: ${rule.cidr}, ${rule.protocol.toUpperCase()}, from port: ${rule.fromPort ?? "all"}, to port: ${rule.toPort ?? "all"}, ALLOW" already exists`,
-          409,
+          `the specified rule "peer: ${rule.cidr}, ${rule.protocol === "all" ? "ALL" : rule.protocol.toUpperCase()}, ${rule.fromPort === undefined ? "ALL PORTS" : `from port: ${rule.fromPort}, to port: ${rule.toPort}`}, ALLOW" already exists`,
         );
       }
       await ctx.engine.update(ctx.accountId, sg.id, { inboundRules: [...rules, rule] });
@@ -583,15 +557,11 @@ export const COMMANDS: Command[] = [
     usage: "--group-id <id> --protocol tcp|udp|icmp|all --port <port|from-to> --cidr <cidr>",
     mutates: true,
     async run(args, ctx) {
-      const sg = await load(ctx, "networking", "security-group", args.required("group-id"), "security group");
+      const sg = await load(ctx, "networking", "security-group", args.required("group-id"));
       const rule = ruleFromArgs(args);
       const rules = (sg.config.inboundRules as Rule[]) ?? [];
       if (!rules.some((r) => sameRule(r, rule))) {
-        throw new EngineError(
-          "InvalidPermission.NotFound",
-          "The specified rule does not exist in this security group.",
-          404,
-        );
+        throw new EngineError("InvalidPermission.NotFound", "The specified rule does not exist in this security group.");
       }
       await ctx.engine.update(ctx.accountId, sg.id, { inboundRules: rules.filter((r) => !sameRule(r, rule)) });
       return { Return: true };
@@ -609,7 +579,6 @@ export const COMMANDS: Command[] = [
         service: "networking",
         type: "security-group",
         idsOption: "group-ids",
-        noun: "security group",
       });
       return { SecurityGroups: items.map((r) => present.securityGroup(r, pctx(ctx))) };
     },
@@ -622,7 +591,7 @@ export const COMMANDS: Command[] = [
     usage: "--group-id <id>",
     mutates: true,
     async run(args, ctx) {
-      const sg = await load(ctx, "networking", "security-group", args.required("group-id"), "security group");
+      const sg = await load(ctx, "networking", "security-group", args.required("group-id"));
       await ctx.engine.remove(ctx.accountId, sg.id);
     },
   }),
@@ -637,21 +606,25 @@ export const COMMANDS: Command[] = [
       "--image-id <ami> --subnet-id <id> --security-group-ids <id> ... [--instance-type t3.micro] [--count 1] [--key-name <name>] [--associate-public-ip-address | --no-associate-public-ip-address]",
     mutates: true,
     async run(args, ctx) {
-      const imageId = args.required("image-id");
+      const imageId = args.one("image-id");
       const subnetId = args.one("subnet-id");
       if (!subnetId) {
-        throw new EngineError("VPCIdNotSpecified", "No default VPC for this user. Pass --subnet-id.");
+        throw new EngineError(
+          "VPCIdNotSpecified",
+          "No default VPC for this user. GroupName is only supported for EC2-Classic and default VPC.",
+        );
       }
       const groups = args.list("security-group-ids");
       if (groups.length === 0) {
+        // The real API would fall back to the VPC's default security group; CloudLab doesn't create those yet.
         throw new EngineError(
           "MissingParameter",
-          "CloudLab needs --security-group-ids (default security groups aren't simulated yet).",
+          "The request must contain the parameter SecurityGroupIds (CloudLab doesn't simulate default security groups yet).",
         );
       }
       const count = Number(args.one("count") ?? "1");
       if (!Number.isInteger(count) || count < 1 || count > 10) {
-        throw new EngineError("InvalidParameterValue", "--count must be between 1 and 10 in CloudLab.");
+        throw new EngineError("InvalidParameterValue", `Value (${args.one("count")}) for parameter maxCount is invalid. CloudLab allows 1 to 10.`);
       }
       const pub = args.bool("associate-public-ip-address");
       const instances = [];
@@ -684,7 +657,7 @@ export const COMMANDS: Command[] = [
     usage: "[--instance-ids <id> ...] [--filters Name=instance-state-name,Values=running]",
     mutates: false,
     async run(args, ctx) {
-      const items = await describe(ctx, args, { service: "compute", type: "instance", idsOption: "instance-ids", noun: "instance" });
+      const items = await describe(ctx, args, { service: "compute", type: "instance", idsOption: "instance-ids" });
       return { Reservations: await Promise.all(items.map((r) => present.reservation(r, pctx(ctx)))) };
     },
   }),
@@ -740,7 +713,7 @@ export const COMMANDS: Command[] = [
     usage: "--instance-id <id> --instance-type <type>",
     mutates: true,
     async run(args, ctx) {
-      const r = await load(ctx, "compute", "instance", args.required("instance-id"), "instance");
+      const r = await load(ctx, "compute", "instance", args.required("instance-id"));
       const raw = args.required("instance-type");
       const value = raw.startsWith("{") ? String(parseShorthand(raw).Value) : raw.replace(/^Value=/, "");
       await ctx.engine.update(ctx.accountId, r.id, { instanceType: value });
@@ -840,7 +813,10 @@ export const COMMANDS: Command[] = [
       const b = await loadBucket(ctx, args.required("bucket"));
       const status = String(parseShorthand(args.required("versioning-configuration")).Status ?? "");
       if (status !== "Enabled" && status !== "Suspended") {
-        throw new EngineError("MalformedXML", "Status must be Enabled or Suspended.");
+        throw new EngineError(
+          "MalformedXML",
+          "The XML you provided was not well-formed or did not validate against our published schema",
+        );
       }
       await ctx.engine.update(ctx.accountId, b.id, { versioning: status });
     },

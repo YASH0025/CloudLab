@@ -1,11 +1,12 @@
+import type { z } from "zod";
 import { isRegion } from "./catalog";
 import { EngineError, errors } from "./errors";
-import { buildSchema, collectRefs } from "./fields";
+import { buildSchema, collectRefs, type IssueKind } from "./fields";
 import { generateId } from "./ids";
 import { scheduleTransition, settle } from "./lifecycle";
-import { getTypeDef, resolveTypeDef } from "./registry";
+import { getTypeDef, resolveTypeDef, SERVICES } from "./registry";
 import type { ResourceStore } from "./store";
-import type { HookContext, Resource, ResourceDTO, ResourceTypeDef } from "./types";
+import type { FieldDef, HookContext, Resource, ResourceDTO, ResourceTypeDef } from "./types";
 
 export function toDTO(r: Resource): ResourceDTO {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -17,6 +18,74 @@ function isActive(r: Resource): boolean {
   const def = getTypeDef(r.service, r.type);
   const inactive = def.lifecycle?.inactiveStates ?? [];
   return !r.state || !inactive.includes(r.state);
+}
+
+// ---------- IDs and the errors the real API gives for them ----------
+
+const ALL_TYPES = () => SERVICES.flatMap((s) => s.types);
+
+/** The resource type an ID belongs to, judged by its prefix (vpc-, subnet-, i-...). */
+function typeForId(id: string): ResourceTypeDef | undefined {
+  return ALL_TYPES().find((t) => !t.idFromName && id.startsWith(`${t.idPrefix}-`));
+}
+
+/** Real IDs are the prefix plus 8 or 17 hex digits. */
+function isWellFormed(def: ResourceTypeDef, id: string): boolean {
+  return def.idFromName || new RegExp(`^${def.idPrefix}-([0-9a-f]{8}|[0-9a-f]{17})$`).test(id);
+}
+
+export function notFoundError(def: ResourceTypeDef, id: string): EngineError {
+  if (def.idFromName) return errors.notFound(def.notFoundCode, "The specified bucket does not exist");
+  if (def.type === "security-group") return errors.notFound(def.notFoundCode, `The security group '${id}' does not exist`);
+  return errors.notFound(def.notFoundCode, `The ${def.apiNoun} ID '${id}' does not exist`);
+}
+
+function malformedError(def: ResourceTypeDef, id: string): EngineError {
+  const code =
+    def.notFoundCode === "InvalidGroup.NotFound" ? "InvalidGroupId.Malformed" : def.notFoundCode.replace(/\.NotFound$/, ".Malformed");
+  return errors.malformed(code, id, def.idPrefix);
+}
+
+function stateError(def: ResourceTypeDef, message: string) {
+  return new EngineError(def.stateErrorCode ?? "IncorrectState", message);
+}
+
+// ---------- validation errors in the real API's words ----------
+
+function issueToError(
+  def: ResourceTypeDef,
+  issue: z.core.$ZodIssue,
+  input: Record<string, unknown>,
+  region: string,
+  details: unknown,
+): EngineError {
+  const [top, index, sub] = issue.path as (string | number)[];
+  let field: FieldDef | undefined = def.fields.find((f) => f.key === top);
+  let value: unknown = input[top as string];
+  const nested = sub !== undefined && field?.type === "list";
+  if (nested) {
+    field = field!.item?.find((f) => f.key === sub);
+    value = (input[top as string] as Record<string, unknown>[] | undefined)?.[index as number]?.[sub as string];
+  }
+  if (!field) return errors.invalidParameter(issue.message, details);
+
+  const param = field.param ?? field.key;
+  const kind = (issue as { params?: { kind?: IssueKind } }).params?.kind;
+  if (kind === "missing") return errors.missingParameter(param, details);
+
+  const custom = def.invalidValue?.({ field, value, region });
+  if (custom) return new EngineError(custom.code, custom.message, custom.status, details);
+
+  if (kind === "cidr-range") {
+    return new EngineError(field.rangeErrorCode ?? "InvalidParameterValue", `The CIDR '${value}' is invalid.`, 400, details);
+  }
+  if (kind === "cidr-format" || kind === "cidr-host-bits") {
+    return nested
+      ? errors.invalidParameter(`CIDR block ${value} is malformed`, details)
+      : errors.invalidValue(param, value, "This is not a valid CIDR block.", details);
+  }
+  if (kind === "enum") return errors.invalidValue(param, value, undefined, details);
+  return errors.invalidValue(param, value, issue.message, details);
 }
 
 /**
@@ -34,8 +103,7 @@ export class Engine {
       accountId,
       region,
       get: (id) => this.get(accountId, id).catch(() => null),
-      list: async (service, type) =>
-        (await this.list(accountId, { service, type, region })).filter(isActive),
+      list: async (service, type) => (await this.list(accountId, { service, type, region })).filter(isActive),
       existsGlobally: (id) => this.store.getAny(id),
     };
   }
@@ -57,28 +125,21 @@ export class Engine {
     const resolved = resolveTypeDef(def, region);
     const parsed = buildSchema(resolved.fields).safeParse(config);
     if (!parsed.success) {
-      const first = parsed.error.issues[0];
-      const fieldErrors = parsed.error.issues.map((i) => ({ field: i.path.join("."), message: i.message }));
-      throw errors.validation(first?.message ?? "Invalid input.", fieldErrors);
+      // Friendly per-field messages for the console form; the headline error is the real API's.
+      const details = parsed.error.issues.map((i) => ({ field: i.path.join("."), message: i.message }));
+      throw issueToError(def, parsed.error.issues[0], config, region, details);
     }
     const clean = parsed.data as Record<string, unknown>;
 
-    // Every referenced resource must exist, be the right type, live in the same region and be in use.
+    // Referenced resources must be well-formed IDs of the right type, in this region and still in use.
     for (const field of def.fields) {
       if (field.type !== "ref" || !field.ref) continue;
       const value = clean[field.key];
       const ids = Array.isArray(value) ? (value as string[]) : typeof value === "string" ? [value] : [];
       for (const id of ids) {
-        const target = await this.get(ctx.accountId, id).catch(() => null);
-        const targetDef = getTypeDef(field.ref.service, field.ref.type);
-        if (!target || target.service !== field.ref.service || target.type !== field.ref.type) {
-          throw errors.notFound(targetDef.notFoundCode, id);
-        }
-        if (target.region !== region) {
-          throw errors.invalidParameter(`${targetDef.label} '${id}' is in ${target.region}, not ${region}.`);
-        }
+        const target = await this.getTyped(ctx.accountId, id, field.ref.service, field.ref.type, region);
         if (!isActive(target)) {
-          throw errors.invalidParameter(`${targetDef.label} '${id}' is ${target.state} and cannot be used.`);
+          throw errors.invalidParameter(`The ${getTypeDef(target.service, target.type).apiNoun} '${id}' is ${target.state}.`);
         }
       }
     }
@@ -92,9 +153,27 @@ export class Engine {
     return Promise.all(items.map((r) => this.settleAndSave(r)));
   }
 
+  /** Any resource by ID. Unknown IDs fail the way the real API would for that kind of ID. */
   async get(accountId: string, id: string): Promise<Resource> {
     const r = await this.store.get(accountId, id);
-    if (!r) throw new EngineError("ResourceNotFound", `The resource '${id}' does not exist.`, 404);
+    if (!r) {
+      const def = typeForId(id);
+      if (def) throw isWellFormed(def, id) ? notFoundError(def, id) : malformedError(def, id);
+      throw new EngineError("InvalidID", `The ID '${id}' is not valid`);
+    }
+    return this.settleAndSave(r);
+  }
+
+  /**
+   * A resource of a specific type in a specific region. Checks the ID's format
+   * first (…Malformed), then existence (…NotFound), like the real API.
+   * Resources in another region count as not found, as they do in practice.
+   */
+  async getTyped(accountId: string, id: string, service: string, type: string, region?: string): Promise<Resource> {
+    const def = getTypeDef(service, type);
+    if (!isWellFormed(def, id)) throw malformedError(def, id);
+    const r = await this.store.get(accountId, id);
+    if (!r || r.service !== service || r.type !== type || (region && r.region !== region)) throw notFoundError(def, id);
     return this.settleAndSave(r);
   }
 
@@ -103,14 +182,14 @@ export class Engine {
     input: { service: string; type: string; region: string; config: Record<string, unknown> },
   ): Promise<Resource> {
     const def = getTypeDef(input.service, input.type);
-    if (!isRegion(input.region)) throw errors.invalidParameter(`Unknown region '${input.region}'.`);
+    if (!isRegion(input.region)) throw errors.invalidParameter(`Invalid region: '${input.region}'`);
     const ctx = this.context(accountId, input.region);
     const config = await this.validateConfig(def, input.region, input.config ?? {}, null, ctx);
 
     const name = typeof config.name === "string" ? config.name : "";
     const id = def.idFromName ? name : generateId(def.idPrefix);
     if (def.idFromName && (await this.store.getAny(id))) {
-      throw new EngineError("AlreadyExists", `A ${def.label.toLowerCase()} named '${id}' already exists.`, 409);
+      throw new EngineError("BucketAlreadyExists", "The requested bucket name is not available.", 409);
     }
 
     const attributes = def.derive ? await def.derive({ id, config, existing: null, ctx }) : {};
@@ -151,13 +230,12 @@ export class Engine {
     const norm = (v: unknown) => JSON.stringify(v === "" || v === null || v === undefined ? null : v);
     for (const field of def.fields) {
       if (!(field.key in patch)) continue;
-      const changed = norm(patch[field.key]) !== norm(existing.config[field.key]);
-      if (!changed) continue;
+      if (norm(patch[field.key]) === norm(existing.config[field.key])) continue;
       if (field.immutable) {
-        throw errors.invalidParameter(`${field.label} cannot be changed after creation.`);
+        throw errors.invalidValue(field.param ?? field.key, patch[field.key], "It can't be changed after the resource is created.");
       }
       if (field.mutableInStates && (!existing.state || !field.mutableInStates.includes(existing.state))) {
-        throw errors.incorrectState(id, existing.state, `change ${field.label.toLowerCase()} (allowed when ${field.mutableInStates.join(" or ")})`);
+        throw stateError(def, `The ${def.apiNoun} '${id}' is not in the '${field.mutableInStates.join("' or '")}' state.`);
       }
     }
 
@@ -182,8 +260,15 @@ export class Engine {
     const def = getTypeDef(existing.service, existing.type);
     const actionDef = def.lifecycle?.actions?.[action];
     if (!actionDef) throw errors.unsupportedAction(action);
+
+    // Like the real API, asking for a state you're already in (or heading to) is not an error.
+    const alreadyThere =
+      existing.state === actionDef.to ||
+      (existing.pendingState === actionDef.to && (!actionDef.via || existing.state === actionDef.via));
+    if (alreadyThere && actionDef.via !== "rebooting") return existing;
+
     if (!existing.state || !actionDef.from.includes(existing.state)) {
-      throw errors.incorrectState(id, existing.state, actionDef.label.toLowerCase());
+      throw stateError(def, `The ${def.apiNoun} '${id}' is not in a state from which it can be ${actionDef.pastTense}.`);
     }
     const updated = scheduleTransition(existing, actionDef, this.now());
     await this.store.update(updated);
@@ -195,11 +280,50 @@ export class Engine {
     const def = getTypeDef(existing.service, existing.type);
     const deletable = def.lifecycle?.deletableStates;
     if (deletable && (!existing.state || !deletable.includes(existing.state))) {
-      throw errors.incorrectState(id, existing.state, `be deleted (allowed when ${deletable.join(" or ")})`);
+      throw stateError(def, `The ${def.apiNoun} '${id}' is not in the '${deletable.join("' or '")}' state.`);
     }
-    const dependents = (await this.dependents(accountId, id)).filter(isActive);
-    if (dependents.length > 0) throw errors.dependency(id, dependents.map((d) => d.id));
+
+    const reason = def.canDelete?.(existing);
+    if (reason) throw reason;
+
+    // A reference blocks deletion unless every field holding it is weak; weak ones are cleaned up instead.
+    const blocking: Resource[] = [];
+    const toPrune: { resource: Resource; fields: FieldDef[] }[] = [];
+    for (const d of (await this.dependents(accountId, id)).filter(isActive)) {
+      const dDef = getTypeDef(d.service, d.type);
+      const holding = dDef.fields.filter((f) => {
+        if (f.type !== "ref") return false;
+        const v = d.config[f.key];
+        return v === id || (Array.isArray(v) && v.includes(id));
+      });
+      if (holding.length > 0 && holding.every((f) => f.ref?.weak)) toPrune.push({ resource: d, fields: holding });
+      else blocking.push(d);
+    }
+    if (blocking.length > 0) {
+      throw errors.dependency(
+        def.dependencyMessage?.(id) ?? `The ${def.apiNoun} '${id}' has dependencies and cannot be deleted.`,
+        blocking.map((b) => b.id),
+      );
+    }
+
     await this.store.delete(accountId, id);
+    for (const { resource, fields } of toPrune) {
+      const config = { ...resource.config };
+      for (const f of fields) {
+        const v = config[f.key];
+        config[f.key] = Array.isArray(v) ? v.filter((x) => x !== id) : undefined;
+      }
+      const dDef = getTypeDef(resource.service, resource.type);
+      await this.store.update({
+        ...resource,
+        config,
+        refs: collectRefs(dDef.fields, config),
+        attributes: dDef.derive
+          ? await dDef.derive({ id: resource.id, config, existing: resource, ctx: this.context(accountId, resource.region) })
+          : resource.attributes,
+        updatedAt: this.now().toISOString(),
+      });
+    }
   }
 
   /** Resources that point at `id`, settled to their current state. */

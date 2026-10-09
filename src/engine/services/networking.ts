@@ -1,4 +1,5 @@
 import { cidrContains, cidrOverlaps, parseCidr, usableHosts } from "../cidr";
+import { availabilityZones } from "../catalog";
 import { EngineError } from "../errors";
 import type { FieldDef, ResourceTypeDef, ServiceDef } from "../types";
 import { internetGateway, routeTable } from "./routing";
@@ -20,6 +21,7 @@ const vpc: ResourceTypeDef = {
   description: "An isolated private network. Subnets, instances and security groups live inside it.",
   idPrefix: "vpc",
   notFoundCode: "InvalidVpcID.NotFound",
+  apiNoun: "vpc",
   fields: [
     nameField("Name tag"),
     {
@@ -29,6 +31,8 @@ const vpc: ResourceTypeDef = {
       required: true,
       immutable: true,
       prefix: { min: 16, max: 28 },
+      canonicalize: true,
+      rangeErrorCode: "InvalidVpc.Range",
       default: "10.0.0.0/16",
       description: "The private address range for the whole network. Between /16 and /28.",
     },
@@ -55,6 +59,7 @@ const subnet: ResourceTypeDef = {
   description: "A slice of a VPC's address range, pinned to one availability zone.",
   idPrefix: "subnet",
   notFoundCode: "InvalidSubnetID.NotFound",
+  apiNoun: "subnet",
   fields: [
     nameField("Name tag"),
     {
@@ -72,6 +77,8 @@ const subnet: ResourceTypeDef = {
       required: true,
       immutable: true,
       prefix: { min: 16, max: 28 },
+      canonicalize: true,
+      rangeErrorCode: "InvalidSubnet.Range",
       placeholder: "10.0.1.0/24",
       description: "Must sit inside the VPC's block and not overlap other subnets.",
     },
@@ -104,10 +111,7 @@ const subnet: ResourceTypeDef = {
     const vpcBlock = vpcRes ? parseCidr(vpcRes.config.cidrBlock as string) : null;
     if (!vpcRes || !block || !vpcBlock) return;
     if (!cidrContains(vpcBlock, block)) {
-      throw new EngineError(
-        "InvalidSubnet.Range",
-        `The CIDR '${config.cidrBlock}' is outside the VPC's range ${vpcRes.config.cidrBlock}.`,
-      );
+      throw new EngineError("InvalidSubnet.Range", `The CIDR '${config.cidrBlock}' is invalid.`);
     }
     const siblings = (await ctx.list("networking", "subnet")).filter(
       (s) => s.config.vpcId === config.vpcId && s.id !== existing?.id,
@@ -115,13 +119,16 @@ const subnet: ResourceTypeDef = {
     for (const s of siblings) {
       const other = parseCidr(s.config.cidrBlock as string);
       if (other && cidrOverlaps(block, other)) {
-        throw new EngineError(
-          "InvalidSubnet.Conflict",
-          `The CIDR '${config.cidrBlock}' conflicts with subnet ${s.id} (${s.config.cidrBlock}).`,
-          409,
-        );
+        throw new EngineError("InvalidSubnet.Conflict", `The CIDR '${config.cidrBlock}' conflicts with another subnet`);
       }
     }
+  },
+  invalidValue({ field, value, region }) {
+    if (field.key !== "availabilityZone") return undefined;
+    return new EngineError(
+      "InvalidParameterValue",
+      `Value (${value}) for parameter availabilityZone is invalid. Subnets can currently only be created in the following availability zones: ${availabilityZones(region).join(", ")}.`,
+    );
   },
   async derive({ config }) {
     const block = parseCidr(config.cidrBlock as string);
@@ -164,13 +171,15 @@ function checkRules(rules: unknown, direction: string) {
       if (rule.fromPort === undefined || rule.toPort === undefined) {
         throw new EngineError(
           "InvalidParameterValue",
-          `${direction} rule ${n}: ${String(rule.protocol).toUpperCase()} rules need a port range.`,
+          "Invalid value for portRange. Must specify both from and to ports with TCP/UDP.",
+          400,
+          [{ field: `${direction === "Inbound" ? "inboundRules" : "outboundRules"}.${index}.fromPort`, message: `${direction} rule ${n}: TCP/UDP rules need a port range.` }],
         );
       }
       if ((rule.fromPort as number) > (rule.toPort as number)) {
         throw new EngineError(
           "InvalidParameterValue",
-          `${direction} rule ${n}: the start port must not be greater than the end port.`,
+          `Invalid TCP/UDP port range (${rule.fromPort}-${rule.toPort}): the from port must not be greater than the to port.`,
         );
       }
     }
@@ -185,6 +194,8 @@ const securityGroup: ResourceTypeDef = {
   description: "A stateful firewall attached to instances. Inbound traffic is denied unless a rule allows it.",
   idPrefix: "sg",
   notFoundCode: "InvalidGroup.NotFound",
+  apiNoun: "security group",
+  dependencyMessage: (id) => `resource ${id} has a dependent object`,
   fields: [
     {
       key: "name",
@@ -192,9 +203,10 @@ const securityGroup: ResourceTypeDef = {
       type: "string",
       required: true,
       immutable: true,
+      param: "groupName",
       maxLength: 255,
       pattern: "^(?!sg-)[A-Za-z0-9 ._\\-:/()#,@\\[\\]+=&;{}!$*]+$",
-      patternMessage: "Group names can't start with 'sg-' and may only use letters, digits, spaces and ._-:/()#,@[]+=&;{}!$*.",
+      patternMessage: "Group names may not be in the format sg-* and may only use a-z, A-Z, 0-9, spaces, and ._-:/()#,@[]+=&;{}!$*",
       placeholder: "web-servers",
     },
     {
@@ -203,6 +215,7 @@ const securityGroup: ResourceTypeDef = {
       type: "string",
       required: true,
       immutable: true,
+      param: "groupDescription",
       maxLength: 255,
       placeholder: "Allow HTTP and SSH",
     },
@@ -247,8 +260,7 @@ const securityGroup: ResourceTypeDef = {
     if (duplicate) {
       throw new EngineError(
         "InvalidGroup.Duplicate",
-        `A security group named '${config.name}' already exists in ${config.vpcId}.`,
-        409,
+        `The security group '${config.name}' already exists for VPC '${config.vpcId}'`,
       );
     }
   },

@@ -93,16 +93,35 @@ describe("commands", () => {
     expect(r.exitCode).toBe(254);
     expect(r.output).toContain("An error occurred (DependencyViolation) when calling the DeleteVpc operation");
 
-    const missing = await run("aws ec2 describe-vpcs --vpc-ids vpc-nope");
-    expect(missing.output).toContain("(InvalidVpcID.NotFound)");
+    const missing = await run("aws ec2 describe-vpcs --vpc-ids vpc-0123456789abcdef0");
+    expect(missing.output).toContain(
+      "An error occurred (InvalidVpcID.NotFound) when calling the DescribeVpcs operation: The vpc ID 'vpc-0123456789abcdef0' does not exist",
+    );
+    const malformed = await run("aws ec2 describe-vpcs --vpc-ids vpc-nope");
+    expect(malformed.output).toContain('(InvalidVpcID.Malformed) when calling the DescribeVpcs operation: Invalid id: "vpc-nope"');
   });
 
   it("reports usage errors with exit code 252", async () => {
-    const r = await run("aws ec2 create-vpc");
+    const r = await run("aws ec2 create-subnet --cidr-block 10.0.1.0/24");
     expect(r.exitCode).toBe(252);
-    expect(r.output).toContain("the following arguments are required: --cidr-block");
+    expect(r.output).toContain("aws: error: the following arguments are required: --vpc-id");
+    const unknown = await run("aws ec2 describe-vpcs --colour red");
+    expect(unknown.exitCode).toBe(252);
+    expect(unknown.output).toContain("Unknown options: --colour");
     expect((await run("aws ec2 fly-to-moon")).exitCode).toBe(252);
     expect((await run("ls")).exitCode).toBe(127);
+  });
+
+  it("lets the API, not the CLI, require create-vpc's CIDR, as the real CLI does", async () => {
+    const r = await run("aws ec2 create-vpc");
+    expect(r.exitCode).toBe(254);
+    expect(r.output).toContain("(MissingParameter) when calling the CreateVpc operation: Either 'cidrBlock' or 'ipv4IpamPoolId' should be provided.");
+  });
+
+  it("supports --dry-run", async () => {
+    const r = await run("aws ec2 create-vpc --cidr-block 10.0.0.0/16 --dry-run");
+    expect(r.output).toContain("(DryRunOperation) when calling the CreateVpc operation: Request would have succeeded, but DryRun flag is set.");
+    expect(r.changed).toBe(false);
   });
 
   it("rejects duplicate security group rules", async () => {
@@ -110,7 +129,9 @@ describe("commands", () => {
     const { GroupId } = await json(`aws ec2 create-security-group --group-name g --description d --vpc-id ${vpc.VpcId}`);
     const rule = `aws ec2 authorize-security-group-ingress --group-id ${GroupId} --protocol tcp --port 22 --cidr 0.0.0.0/0`;
     await json(rule);
-    expect((await run(rule)).output).toContain("InvalidPermission.Duplicate");
+    expect((await run(rule)).output).toContain(
+      'An error occurred (InvalidPermission.Duplicate) when calling the AuthorizeSecurityGroupIngress operation: the specified rule "peer: 0.0.0.0/0, TCP, from port: 22, to port: 22, ALLOW" already exists',
+    );
   });
 
   it("handles s3 high-level and api commands", async () => {

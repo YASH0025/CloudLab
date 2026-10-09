@@ -11,10 +11,27 @@ export interface CliResult {
   changed: boolean;
 }
 
-const USAGE = "usage: aws [options] <command> <subcommand> [<subcommand> ...] [parameters]";
+// The real CLI prints this block before every usage error.
+const USAGE = [
+  "usage: aws [options] <command> <subcommand> [<subcommand> ...] [parameters]",
+  "To see help text, you can run:",
+  "",
+  "  aws help",
+  "  aws <command> help",
+  "  aws <command> <subcommand> help",
+  "",
+].join("\n");
 
 function usageError(message: string): CliResult {
   return { output: `${USAGE}\naws: error: ${message}`, exitCode: 252, changed: false };
+}
+
+/** Options every command accepts besides those in its usage line. */
+const COMMON_OPTIONS = ["tag-specifications", "filters", "dry-run", "cli-input-json", "no-paginate", "debug"];
+
+function allowedOptions(usage: string | undefined): Set<string> {
+  const fromUsage = [...(usage ?? "").matchAll(/--(?:no-)?([a-z0-9-]+)/g)].flatMap((m) => [m[1], `no-${m[1]}`]);
+  return new Set([...fromUsage, ...COMMON_OPTIONS]);
 }
 
 function helpText(service?: string): string {
@@ -73,15 +90,19 @@ export async function executeCli(line: string, ctx: CliContext): Promise<CliResu
   }
 
   if (!servicesList().includes(parsed.service)) {
-    return usageError(
-      `argument command: Invalid choice, valid choices in CloudLab are: ${servicesList().join(" | ")}`,
-    );
+    return usageError(`argument command: Invalid choice, valid choices are:\n\n${servicesList().join(" | ")}`);
   }
   const command = findCommand(parsed.service, parsed.operation);
   if (!command) {
-    return usageError(
-      `argument operation: Invalid choice '${parsed.operation}'. Run 'aws ${parsed.service} help' to see what CloudLab supports.`,
-    );
+    const ops = COMMANDS.filter((c) => c.service === parsed.service).map((c) => c.operation);
+    return usageError(`argument operation: Invalid choice, valid choices are:\n\n${ops.join(" | ")}`);
+  }
+
+  // Like the real CLI, unknown options are rejected before anything is sent.
+  const allowed = allowedOptions(command.usage);
+  const unknown = [...parsed.options.keys()].filter((o) => !allowed.has(o));
+  if (unknown.length > 0) {
+    return { output: `${USAGE}\nUnknown options: ${unknown.map((o) => `--${o}`).join(", ")}`, exitCode: 252, changed: false };
   }
   if (parsed.positionals[0] === "help") {
     return {
@@ -96,6 +117,14 @@ export async function executeCli(line: string, ctx: CliContext): Promise<CliResu
     return {
       output: `Could not connect to the endpoint URL: "https://${parsed.service}.${region}.cloudlab.local/"\n(CloudLab regions: us-east-1, us-west-2, eu-west-1, ap-south-1)`,
       exitCode: 255,
+      changed: false,
+    };
+  }
+
+  if (parsed.options.has("dry-run") && command.service === "ec2" && command.mutates) {
+    return {
+      output: `\nAn error occurred (DryRunOperation) when calling the ${command.apiName} operation: Request would have succeeded, but DryRun flag is set.`,
+      exitCode: 254,
       changed: false,
     };
   }

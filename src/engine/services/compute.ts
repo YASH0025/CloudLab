@@ -16,6 +16,8 @@ const instance: ResourceTypeDef = {
   description: "A virtual server launched from a machine image into a subnet.",
   idPrefix: "i",
   notFoundCode: "InvalidInstanceID.NotFound",
+  apiNoun: "instance",
+  stateErrorCode: "IncorrectInstanceState",
   fields: [
     { key: "name", label: "Name", type: "string", maxLength: 255, placeholder: "web-server-1" },
     {
@@ -84,11 +86,12 @@ const instance: ResourceTypeDef = {
   lifecycle: {
     create: { state: "pending", settlesTo: "running", afterMs: 8000 },
     actions: {
-      stop: { label: "Stop", from: ["running"], via: "stopping", to: "stopped", afterMs: 5000 },
-      start: { label: "Start", from: ["stopped"], via: "pending", to: "running", afterMs: 6000 },
-      reboot: { label: "Reboot", from: ["running"], via: "rebooting", to: "running", afterMs: 4000 },
+      stop: { label: "Stop", from: ["running"], via: "stopping", to: "stopped", afterMs: 5000, pastTense: "stopped" },
+      start: { label: "Start", from: ["stopped"], via: "pending", to: "running", afterMs: 6000, pastTense: "started" },
+      reboot: { label: "Reboot", from: ["running"], via: "rebooting", to: "running", afterMs: 4000, pastTense: "rebooted" },
       terminate: {
         label: "Terminate",
+        pastTense: "terminated",
         from: ["pending", "running", "stopping", "stopped"],
         via: "shutting-down",
         to: "terminated",
@@ -99,6 +102,18 @@ const instance: ResourceTypeDef = {
     inactiveStates: ["terminated"],
     deletableStates: ["terminated"],
   },
+  invalidValue({ field, value }) {
+    if (field.key === "imageId") {
+      const id = String(value);
+      return id.startsWith("ami-")
+        ? new EngineError("InvalidAMIID.NotFound", `The image id '[${id}]' does not exist`)
+        : new EngineError("InvalidAMIID.Malformed", `Invalid id: "${id}" (expecting "ami-...")`);
+    }
+    if (field.key === "instanceType") {
+      return new EngineError("InvalidParameterValue", `The following supplied instance types do not exist: [${value}]`);
+    }
+    return undefined;
+  },
   async validate({ config, ctx }) {
     const subnet = await ctx.get(config.subnetId as string);
     if (!subnet) return;
@@ -106,10 +121,7 @@ const instance: ResourceTypeDef = {
     for (const sgId of (config.securityGroupIds as string[]) ?? []) {
       const sg = await ctx.get(sgId);
       if (sg && sg.config.vpcId !== vpcId) {
-        throw new EngineError(
-          "InvalidParameter",
-          `Security group ${sgId} belongs to ${sg.config.vpcId}, but subnet ${subnet.id} is in ${vpcId}. They must be in the same VPC.`,
-        );
+        throw new EngineError("InvalidParameter", `Security group ${sgId} and subnet ${subnet.id} belong to different networks.`);
       }
     }
   },
@@ -138,8 +150,7 @@ const instance: ResourceTypeDef = {
       if (!privateIp) {
         throw new EngineError(
           "InsufficientFreeAddressesInSubnet",
-          `Subnet ${subnet.id} has no free IP addresses left.`,
-          409,
+          `There are not enough free addresses in subnet '${subnet.id}' to satisfy the requested number of instances.`,
         );
       }
     }

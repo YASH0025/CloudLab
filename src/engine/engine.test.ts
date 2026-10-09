@@ -75,7 +75,7 @@ describe("lifecycle", () => {
     const { subnet, sg } = await network();
     const inst = await launch(subnet.id, sg.id);
     expect(inst.state).toBe("pending");
-    await expectCode(engine.runAction(ACCOUNT, inst.id, "stop"), "IncorrectState");
+    await expectCode(engine.runAction(ACCOUNT, inst.id, "stop"), "IncorrectInstanceState");
     advance(8000);
     const stopping = await engine.runAction(ACCOUNT, inst.id, "stop");
     expect(stopping.state).toBe("stopping");
@@ -85,11 +85,42 @@ describe("lifecycle", () => {
 });
 
 describe("networking rules", () => {
-  it("rejects a misaligned CIDR with a suggestion", async () => {
+  it("canonicalizes host bits in a VPC CIDR, like the real API", async () => {
+    const vpc = await engine.create(ACCOUNT, { service: "networking", type: "vpc", region: REGION, config: { cidrBlock: "10.0.0.5/16" } });
+    expect(vpc.config.cidrBlock).toBe("10.0.0.0/16");
+  });
+
+  it("uses InvalidVpc.Range for VPCs outside /16–/28", async () => {
     await expectCode(
-      engine.create(ACCOUNT, { service: "networking", type: "vpc", region: REGION, config: { cidrBlock: "10.0.0.5/16" } }),
-      "ValidationError",
+      engine.create(ACCOUNT, { service: "networking", type: "vpc", region: REGION, config: { cidrBlock: "10.0.0.0/8" } }),
+      "InvalidVpc.Range",
     );
+  });
+
+  it("uses MissingParameter for missing required values", async () => {
+    await expect(
+      engine.create(ACCOUNT, { service: "networking", type: "security-group", region: REGION, config: { name: "x" } }),
+    ).rejects.toMatchObject({ code: "MissingParameter", message: "The request must contain the parameter groupDescription" });
+  });
+
+  it("tells malformed IDs from missing ones", async () => {
+    await expectCode(engine.getTyped(ACCOUNT, "vpc-nope", "networking", "vpc"), "InvalidVpcID.Malformed");
+    await expect(engine.getTyped(ACCOUNT, "vpc-0123456789abcdef0", "networking", "vpc")).rejects.toMatchObject({
+      code: "InvalidVpcID.NotFound",
+      message: "The vpc ID 'vpc-0123456789abcdef0' does not exist",
+    });
+  });
+
+  it("lists valid zones for an invalid availability zone", async () => {
+    const { vpc } = await network();
+    await expect(
+      engine.create(ACCOUNT, {
+        service: "networking",
+        type: "subnet",
+        region: REGION,
+        config: { vpcId: vpc.id, cidrBlock: "10.0.9.0/24", availabilityZone: "us-east-1z" },
+      }),
+    ).rejects.toMatchObject({ code: "InvalidParameterValue", message: expect.stringContaining("us-east-1a, us-east-1b, us-east-1c") });
   });
 
   it("rejects subnets outside the VPC or overlapping each other", async () => {
@@ -116,7 +147,28 @@ describe("networking rules", () => {
 
   it("blocks deleting a VPC that still has subnets", async () => {
     const { vpc } = await network();
-    await expectCode(engine.remove(ACCOUNT, vpc.id), "DependencyViolation");
+    await expect(engine.remove(ACCOUNT, vpc.id)).rejects.toMatchObject({
+      code: "DependencyViolation",
+      message: `The vpc '${vpc.id}' has dependencies and cannot be deleted.`,
+    });
+  });
+
+  it("removes a route table association when its subnet is deleted", async () => {
+    const { vpc, subnet } = await network();
+    const rt = await engine.create(ACCOUNT, {
+      service: "networking",
+      type: "route-table",
+      region: REGION,
+      config: { vpcId: vpc.id, subnetIds: [subnet.id] },
+    });
+    await engine.remove(ACCOUNT, subnet.id);
+    expect((await engine.get(ACCOUNT, rt.id)).config.subnetIds).toEqual([]);
+  });
+
+  it("won't delete an attached internet gateway", async () => {
+    const { vpc } = await network();
+    const igw = await engine.create(ACCOUNT, { service: "networking", type: "internet-gateway", region: REGION, config: { vpcId: vpc.id } });
+    await expectCode(engine.remove(ACCOUNT, igw.id), "DependencyViolation");
   });
 });
 
@@ -128,6 +180,31 @@ describe("compute", () => {
     expect(a.attributes.privateIp).toBe("10.0.1.4");
     expect(b.attributes.privateIp).toBe("10.0.1.5");
     expect(a.attributes.publicIp).toMatch(/^203\.0\.113\./);
+  });
+
+  it("treats stopping an already stopped instance as a no-op, like the real API", async () => {
+    const { subnet, sg } = await network();
+    const inst = await launch(subnet.id, sg.id);
+    advance(8000);
+    await engine.runAction(ACCOUNT, inst.id, "stop");
+    advance(5000);
+    expect((await engine.runAction(ACCOUNT, inst.id, "stop")).state).toBe("stopped");
+  });
+
+  it("reports unknown and malformed AMIs like the real API", async () => {
+    const { subnet, sg } = await network();
+    const launchWith = (imageId: string) =>
+      engine.create(ACCOUNT, {
+        service: "compute",
+        type: "instance",
+        region: REGION,
+        config: { imageId, subnetId: subnet.id, securityGroupIds: [sg.id] },
+      });
+    await expect(launchWith("ami-0123456789abcdef0")).rejects.toMatchObject({
+      code: "InvalidAMIID.NotFound",
+      message: "The image id '[ami-0123456789abcdef0]' does not exist",
+    });
+    await expectCode(launchWith("ubuntu"), "InvalidAMIID.Malformed");
   });
 
   it("rejects a security group from another VPC", async () => {
@@ -151,8 +228,8 @@ describe("compute", () => {
     const { subnet, sg } = await network();
     const inst = await launch(subnet.id, sg.id);
     advance(8000);
-    await expectCode(engine.update(ACCOUNT, inst.id, { instanceType: "t3.small" }), "IncorrectState");
-    await expectCode(engine.remove(ACCOUNT, inst.id), "IncorrectState");
+    await expectCode(engine.update(ACCOUNT, inst.id, { instanceType: "t3.small" }), "IncorrectInstanceState");
+    await expectCode(engine.remove(ACCOUNT, inst.id), "IncorrectInstanceState");
     await engine.runAction(ACCOUNT, inst.id, "terminate");
     advance(5000);
     await engine.remove(ACCOUNT, inst.id);
@@ -179,10 +256,7 @@ describe("storage", () => {
       region: REGION,
       config: { name: "versioned-bucket", versioning: "Enabled" },
     });
-    await expectCode(
-      engine.update(ACCOUNT, b.id, { versioning: "Disabled" }),
-      "IllegalVersioningConfigurationException",
-    );
+    await expectCode(engine.update(ACCOUNT, b.id, { versioning: "Disabled" }), "MalformedXML");
     expect((await engine.update(ACCOUNT, b.id, { versioning: "Suspended" })).config.versioning).toBe("Suspended");
   });
 });

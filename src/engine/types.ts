@@ -1,3 +1,5 @@
+import type { EngineError } from "./errors";
+
 /**
  * Core types for the generic resource engine.
  *
@@ -51,8 +53,18 @@ export interface FieldDef {
   optionsSource?: OptionsSource;
   /** cidr: allowed prefix lengths */
   prefix?: { min: number; max: number };
-  /** ref: which resource type it points at, and whether several may be chosen */
-  ref?: { service: string; type: string; multiple?: boolean };
+  /** cidr: fix host bits instead of rejecting them (10.0.0.5/16 → 10.0.0.0/16), as the real API does. */
+  canonicalize?: boolean;
+  /** cidr: error code when the block size is out of range, e.g. "InvalidVpc.Range". */
+  rangeErrorCode?: string;
+  /** Name of the matching parameter in the real API, used in error messages. Defaults to `key`. */
+  param?: string;
+  /**
+   * ref: which resource type it points at, and whether several may be chosen.
+   * A `weak` reference doesn't block deleting its target; it is removed instead
+   * (like a route table's subnet association when the subnet is deleted).
+   */
+  ref?: { service: string; type: string; multiple?: boolean; weak?: boolean };
   /** list: shape of each item */
   item?: FieldDef[];
   maxItems?: number;
@@ -75,6 +87,8 @@ export interface ActionDef {
   via?: string;
   /** Final state. */
   to: string;
+  /** Used in "is not in a state from which it can be …", e.g. "stopped". */
+  pastTense: string;
   afterMs?: number;
   destructive?: boolean;
 }
@@ -139,14 +153,27 @@ export interface ResourceTypeDef {
   fields: FieldDef[];
   columns: ColumnDef[];
   lifecycle?: LifecycleDef;
-  /** Error code used when a resource of this type is not found. */
+  /** Error code used when a resource of this type is not found, e.g. "InvalidVpcID.NotFound". */
   notFoundCode: string;
+  /** How the real API names this type in messages, e.g. "vpc", "internetGateway", "routeTable". */
+  apiNoun: string;
+  /** Error code for state conflicts. Instances use "IncorrectInstanceState"; most others "IncorrectState". */
+  stateErrorCode?: string;
+  /** Extra reason a resource can't be deleted yet (e.g. a gateway still attached). Throw-free: return the error. */
+  canDelete?: (resource: Resource) => EngineError | undefined;
+  /** Message when deletion is blocked by dependents. Defaults to "The <noun> '<id>' has dependencies and cannot be deleted." */
+  dependencyMessage?: (id: string) => string;
   /** Extra checks beyond field validation. Throw EngineError to reject. */
   validate?: (input: {
     config: Record<string, unknown>;
     existing: Resource | null;
     ctx: HookContext;
   }) => Promise<void>;
+  /**
+   * Maps an invalid field value to the error the real API returns, for cases
+   * the generic mapping can't express (e.g. unknown AMI → InvalidAMIID.NotFound).
+   */
+  invalidValue?: (input: { field: FieldDef; value: unknown; region: string }) => EngineError | undefined;
   /** Compute platform-assigned attributes (IPs, ARNs, counts...). */
   derive?: (input: {
     id: string;
@@ -167,7 +194,10 @@ export interface ServiceDef {
 }
 
 /** A resource type definition with region-dependent options filled in, safe to send to the browser. */
-export type ResolvedTypeDef = Omit<ResourceTypeDef, "validate" | "derive">;
+export type ResolvedTypeDef = Omit<
+  ResourceTypeDef,
+  "validate" | "derive" | "invalidValue" | "dependencyMessage" | "canDelete"
+>;
 
 export interface ResolvedServiceDef extends Omit<ServiceDef, "types"> {
   types: ResolvedTypeDef[];
