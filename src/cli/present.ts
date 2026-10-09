@@ -1,0 +1,176 @@
+import type { Engine } from "@/engine/engine";
+import type { Resource } from "@/engine/types";
+
+/**
+ * Shapes simulated resources like the real CLI's JSON output (PascalCase
+ * keys, nested Tags, State objects), so what learners see matches what
+ * they will meet at work.
+ */
+
+export interface PresentContext {
+  engine: Engine;
+  accountId: string;
+}
+
+/** A stable fake 12-digit account number derived from the lab account ID. */
+export function ownerId(accountId: string): string {
+  let h = 0;
+  for (const ch of accountId) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  return String(100000000000 + (h % 900000000000)).padStart(12, "0");
+}
+
+export function tags(r: Resource) {
+  return r.name ? [{ Key: "Name", Value: r.name }] : undefined;
+}
+
+/** Instance state codes used by the real API. */
+export const STATE_CODES: Record<string, number> = {
+  pending: 0,
+  running: 16,
+  "shutting-down": 32,
+  terminated: 48,
+  stopping: 64,
+  stopped: 80,
+  rebooting: 16,
+};
+
+export const instanceState = (state: string | null) => ({
+  Code: STATE_CODES[state ?? ""] ?? 0,
+  Name: state === "rebooting" ? "running" : state,
+});
+
+export const associationId = (subnetId: string) => `rtbassoc-${subnetId.replace(/^subnet-/, "")}`;
+export const reservationId = (instanceId: string) => `r-${instanceId.replace(/^i-/, "")}`;
+
+export function vpc(r: Resource, ctx: PresentContext) {
+  return {
+    CidrBlock: r.config.cidrBlock,
+    State: r.state,
+    VpcId: r.id,
+    OwnerId: ownerId(ctx.accountId),
+    InstanceTenancy: "default",
+    IsDefault: false,
+    Tags: tags(r),
+  };
+}
+
+export function subnet(r: Resource, ctx: PresentContext) {
+  return {
+    AvailabilityZone: r.config.availabilityZone,
+    AvailableIpAddressCount: r.attributes.availableIpCount,
+    CidrBlock: r.config.cidrBlock,
+    MapPublicIpOnLaunch: Boolean(r.config.mapPublicIpOnLaunch),
+    State: r.state,
+    SubnetId: r.id,
+    VpcId: r.config.vpcId,
+    OwnerId: ownerId(ctx.accountId),
+    Tags: tags(r),
+  };
+}
+
+export function internetGateway(r: Resource, ctx: PresentContext) {
+  return {
+    Attachments: r.config.vpcId ? [{ State: "available", VpcId: r.config.vpcId }] : [],
+    InternetGatewayId: r.id,
+    OwnerId: ownerId(ctx.accountId),
+    Tags: tags(r),
+  };
+}
+
+export async function routeTable(r: Resource, ctx: PresentContext) {
+  const vpcRes = await ctx.engine.get(ctx.accountId, r.config.vpcId as string).catch(() => null);
+  const routes = (r.config.routes as { destination: string; gatewayId: string }[]) ?? [];
+  const routeEntries = await Promise.all(
+    routes.map(async (route) => {
+      const gw = await ctx.engine.get(ctx.accountId, route.gatewayId).catch(() => null);
+      const attached = gw && gw.config.vpcId === r.config.vpcId;
+      return {
+        DestinationCidrBlock: route.destination,
+        GatewayId: route.gatewayId,
+        Origin: "CreateRoute",
+        State: attached ? "active" : "blackhole",
+      };
+    }),
+  );
+  return {
+    Associations: ((r.config.subnetIds as string[]) ?? []).map((subnetId) => ({
+      Main: false,
+      RouteTableAssociationId: associationId(subnetId),
+      RouteTableId: r.id,
+      SubnetId: subnetId,
+      AssociationState: { State: "associated" },
+    })),
+    RouteTableId: r.id,
+    Routes: [
+      ...(vpcRes
+        ? [{ DestinationCidrBlock: vpcRes.config.cidrBlock, GatewayId: "local", Origin: "CreateRouteTable", State: "active" }]
+        : []),
+      ...routeEntries,
+    ],
+    VpcId: r.config.vpcId,
+    OwnerId: ownerId(ctx.accountId),
+    Tags: tags(r),
+  };
+}
+
+interface Rule {
+  protocol: string;
+  fromPort?: number;
+  toPort?: number;
+  cidr: string;
+  description?: string;
+}
+
+function permissions(rules: Rule[] | undefined) {
+  return (rules ?? []).map((rule) => ({
+    IpProtocol: rule.protocol === "all" ? "-1" : rule.protocol,
+    ...(rule.protocol === "all" ? {} : { FromPort: rule.fromPort ?? -1, ToPort: rule.toPort ?? -1 }),
+    IpRanges: [{ CidrIp: rule.cidr, ...(rule.description ? { Description: rule.description } : {}) }],
+  }));
+}
+
+export function securityGroup(r: Resource, ctx: PresentContext) {
+  return {
+    Description: r.config.description,
+    GroupName: r.config.name,
+    IpPermissions: permissions(r.config.inboundRules as Rule[]),
+    OwnerId: ownerId(ctx.accountId),
+    GroupId: r.id,
+    IpPermissionsEgress: permissions(r.config.outboundRules as Rule[]),
+    VpcId: r.config.vpcId,
+  };
+}
+
+export async function instance(r: Resource, ctx: PresentContext) {
+  const groups = await Promise.all(
+    ((r.config.securityGroupIds as string[]) ?? []).map(async (id) => {
+      const g = await ctx.engine.get(ctx.accountId, id).catch(() => null);
+      return { GroupId: id, GroupName: g?.config.name ?? null };
+    }),
+  );
+  return {
+    InstanceId: r.id,
+    ImageId: r.config.imageId,
+    InstanceType: r.config.instanceType,
+    KeyName: r.config.keyName ?? undefined,
+    LaunchTime: r.createdAt,
+    Placement: { AvailabilityZone: r.attributes.availabilityZone, Tenancy: "default" },
+    Platform: r.attributes.platform === "windows" ? "windows" : undefined,
+    PrivateIpAddress: r.attributes.privateIp ?? undefined,
+    PublicIpAddress: r.attributes.publicIp ?? undefined,
+    State: instanceState(r.state),
+    SubnetId: r.config.subnetId,
+    VpcId: r.attributes.vpcId,
+    SecurityGroups: groups,
+    Tags: tags(r),
+  };
+}
+
+export async function reservation(r: Resource, ctx: PresentContext) {
+  return {
+    ReservationId: reservationId(r.id),
+    OwnerId: ownerId(ctx.accountId),
+    Groups: [],
+    Instances: [await instance(r, ctx)],
+  };
+}

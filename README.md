@@ -25,6 +25,18 @@ Rules that are enforced, each with a real-style error code:
 - One internet gateway per VPC; it must be detached before moving, and can't be detached while instances in the VPC have public IPs.
 - Route table routes must point at a gateway attached to the same VPC and can't overlap the implicit local route; a subnet uses at most one route table.
 
+### Terminal
+
+The console has an in-browser terminal (xterm.js) that runs a simulated AWS CLI against the same resources the console shows. Output is shaped like the real CLI's JSON, and errors read like the real thing, e.g. `An error occurred (DependencyViolation) when calling the DeleteVpc operation: …`. Exit codes follow the CLI (252 usage error, 254 service error). Tab completes services, operations and options; ↑/↓ browse history.
+
+Supported commands:
+
+- `aws ec2`: create/describe/delete VPCs and subnets, `modify-subnet-attribute`, internet gateways (create, attach, detach, describe, delete), route tables (create, `create-route`, `delete-route`, associate, disassociate, describe, delete), security groups (create, authorize/revoke ingress, describe, delete), instances (`run-instances`, describe, start, stop, reboot, terminate, `modify-instance-attribute`), `describe-regions`, `describe-availability-zones`
+- `aws s3`: `mb`, `rb`, `ls`
+- `aws s3api`: `create-bucket`, `list-buckets`, `delete-bucket`, `put-bucket-versioning`, `get-bucket-versioning`
+- `aws sts get-caller-identity`
+- Global `--region`, `--filters` (vpc-id, subnet-id, instance-state-name, availability-zone, tag:Name, group-name) and `--tag-specifications` for Name tags
+
 ### Reachability check
 
 Every instance page has a **reachability check**: pick HTTP, HTTPS, SSH, ping or any protocol/port/source, and CloudLab walks the same chain a real network would (instance state → public IP → subnet route table → route → internet gateway → security group rules). Each link passes or fails with an explanation and, when it fails, the exact fix. Network ACLs are not simulated yet.
@@ -55,6 +67,7 @@ src/
     catalog.ts        Regions, availability zones, images, instance types
     registry.ts       The list of services
     services/         Service definitions: networking, routing, compute, storage
+  cli/                Simulated AWS CLI: tokenizer, parser, commands, output shapes, completion
   db/                 Drizzle schema and the Postgres store
   server/api.ts       Engine instance, anonymous account cookie, error responses
   app/api/            REST route handlers
@@ -118,6 +131,7 @@ An in-memory store is not shared between serverless instances, so a database is 
 | DELETE | `/api/resources/:id` | – |
 | POST | `/api/resources/:id/actions` | `{ action }` |
 | POST | `/api/resources/:id/reachability` | `{ protocol, port?, source? }` |
+| POST | `/api/cli` | `{ command, region }` → `{ output, exitCode, changed }` |
 
 Errors come back as `{ "error": { "code", "message", "details?" } }`.
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { BoxIcon, DatabaseIcon, LayoutDashboardIcon, NetworkIcon, ServerIcon } from "lucide-react";
+import { BoxIcon, DatabaseIcon, LayoutDashboardIcon, NetworkIcon, ServerIcon, TerminalIcon } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { ComponentType } from "react";
@@ -38,6 +38,16 @@ export function Sidebar() {
         >
           <LayoutDashboardIcon className="size-4" />
           Dashboard
+        </Link>
+        <Link
+          href={routes.terminal()}
+          className={cn(
+            "mt-0.5 flex items-center gap-2 rounded-md px-2 py-1.5 hover:bg-sidebar-accent",
+            pathname === routes.terminal() && "bg-sidebar-accent text-white",
+          )}
+        >
+          <TerminalIcon className="size-4" />
+          Terminal
         </Link>
         {isLoading &&
           Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="mx-2 mt-5 h-16 bg-sidebar-accent" />)}
