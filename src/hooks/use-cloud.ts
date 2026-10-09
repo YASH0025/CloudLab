@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { api, ApiError } from "@/lib/api-client";
 import { useConsoleStore } from "@/stores/console-store";
 import type { ResourceDTO } from "@/engine/types";
+import type { ReachabilityInput } from "@/engine/analysis/reachability";
 
 export const queryKeys = {
   services: (region: string) => ["services", region] as const,
@@ -97,6 +98,13 @@ export function useResourceAction() {
       toast.success(`${item.id} is ${item.state}`);
     },
     onError,
+  });
+}
+
+/** Runs a reachability check. Errors show inline in the panel rather than as a toast. */
+export function useReachability(id: string) {
+  return useMutation({
+    mutationFn: (input: ReachabilityInput) => api.checkReachability(id, input).then((r) => r.result),
   });
 }
 

@@ -72,7 +72,16 @@ export function ResourceForm({
     (f.immutable || (f.mutableInStates !== undefined && (!currentState || !f.mutableInStates.includes(currentState))));
 
   return (
-    <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6" noValidate>
+    <form
+      onSubmit={form.handleSubmit((values) => {
+        // Unset fields become null so "clear this field" survives JSON (undefined would be dropped).
+        const out: Values = {};
+        for (const f of fields) out[f.key] = values[f.key] === undefined ? null : values[f.key];
+        onSubmit(out);
+      })}
+      className="space-y-6"
+      noValidate
+    >
       {error instanceof ApiError && (
         <div className="flex gap-3 rounded-md border border-destructive/40 bg-destructive/8 p-3 text-sm">
           <AlertTriangleIcon className="mt-0.5 size-4 shrink-0 text-destructive" />
@@ -280,12 +289,20 @@ function RefControl({
     );
   }
 
+  // Radix Select can't use "" as a value, so optional refs get an explicit "None" choice.
+  const NONE = "__none__";
+  const current = (value as string) || (field.required ? undefined : NONE);
   return (
-    <Select value={(value as string) || undefined} onValueChange={onChange} disabled={disabled || isLoading}>
+    <Select
+      value={current}
+      onValueChange={(v) => onChange(v === NONE ? "" : v)}
+      disabled={disabled || isLoading}
+    >
       <SelectTrigger id={id} aria-invalid={invalid} aria-label={field.label}>
         <SelectValue placeholder={isLoading ? "Loading…" : `Choose ${field.label.toLowerCase()}`} />
       </SelectTrigger>
       <SelectContent>
+        {!field.required && <SelectItem value={NONE}>None</SelectItem>}
         {options.map((r) => {
           const d = describe(r);
           return (

@@ -1,5 +1,6 @@
 import type { ResolvedServiceDef, ResourceDTO } from "@/engine/types";
 import type { Region } from "@/engine/catalog";
+import type { ReachabilityInput, ReachabilityResult } from "@/engine/analysis/reachability";
 
 export class ApiError extends Error {
   constructor(
@@ -54,6 +55,12 @@ export const api = {
 
   deleteResource: (id: string) =>
     request<{ deleted: string }>(`/api/resources/${encodeURIComponent(id)}`, { method: "DELETE" }),
+
+  checkReachability: (id: string, input: ReachabilityInput) =>
+    request<{ result: ReachabilityResult }>(`/api/resources/${encodeURIComponent(id)}/reachability`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
 
   runAction: (id: string, action: string) =>
     request<{ item: ResourceDTO }>(`/api/resources/${encodeURIComponent(id)}/actions`, {

@@ -11,8 +11,11 @@ import { useConsoleStore } from "@/stores/console-store";
 const steps = [
   { label: "Create a VPC", href: routes.create("networking", "vpc") },
   { label: "Add a subnet inside it", href: routes.create("networking", "subnet") },
+  { label: "Create an internet gateway and attach it to the VPC", href: routes.create("networking", "internet-gateway") },
+  { label: "Create a route table: 0.0.0.0/0 → gateway, associate the subnet", href: routes.create("networking", "route-table") },
   { label: "Create a security group that allows HTTP", href: routes.create("networking", "security-group") },
-  { label: "Launch an instance into the subnet", href: routes.create("compute", "instance") },
+  { label: "Launch an instance with a public IP", href: routes.create("compute", "instance") },
+  { label: "Open the instance and run a reachability check", href: routes.list("compute", "instance") },
   { label: "Create a bucket for static assets", href: routes.create("storage", "bucket") },
 ];
 

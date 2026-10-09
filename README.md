@@ -8,7 +8,7 @@ Nothing here provisions real infrastructure. Every resource is a record in a dat
 
 | Service | Modelled on | Resource types |
 | --- | --- | --- |
-| Virtual Network | VPC | VPCs, subnets, security groups |
+| Virtual Network | VPC | VPCs, subnets, internet gateways, route tables, security groups |
 | Compute | EC2 | Instances (launch, stop, start, reboot, terminate) |
 | Object Storage | S3 | Buckets |
 
@@ -22,6 +22,12 @@ Rules that are enforced, each with a real-style error code:
 - Instance type can only change while stopped; only terminated instances can be removed (`IncorrectState`).
 - Bucket names follow the real naming rules and are unique across all accounts (`BucketAlreadyExists` / `BucketAlreadyOwnedByYou`).
 - Versioning can be suspended but never turned back to disabled.
+- One internet gateway per VPC; it must be detached before moving, and can't be detached while instances in the VPC have public IPs.
+- Route table routes must point at a gateway attached to the same VPC and can't overlap the implicit local route; a subnet uses at most one route table.
+
+### Reachability check
+
+Every instance page has a **reachability check**: pick HTTP, HTTPS, SSH, ping or any protocol/port/source, and CloudLab walks the same chain a real network would (instance state → public IP → subnet route table → route → internet gateway → security group rules). Each link passes or fails with an explanation and, when it fails, the exact fix. Network ACLs are not simulated yet.
 
 ## Stack
 
@@ -42,12 +48,13 @@ src/
   engine/             The generic resource engine (no React, no database)
     types.ts          Field, lifecycle and service definition types
     engine.ts         Create / read / update / delete / actions / dependency checks
+    analysis/         Cross-resource checks such as reachability
     fields.ts         Builds Zod schemas from field definitions (shared by form + API)
     lifecycle.ts      Timestamp-based state transitions
     cidr.ts           IPv4 / CIDR maths
     catalog.ts        Regions, availability zones, images, instance types
     registry.ts       The list of services
-    services/         One file per service: networking, compute, storage
+    services/         Service definitions: networking, routing, compute, storage
   db/                 Drizzle schema and the Postgres store
   server/api.ts       Engine instance, anonymous account cookie, error responses
   app/api/            REST route handlers
@@ -110,6 +117,7 @@ An in-memory store is not shared between serverless instances, so a database is 
 | PATCH | `/api/resources/:id` | `{ config }` |
 | DELETE | `/api/resources/:id` | – |
 | POST | `/api/resources/:id/actions` | `{ action }` |
+| POST | `/api/resources/:id/reachability` | `{ protocol, port?, source? }` |
 
 Errors come back as `{ "error": { "code", "message", "details?" } }`.
 

@@ -147,9 +147,11 @@ export class Engine {
     const existing = await this.get(accountId, id);
     const def = getTypeDef(existing.service, existing.type);
 
+    // "", null and undefined all mean "not set", so they count as the same value.
+    const norm = (v: unknown) => JSON.stringify(v === "" || v === null || v === undefined ? null : v);
     for (const field of def.fields) {
       if (!(field.key in patch)) continue;
-      const changed = JSON.stringify(patch[field.key]) !== JSON.stringify(existing.config[field.key]);
+      const changed = norm(patch[field.key]) !== norm(existing.config[field.key]);
       if (!changed) continue;
       if (field.immutable) {
         throw errors.invalidParameter(`${field.label} cannot be changed after creation.`);

@@ -14,6 +14,7 @@ import { ApiError } from "@/lib/api-client";
 import { routes } from "@/lib/routes";
 import { formatValue } from "@/lib/utils";
 import { ConfirmDialog } from "./confirm-dialog";
+import { ReachabilityPanel } from "./reachability-panel";
 import { ResourceForm } from "./resource-form";
 import { StateBadge } from "./state-badge";
 import { useResourceCommands } from "./use-resource-commands";
@@ -215,6 +216,8 @@ export function ResourceDetailView() {
           </dl>
         </CardContent>
       </Card>
+
+      {item.service === "compute" && item.type === "instance" && <ReachabilityPanel instanceId={item.id} />}
 
       {hasEditableFields(typeDef) && (
         <Card>

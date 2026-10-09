@@ -7,8 +7,9 @@ import type { FieldDef } from "./types";
  * console form (React Hook Form) and the API input, so the two never drift.
  */
 
+// Empty strings and nulls both mean "not set" (null is how a form clears a field over JSON).
 const emptyToUndefined = (v: unknown) =>
-  typeof v === "string" && v.trim() === "" ? undefined : typeof v === "string" ? v.trim() : v;
+  v === null || (typeof v === "string" && v.trim() === "") ? undefined : typeof v === "string" ? v.trim() : v;
 
 function fieldSchema(field: FieldDef): z.ZodType {
   const required = field.required ?? false;
@@ -30,12 +31,15 @@ function fieldSchema(field: FieldDef): z.ZodType {
       let n = z.number({ error: `${field.label} must be a number.` }).int(`${field.label} must be a whole number.`);
       if (field.min !== undefined) n = n.min(field.min, `${field.label} must be at least ${field.min}.`);
       if (field.max !== undefined) n = n.max(field.max, `${field.label} must be at most ${field.max}.`);
-      schema = z.preprocess(
-        (v) => (typeof v === "string" ? (v.trim() === "" ? undefined : Number(v)) : v),
-        n,
+      const toNumber = (v: unknown) => {
+        const x = emptyToUndefined(v);
+        return typeof x === "string" ? Number(x) : x;
+      };
+      if (!required) return z.preprocess(toNumber, n.optional());
+      return z.preprocess(
+        toNumber,
+        z.unknown().refine((v) => v !== undefined, `${field.label} is required.`).pipe(n),
       );
-      if (!required) return schema.optional();
-      return schema;
     }
     case "boolean":
       return z.boolean().default((field.default as boolean | undefined) ?? false);
@@ -89,8 +93,8 @@ function fieldSchema(field: FieldDef): z.ZodType {
       schema = z.unknown();
   }
 
-  const withPre = z.preprocess(emptyToUndefined, schema);
-  if (!required) return withPre.optional();
+  // `.optional()` must sit inside the preprocess, so that "" or null cleaned to undefined is accepted.
+  if (!required) return z.preprocess(emptyToUndefined, schema.optional());
   return z.preprocess(
     emptyToUndefined,
     z
