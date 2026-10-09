@@ -3,8 +3,10 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ReactQueryDevtools } from "@tanstack/react-query-devtools";
 import { ThemeProvider } from "next-themes";
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Toaster } from "sonner";
+import { useConsoleStore } from "@/stores/console-store";
+import { useGuideStore } from "@/stores/guide-store";
 
 /** App-wide React context: data cache, theme and toasts. */
 export function Providers({ children }: { children: ReactNode }) {
@@ -17,11 +19,17 @@ export function Providers({ children }: { children: ReactNode }) {
       }),
   );
 
+  // Saved settings (region, guide panel) are applied after hydration to avoid a mismatch.
+  useEffect(() => {
+    void useConsoleStore.persist.rehydrate();
+    void useGuideStore.persist.rehydrate();
+  }, []);
+
   return (
     <QueryClientProvider client={queryClient}>
       <ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange>
         {children}
-        <Toaster richColors closeButton position="bottom-right" />
+        <Toaster richColors closeButton position="bottom-center" />
       </ThemeProvider>
       <ReactQueryDevtools initialIsOpen={false} buttonPosition="bottom-left" />
     </QueryClientProvider>

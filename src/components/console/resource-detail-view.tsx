@@ -21,7 +21,7 @@ import { useResourceCommands } from "./use-resource-commands";
 
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="grid grid-cols-[minmax(0,12rem)_1fr] gap-4 py-2 text-sm">
+    <div className="grid grid-cols-[minmax(0,9rem)_1fr] gap-4 py-2 text-sm">
       <dt className="text-muted-foreground">{label}</dt>
       <dd className="min-w-0 break-words">{children}</dd>
     </div>
@@ -158,7 +158,7 @@ export function ResourceDetailView() {
           <CardContent className="py-2">
             <dl className="divide-y">
               <Row label="ID">
-                <span className="font-mono text-xs">{item.id}</span>
+                <span className="font-mono text-xs break-all">{item.id}</span>
               </Row>
               <Row label="Region">{item.region}</Row>
               {item.state && (

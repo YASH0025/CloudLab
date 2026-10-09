@@ -30,6 +30,8 @@ export const useGuideStore = create<GuideState>()(
     {
       name: "cloudlab-guide",
       storage: createJSONStorage(() => localStorage),
+      // Restored after hydration (see Providers) so server and first client render match.
+      skipHydration: true,
       // Only whether the panel is open is remembered; errors are per visit.
       partialize: (s) => ({ open: s.open }),
     },

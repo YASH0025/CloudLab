@@ -103,7 +103,7 @@ export function ReachabilityPanel({ instanceId }: { instanceId: string }) {
           ))}
         </div>
 
-        <form onSubmit={run} className="grid gap-3 sm:grid-cols-[8rem_7rem_1fr_auto] sm:items-end" noValidate>
+        <form onSubmit={run} className="grid gap-3 sm:grid-cols-[8rem_7rem_1fr_auto] sm:items-start" noValidate>
           <div className="space-y-1.5">
             <Label htmlFor="rc-protocol">Protocol</Label>
             <Controller
@@ -137,7 +137,7 @@ export function ReachabilityPanel({ instanceId }: { instanceId: string }) {
             <Label htmlFor="rc-source">Source</Label>
             <Input id="rc-source" className="font-mono" aria-invalid={!!errors.source} {...form.register("source")} />
           </div>
-          <Button type="submit" disabled={check.isPending}>
+          <Button type="submit" disabled={check.isPending} className="sm:mt-5">
             {check.isPending ? "Checking…" : "Check"}
           </Button>
           {(errors.port || errors.source) && (

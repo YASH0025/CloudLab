@@ -18,6 +18,8 @@ export const useConsoleStore = create<ConsoleState>()(
     {
       name: "cloudlab-console",
       storage: createJSONStorage(() => localStorage),
+      // Restored after hydration (see Providers) so server and first client render match.
+      skipHydration: true,
     },
   ),
 );

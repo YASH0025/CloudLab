@@ -105,12 +105,15 @@ export const Terminal = forwardRef<TerminalHandle>(function Terminal(_props, ref
         import("@xterm/xterm"),
         import("@xterm/addon-fit"),
       ]);
+      // xterm draws on a canvas, which can't resolve CSS variables, so pass the real font name.
+      await document.fonts.ready;
       if (disposed || !containerRef.current) return;
+      const mono = getComputedStyle(document.documentElement).getPropertyValue("--font-geist-mono").trim();
 
       const term = new XTermCtor({
         cursorBlink: true,
         convertEol: true,
-        fontFamily: "var(--font-geist-mono), ui-monospace, monospace",
+        fontFamily: `${mono ? `${mono}, ` : ""}ui-monospace, Menlo, Consolas, monospace`,
         fontSize: 13,
         lineHeight: 1.25,
         scrollback: 5000,
