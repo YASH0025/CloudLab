@@ -1,16 +1,19 @@
 "use client";
 
-import { GlobeIcon, MoonIcon, SunIcon } from "lucide-react";
+import { CompassIcon, GlobeIcon, MoonIcon, SunIcon } from "lucide-react";
 import { useTheme } from "next-themes";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useServices } from "@/hooks/use-cloud";
 import { useConsoleStore } from "@/stores/console-store";
+import { useGuideStore } from "@/stores/guide-store";
 
 export function Topbar() {
   const { region, setRegion } = useConsoleStore();
   const { data } = useServices();
   const { resolvedTheme, setTheme } = useTheme();
+  const guideOpen = useGuideStore((s) => s.open);
+  const toggleGuide = useGuideStore((s) => s.toggle);
 
   return (
     <header className="flex h-14 items-center justify-end gap-2 border-b bg-card px-4">
@@ -29,6 +32,9 @@ export function Topbar() {
           </SelectContent>
         </Select>
       </div>
+      <Button variant={guideOpen ? "secondary" : "default"} size="sm" onClick={toggleGuide} aria-pressed={guideOpen}>
+        <CompassIcon /> What&apos;s next?
+      </Button>
       <Button
         variant="ghost"
         size="icon"

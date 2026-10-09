@@ -1,6 +1,7 @@
 "use client";
 
-import { useRef } from "react";
+import { useSearchParams } from "next/navigation";
+import { useEffect, useRef } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Terminal, type TerminalHandle } from "./terminal";
 
@@ -23,6 +24,11 @@ const examples: { label: string; command: string }[] = [
 
 export function TerminalView() {
   const terminal = useRef<TerminalHandle>(null);
+  // The guide's "Do it in the terminal" links put a command on the prompt via ?cmd=.
+  const cmd = useSearchParams().get("cmd");
+  useEffect(() => {
+    if (cmd) terminal.current?.insert(cmd);
+  }, [cmd]);
 
   return (
     <div className="space-y-5">

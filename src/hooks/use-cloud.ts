@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { api, ApiError } from "@/lib/api-client";
 import { useConsoleStore } from "@/stores/console-store";
+import { useGuideStore } from "@/stores/guide-store";
 import type { ResourceDTO } from "@/engine/types";
 import type { ReachabilityInput } from "@/engine/analysis/reachability";
 
@@ -11,6 +12,7 @@ export const queryKeys = {
   services: (region: string) => ["services", region] as const,
   resources: (filter: { service?: string; type?: string; region?: string }) => ["resources", filter] as const,
   resource: (id: string) => ["resource", id] as const,
+  guide: (region: string) => ["guide", region] as const,
 };
 
 /** Poll quickly while anything is mid-transition (pending, stopping...), otherwise not at all. */
@@ -52,8 +54,11 @@ export function useResource(id: string) {
 }
 
 function onError(error: unknown) {
-  if (error instanceof ApiError) toast.error(error.code, { description: error.message });
-  else toast.error("Request failed", { description: String(error) });
+  if (error instanceof ApiError) {
+    toast.error(error.code, { description: error.message });
+    // Remember it so the guide can explain what went wrong.
+    useGuideStore.getState().setLastError({ code: error.code, message: error.message });
+  } else toast.error("Request failed", { description: String(error) });
 }
 
 function useInvalidate() {
@@ -61,7 +66,19 @@ function useInvalidate() {
   return () => {
     qc.invalidateQueries({ queryKey: ["resources"] });
     qc.invalidateQueries({ queryKey: ["resource"] });
+    qc.invalidateQueries({ queryKey: ["guide"] });
   };
+}
+
+/** "What's next?" advice for the current region. Polls while the next step is just waiting. */
+export function useGuide(enabled: boolean) {
+  const region = useConsoleStore((s) => s.region);
+  return useQuery({
+    queryKey: queryKeys.guide(region),
+    queryFn: async () => (await api.guide(region)).advice,
+    enabled,
+    refetchInterval: (query) => (query.state.data?.next.waiting ? 1500 : false),
+  });
 }
 
 export function useCreateResource(service: string, type: string) {

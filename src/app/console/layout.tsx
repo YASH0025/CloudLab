@@ -1,4 +1,5 @@
 import { Suspense } from "react";
+import { GuidePanel } from "@/components/console/guide-panel";
 import { Sidebar } from "@/components/console/sidebar";
 import { Topbar } from "@/components/console/topbar";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -19,6 +20,7 @@ export default function ConsoleLayout({ children }: LayoutProps<"/console">) {
           </div>
         </main>
       </div>
+      <GuidePanel />
     </div>
   );
 }

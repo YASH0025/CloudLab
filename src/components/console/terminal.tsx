@@ -8,6 +8,7 @@ import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 import { commonPrefix, complete } from "@/cli/complete";
 import type { CliResult } from "@/cli/execute";
 import { useConsoleStore } from "@/stores/console-store";
+import { useGuideStore } from "@/stores/guide-store";
 
 export interface TerminalHandle {
   /** Replaces the current input line with `text`, ready to run with Enter. */
@@ -76,8 +77,15 @@ export const Terminal = forwardRef<TerminalHandle>(function Terminal(_props, ref
     if (back > 0) term.write(`\x1b[${back}D`);
   };
 
+  // A command handed over before xterm finished loading is placed on the prompt once it's ready.
+  const pendingInsert = useRef<string | null>(null);
+
   useImperativeHandle(ref, () => ({
     insert(text: string) {
+      if (!termRef.current) {
+        pendingInsert.current = text;
+        return;
+      }
       if (busy.current) return;
       line.current = text;
       cursor.current = text.length;
@@ -128,6 +136,12 @@ export const Terminal = forwardRef<TerminalHandle>(function Terminal(_props, ref
       term.writeln(`${C.dim}Type 'help' to see supported commands. Tab completes, ↑/↓ browse history.${C.reset}`);
       term.writeln("");
       term.write(prompt());
+      if (pendingInsert.current) {
+        line.current = pendingInsert.current;
+        cursor.current = line.current.length;
+        pendingInsert.current = null;
+        redraw();
+      }
 
       const submit = async () => {
         const command = line.current.trim();
@@ -155,7 +169,11 @@ export const Terminal = forwardRef<TerminalHandle>(function Terminal(_props, ref
             if (result.changed) {
               queryClient.invalidateQueries({ queryKey: ["resources"] });
               queryClient.invalidateQueries({ queryKey: ["resource"] });
+              queryClient.invalidateQueries({ queryKey: ["guide"] });
             }
+            // Let the guide explain service errors such as DependencyViolation.
+            const failed = /An error occurred \(([^)]+)\)[^:]*: (.*)/.exec(result.output);
+            if (failed) useGuideStore.getState().setLastError({ code: failed[1], message: failed[2] });
           } catch (e) {
             term.writeln(`${C.red}Request failed: ${(e as Error).message}${C.reset}`);
           } finally {

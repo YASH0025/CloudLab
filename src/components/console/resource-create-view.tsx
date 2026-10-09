@@ -2,7 +2,7 @@
 
 import { ChevronLeftIcon } from "lucide-react";
 import Link from "next/link";
-import { useParams, useRouter } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useCreateResource, useTypeDef } from "@/hooks/use-cloud";
@@ -16,6 +16,14 @@ export function ResourceCreateView() {
   const region = useConsoleStore((s) => s.region);
   const { typeDef, isLoading } = useTypeDef(service, type);
   const create = useCreateResource(service, type);
+  // The guide's "Take me there" links can pre-fill the form via ?prefill=<json>.
+  const prefillRaw = useSearchParams().get("prefill");
+  let prefill: Record<string, unknown> | undefined;
+  try {
+    prefill = prefillRaw ? JSON.parse(prefillRaw) : undefined;
+  } catch {
+    prefill = undefined;
+  }
 
   if (isLoading) return <Skeleton className="h-96" />;
   if (!typeDef) return <p className="text-muted-foreground">Unknown resource type.</p>;
@@ -38,7 +46,8 @@ export function ResourceCreateView() {
         <CardContent className="py-6">
           {/* Re-mount the form when the region changes so region-specific options reset. */}
           <ResourceForm
-            key={region}
+            key={`${region}:${prefillRaw ?? ""}`}
+            initialValues={prefill}
             fields={typeDef.fields}
             mode="create"
             submitLabel={`Create ${typeDef.label.toLowerCase()}`}
