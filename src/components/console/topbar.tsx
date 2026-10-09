@@ -33,7 +33,7 @@ export function Topbar() {
         </Select>
       </div>
       <Button variant={guideOpen ? "secondary" : "default"} size="sm" onClick={toggleGuide} aria-pressed={guideOpen}>
-        <CompassIcon /> What&apos;s next?
+        <CompassIcon /> Guide me
       </Button>
       <Button
         variant="ghost"

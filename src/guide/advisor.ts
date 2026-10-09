@@ -1,8 +1,8 @@
 import { analyzeReachability, reachabilityInput, type ReachabilityResult } from "@/engine/analysis/reachability";
 import { availabilityZones } from "@/engine/catalog";
-import { cidrOverlaps, intToIp, parseCidr } from "@/engine/cidr";
 import type { Engine } from "@/engine/engine";
 import type { Resource } from "@/engine/types";
+import { bucketName, focusVpc, freeSubnetCidr, label, takeSnapshot, type SgRule, type Snapshot } from "./snapshot";
 import type { Advice, Level, Milestone, Suggestion } from "./types";
 
 /**
@@ -12,81 +12,10 @@ import type { Advice, Level, Milestone, Suggestion } from "./types";
  * applies is the next step.
  */
 
-interface Snapshot {
-  region: string;
-  accountId: string;
-  vpcs: Resource[];
-  subnets: Resource[];
-  gateways: Resource[];
-  routeTables: Resource[];
-  groups: Resource[];
-  instances: Resource[];
-  buckets: Resource[];
-}
-
 const TRANSITIONAL = ["pending", "stopping", "shutting-down", "rebooting"];
 
-interface SgRule {
-  protocol: string;
-  fromPort?: number;
-  toPort?: number;
-  cidr: string;
-}
-
-const label = (r: Resource) => (r.name ? `${r.name} (${r.id})` : r.id);
-
-/** First /24 inside the VPC that doesn't overlap an existing subnet, e.g. 10.0.1.0/24. */
-function freeSubnetCidr(vpc: Resource, subnets: Resource[]): string | undefined {
-  const block = parseCidr(vpc.config.cidrBlock as string);
-  if (!block) return undefined;
-  const prefix = Math.max(24, block.prefix);
-  const size = 2 ** (32 - prefix);
-  const total = 2 ** (32 - block.prefix);
-  const taken = subnets.map((s) => parseCidr(s.config.cidrBlock as string)).filter((c) => c !== null);
-  for (let offset = size; offset < total; offset += size) {
-    const candidate = { network: block.network + offset, prefix };
-    if (!taken.some((t) => cidrOverlaps(t, candidate))) return `${intToIp(candidate.network)}/${prefix}`;
-  }
-  return undefined;
-}
-
-/** Picks the VPC the learner is working in: the one with the newest instance, else the newest with subnets, else the newest. */
-function focusVpc(s: Snapshot): Resource | undefined {
-  const byInstance = s.instances[0] && s.vpcs.find((v) => v.id === s.instances[0].attributes.vpcId);
-  if (byInstance) return byInstance;
-  return s.vpcs.find((v) => s.subnets.some((sub) => sub.config.vpcId === v.id)) ?? s.vpcs[0];
-}
-
-function bucketName(accountId: string) {
-  let h = 0;
-  for (const ch of accountId) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
-  return `lab-assets-${h.toString(36).slice(0, 6)}`;
-}
-
 export async function advise(engine: Engine, accountId: string, region: string): Promise<Advice> {
-  const list = (service: string, type: string, allRegions = false) =>
-    engine.list(accountId, { service, type, region: allRegions ? undefined : region });
-
-  const [vpcs, subnets, gateways, routeTables, groups, instances, buckets] = await Promise.all([
-    list("networking", "vpc"),
-    list("networking", "subnet"),
-    list("networking", "internet-gateway"),
-    list("networking", "route-table"),
-    list("networking", "security-group"),
-    list("compute", "instance"),
-    list("storage", "bucket", true),
-  ]);
-  const s: Snapshot = {
-    region,
-    accountId,
-    vpcs,
-    subnets,
-    gateways,
-    routeTables,
-    groups,
-    instances: instances.filter((i) => i.state !== "terminated"),
-    buckets,
-  };
+  const s = await takeSnapshot(engine, accountId, region);
 
   const out: Suggestion[] = [];
   const push = (sg: Suggestion) => out.push(sg);

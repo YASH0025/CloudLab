@@ -41,3 +41,31 @@ export interface Advice {
   more: Suggestion[];
   milestones: Milestone[];
 }
+
+export interface TutorialInfo {
+  id: string;
+  title: string;
+  level: Level;
+  summary: string;
+  /** Rough time to complete, in minutes. */
+  minutes: number;
+  stepCount: number;
+  /** Tutorial to suggest next. */
+  nextId?: string;
+}
+
+export interface TutorialStepView {
+  id: string;
+  title: string;
+  why: string;
+  instructions: string[];
+  link?: GuideLink;
+  cli?: string;
+  /** Whether the learner's resources currently satisfy this step. */
+  passes: boolean;
+}
+
+export interface TutorialView extends TutorialInfo {
+  region: string;
+  steps: TutorialStepView[];
+}

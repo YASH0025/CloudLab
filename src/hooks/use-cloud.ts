@@ -13,6 +13,7 @@ export const queryKeys = {
   resources: (filter: { service?: string; type?: string; region?: string }) => ["resources", filter] as const,
   resource: (id: string) => ["resource", id] as const,
   guide: (region: string) => ["guide", region] as const,
+  tutorial: (id: string, region: string) => ["guide", "tutorial", id, region] as const,
 };
 
 /** Poll quickly while anything is mid-transition (pending, stopping...), otherwise not at all. */
@@ -115,6 +116,25 @@ export function useResourceAction() {
       toast.success(`${item.id} is ${item.state}`);
     },
     onError,
+  });
+}
+
+export function useTutorials() {
+  return useQuery({
+    queryKey: ["tutorials"],
+    queryFn: async () => (await api.tutorials()).tutorials,
+    staleTime: Infinity,
+  });
+}
+
+/** A tutorial with each step checked against the learner's resources. Polls gently while being followed. */
+export function useTutorial(id: string | null) {
+  const region = useConsoleStore((s) => s.region);
+  return useQuery({
+    queryKey: queryKeys.tutorial(id ?? "", region),
+    queryFn: async () => (await api.tutorial(id!, region)).tutorial,
+    enabled: !!id,
+    refetchInterval: 2500,
   });
 }
 

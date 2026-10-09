@@ -25,11 +25,21 @@ Rules that are enforced, each with a real-style error code:
 - One internet gateway per VPC; it must be detached before moving, and can't be detached while instances in the VPC have public IPs.
 - Route table routes must point at a gateway attached to the same VPC and can't overlap the implicit local route; a subnet uses at most one route table.
 
-### "What's next?" guide
+### Guide me
 
-A **What's next?** button in the console's top bar opens a guide panel that works anywhere, not just in a tutorial. It reads what the learner has built in the current region and suggests the single most useful next step, from "create a VPC" through to fixing exactly why a server isn't reachable, then intermediate and advanced ideas (lock SSH to your IP, private subnets, resizing, multi-AZ, break-and-fix).
+A **Guide me** button in the console's top bar opens a guide panel with two tabs.
 
-Each suggestion explains **why** it matters, lists the steps, links to the right form **pre-filled with sensible values**, and offers the same thing as a **CLI command** that opens in the terminal. The panel refreshes as resources change, tracks progress milestones, and explains the user's **last error** in plain language (e.g. what `DependencyViolation` means and how to fix it). Advisor rules live in `src/guide/advisor.ts`; error explanations in `src/guide/errors.ts`.
+**Tutorials** walk beginners through a whole journey from the first click to the last, one step at a time: why the step matters, what to do, a "Take me there" link to a pre-filled form, and the CLI equivalent. Each step ticks itself off when the learner's real resources satisfy it, and progress is saved. Steps complete in order, so tutorials can include "break it, then fix it" steps. Current tutorials:
+
+1. **Your first private network**: VPC, subnets in two zones, auto-assigned public IPs
+2. **Launch your first web server**: VPC, public subnet, internet gateway, route table, security group, instance, reachability
+3. **Why can't I reach my server?**: break the route and the firewall on purpose and fix them using the reachability check
+
+Tutorials are data in `src/guide/tutorials.ts`; adding one means adding an entry with steps and checks.
+
+**Next step** is for anyone stuck at any point, inside a tutorial or not. It reads what the learner has built in the current region and suggests the single most useful next step, from "create a VPC" through to fixing exactly why a server isn't reachable, then intermediate and advanced ideas (lock SSH to your IP, private subnets, resizing, multi-AZ, break-and-fix).
+
+Each suggestion explains **why** it matters, lists the steps, links to the right form **pre-filled with sensible values**, and offers the same thing as a **CLI command** that opens in the terminal. It refreshes as resources change and tracks progress milestones. The panel also explains the user's **last error** in plain language (e.g. what `DependencyViolation` means and how to fix it). Advisor rules live in `src/guide/advisor.ts`; error explanations in `src/guide/errors.ts`.
 
 ### Terminal
 
@@ -74,7 +84,7 @@ src/
     registry.ts       The list of services
     services/         Service definitions: networking, routing, compute, storage
   cli/                Simulated AWS CLI: tokenizer, parser, commands, output shapes, completion
-  guide/              "What's next?" advisor rules and error explanations
+  guide/              Tutorials, "next step" advisor rules, progress and error explanations
   db/                 Drizzle schema and the Postgres store
   server/api.ts       Engine instance, anonymous account cookie, error responses
   app/api/            REST route handlers
@@ -138,6 +148,8 @@ An in-memory store is not shared between serverless instances, so a database is 
 | DELETE | `/api/resources/:id` | – |
 | POST | `/api/resources/:id/actions` | `{ action }` |
 | POST | `/api/resources/:id/reachability` | `{ protocol, port?, source? }` |
+| GET | `/api/guide/tutorials` | – → `{ tutorials }` |
+| GET | `/api/guide/tutorials/:id?region=` | – → `{ tutorial }` with each step's `passes` |
 | GET | `/api/guide?region=` | – → `{ advice: { level, next, more, milestones } }` |
 | POST | `/api/cli` | `{ command, region }` → `{ output, exitCode, changed }` |
 
