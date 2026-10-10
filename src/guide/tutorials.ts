@@ -1,6 +1,7 @@
 import { analyzeReachability, type ReachabilityInput, type ReachabilityResult } from "@/engine/analysis/reachability";
 import { availabilityZones } from "@/engine/catalog";
 import type { Engine } from "@/engine/engine";
+import { check, resolvePrincipal } from "@/engine/iam/authorize";
 import { systemOf, type Resource } from "@/engine/types";
 import {
   bucketName,
@@ -78,6 +79,12 @@ interface Ctx {
   siteKeys(): Promise<string[]>;
   /** HTTP status the site's home page returns. */
   siteStatus(): Promise<number | null>;
+  /** The IAM identity the console is acting as: "root", "user/dev"… */
+  identity: string;
+  /** The account's IAM users, groups and customer policies (loaded once, on demand). */
+  iam(): Promise<{ users: Resource[]; groups: Resource[]; policies: Resource[] }>;
+  /** Would this IAM user be allowed to do this? */
+  can(user: string, action: string, resource: string): Promise<boolean>;
   /** Runs a reachability check (memoised per instance and input). */
   check(instance: Resource | undefined, input: ReachabilityInput): Promise<ReachabilityResult | null>;
 }
@@ -116,7 +123,7 @@ const allowsHttp = (g: Resource) =>
 const routes = (t: Resource) => (t.config.routes as { destination: string; gatewayId: string }[]) ?? [];
 const subnetIds = (t: Resource) => (t.config.subnetIds as string[]) ?? [];
 
-async function buildCtx(engine: Engine, accountId: string, region: string): Promise<Ctx> {
+async function buildCtx(engine: Engine, accountId: string, region: string, identity = "root"): Promise<Ctx> {
   const s = await takeSnapshot(engine, accountId, region);
   // Tutorials teach building your own network, so the platform's default VPC is ignored.
   const vpc = focusVpc(s, false);
@@ -154,7 +161,22 @@ async function buildCtx(engine: Engine, accountId: string, region: string): Prom
   const checks = new Map<string, Promise<ReachabilityResult | null>>();
   const siteBucket = s.buckets.find((b) => b.config.websiteEnabled) ?? s.buckets[0];
   let keys: Promise<string[]> | null = null;
+  let iamData: ReturnType<Ctx["iam"]> | null = null;
+  const iamList = (type: string) => engine.list(accountId, { service: "iam", type, region: "global" });
   return {
+    identity,
+    iam() {
+      iamData ??= Promise.all([iamList("user"), iamList("group"), iamList("policy")]).then(([users, groups, policies]) => ({ users, groups, policies }));
+      return iamData;
+    },
+    async can(user, action, resource) {
+      try {
+        const p = await resolvePrincipal(engine, accountId, { kind: "user", name: user });
+        return check(p, action, resource).decision === "allowed";
+      } catch {
+        return false;
+      }
+    },
     siteBucket,
     siteKeys() {
       keys ??= siteBucket
@@ -883,6 +905,7 @@ const INTERMEDIATE: TutorialDef[] = [
     level: "intermediate",
     summary: "A public web server talks to a private database, and only the web server may: a two-tier app secured with chained security groups.",
     minutes: 12,
+    nextId: "least-privilege",
     steps: [
       {
         id: "network-ready",
@@ -997,6 +1020,144 @@ const INTERMEDIATE: TutorialDef[] = [
 
 TUTORIALS.push(...INTERMEDIATE);
 
+// ---------- IAM ----------
+
+const EC2_READ = "arn:aws:iam::aws:policy/AmazonEC2ReadOnlyAccess";
+const groupsOf = (u: Resource) => (u.config.groups as string[]) ?? [];
+const policiesOf = (r: Resource) => (r.config.policyArns as string[]) ?? [];
+
+/** The customer policy the learner wrote for one bucket: allows S3 actions on something other than "*". */
+async function bucketPolicy(c: Ctx): Promise<Resource | undefined> {
+  const { policies } = await c.iam();
+  return policies.find((p) => {
+    try {
+      const doc = JSON.parse(String(p.config.document)) as { Statement: { Effect: string; Action: string | string[]; Resource: string | string[] }[] | object };
+      const sts = Array.isArray(doc.Statement) ? doc.Statement : [doc.Statement];
+      return sts.some(
+        (st: { Effect?: string; Action?: string | string[]; Resource?: string | string[] }) =>
+          st.Effect === "Allow" &&
+          [st.Action ?? []].flat().some((a) => a.startsWith("s3:")) &&
+          [st.Resource ?? []].flat().some((r) => r.startsWith("arn:aws:s3:::") && r !== "arn:aws:s3:::*"),
+      );
+    } catch {
+      return false;
+    }
+  });
+}
+
+/** The bucket named in that policy, e.g. "team-assets" from arn:aws:s3:::team-assets/* */
+async function policyBucket(c: Ctx): Promise<string | undefined> {
+  const p = await bucketPolicy(c);
+  const m = p ? /arn:aws:s3:::([^/"*]+)/.exec(String(p.config.document)) : null;
+  return m?.[1];
+}
+
+const LEAST_PRIVILEGE: TutorialDef = {
+  id: "least-privilege",
+  title: "Least privilege with IAM",
+  level: "intermediate",
+  summary: "Give a teammate exactly the access they need: a user in a group, a read-only policy, a policy you write yourself, and AccessDenied when they go further.",
+  minutes: 12,
+  steps: [
+    {
+      id: "group",
+      title: "Create a developers group with read-only EC2 access",
+      why: "Permissions belong to groups, not people: when someone joins or leaves, you change their groups, not a pile of policies. Start with read-only access.",
+      instructions: ["Click Take me there.", "Pre-filled: name developers, policy AmazonEC2ReadOnlyAccess.", "Click Create group."],
+      link: () => ({ service: "iam", type: "group", mode: "create", prefill: { name: "developers", policyArns: [EC2_READ] } }),
+      cli: () => "aws iam create-group --group-name developers",
+      check: async (c) => (await c.iam()).groups.some((g) => g.name === "developers" && policiesOf(g).length > 0),
+    },
+    {
+      id: "user",
+      title: "Create a user in the group",
+      why: "The user dev gets every permission of the developers group, and nothing else. A new user with no group or policy can do nothing at all.",
+      instructions: ["Click Take me there.", "Pre-filled: user name dev, group developers.", "Click Create user."],
+      link: () => ({ service: "iam", type: "user", mode: "create", prefill: { name: "dev", groups: ["developers"] } }),
+      cli: () => "aws iam create-user --user-name dev",
+      check: async (c) => (await c.iam()).users.some((u) => u.name === "dev" && groupsOf(u).includes("developers")),
+    },
+    {
+      id: "switch",
+      title: "Act as dev",
+      why: "Now see the account through dev's eyes. Everything you do in the console and the terminal is checked against dev's policies.",
+      instructions: [
+        "At the top right, open the menu that says Root user and choose user/dev.",
+        "Open VPCs: you can see them (read-only access).",
+        "Try Create VPC: you get UnauthorizedOperation, the same error AWS gives.",
+        "Open Buckets: AccessDenied. dev has no S3 permissions at all yet.",
+      ],
+      check: (c) => c.identity === "user/dev",
+    },
+    {
+      id: "policy",
+      title: "Write a policy for one bucket",
+      why: "dev needs to upload to the team's bucket, and only that one. You'll write the policy yourself: S3 actions, scoped to one bucket's ARN.",
+      instructions: [
+        "Switch back to Root user first: dev isn't allowed to create policies, which is the point.",
+        "Click Take me there. The policy allows listing my-team-bucket and reading and uploading its files.",
+        "Change my-team-bucket to the name of one of your buckets (or create a bucket with that name), then click Create policy.",
+      ],
+      link: () => ({
+        service: "iam",
+        type: "policy",
+        mode: "create",
+        prefill: {
+          name: "team-bucket-access",
+          description: "List, read and upload in the team bucket only",
+          document: JSON.stringify(
+            {
+              Version: "2012-10-17",
+              Statement: [
+                { Sid: "ListTheBucket", Effect: "Allow", Action: "s3:ListBucket", Resource: "arn:aws:s3:::my-team-bucket" },
+                { Sid: "ReadAndUpload", Effect: "Allow", Action: ["s3:GetObject", "s3:PutObject"], Resource: "arn:aws:s3:::my-team-bucket/*" },
+              ],
+            },
+            null,
+            2,
+          ),
+        },
+      }),
+      check: async (c) => !!(await bucketPolicy(c)),
+    },
+    {
+      id: "attach",
+      title: "Attach it to the developers group",
+      why: "Attach the policy to the group, so everyone in developers gets it, including people who join later.",
+      instructions: ["Open the developers group.", "Under Permissions policies, tick your new policy and click Save changes."],
+      link: () => ({ service: "iam", type: "group", mode: "list" }),
+      cli: () => "aws iam attach-group-policy --group-name developers --policy-arn <your-policy-arn>",
+      check: async (c) => {
+        const p = await bucketPolicy(c);
+        return !!p && (await c.iam()).groups.some((g) => g.name === "developers" && policiesOf(g).includes(String(p.attributes.arn)));
+      },
+    },
+    {
+      id: "verify",
+      title: "Prove it: this bucket yes, others no",
+      why: "Least privilege means both halves: dev can do the job, and nothing more. The permission checker shows the decision and the statement behind it.",
+      instructions: [
+        "Open the user dev and use Check permissions.",
+        "Upload a file to your team bucket (s3:PutObject on arn:aws:s3:::<bucket>/report.pdf): Allowed, by your policy.",
+        "Try another bucket's ARN, or s3:DeleteObject: denied, because no policy allows it.",
+        "Then act as dev and upload a file to the bucket in the console to see it work for real.",
+      ],
+      link: () => ({ service: "iam", type: "user", mode: "list" }),
+      check: async (c) => {
+        const bucket = await policyBucket(c);
+        if (!bucket) return false;
+        return (
+          (await c.can("dev", "s3:PutObject", `arn:aws:s3:::${bucket}/report.pdf`)) &&
+          !(await c.can("dev", "s3:PutObject", `arn:aws:s3:::${bucket}-other/report.pdf`)) &&
+          !(await c.can("dev", "s3:DeleteObject", `arn:aws:s3:::${bucket}/report.pdf`))
+        );
+      },
+    },
+  ],
+};
+
+TUTORIALS.push(LEAST_PRIVILEGE);
+
 const info = (t: TutorialDef): TutorialInfo => ({
   id: t.id,
   title: t.title,
@@ -1012,10 +1173,16 @@ export function listTutorials(): TutorialInfo[] {
 }
 
 /** A tutorial with every step's text resolved for the learner's resources and its check evaluated. */
-export async function viewTutorial(engine: Engine, accountId: string, region: string, id: string): Promise<TutorialView | null> {
+export async function viewTutorial(
+  engine: Engine,
+  accountId: string,
+  region: string,
+  id: string,
+  identity = "root",
+): Promise<TutorialView | null> {
   const t = TUTORIALS.find((x) => x.id === id);
   if (!t) return null;
-  const c = await buildCtx(engine, accountId, region);
+  const c = await buildCtx(engine, accountId, region, identity);
   const steps = await Promise.all(
     t.steps.map(async (st) => ({
       id: st.id,

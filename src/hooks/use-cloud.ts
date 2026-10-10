@@ -69,6 +69,8 @@ function onError(error: unknown) {
 function useInvalidate() {
   const qc = useQueryClient();
   return () => {
+    qc.invalidateQueries({ queryKey: ["identities"] });
+    qc.invalidateQueries({ queryKey: ["iam-policies"] });
     qc.invalidateQueries({ queryKey: ["resources"] });
     qc.invalidateQueries({ queryKey: ["resource"] });
     qc.invalidateQueries({ queryKey: ["guide"] });
@@ -241,4 +243,25 @@ export function useDeleteObjects(bucket: string) {
     onError,
     onSettled: changed,
   });
+}
+
+// ---------- IAM ----------
+
+export function useIamPolicies() {
+  return useQuery({ queryKey: ["iam-policies"], queryFn: () => api.iamPolicies().then((r) => r.policies) });
+}
+
+/** Users and roles to act as (listed as root, so switching back is always possible). */
+export function useIdentities() {
+  return useQuery({
+    queryKey: ["identities"],
+    queryFn: async () => {
+      const [users, roles] = await Promise.all([api.listAsRoot("iam", "user"), api.listAsRoot("iam", "role")]);
+      return { users: users.items, roles: roles.items };
+    },
+  });
+}
+
+export function useSimulate() {
+  return useMutation({ mutationFn: api.simulate });
 }

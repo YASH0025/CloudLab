@@ -22,9 +22,26 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import type { ResourceDTO } from "@/engine/types";
 import { useCreateFolder, useDeleteObjects, useObjects, useUploadObjects } from "@/hooks/use-cloud";
-import { api } from "@/lib/api-client";
+import { toast } from "sonner";
+import { api, identityHeader } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 import { ConfirmDialog, type ConfirmRequest } from "./confirm-dialog";
+
+/** Downloads through fetch, so the request carries the IAM identity being acted as (s3:GetObject is checked). */
+async function downloadObject(bucket: string, key: string) {
+  const res = await fetch(api.objectDownloadUrl(bucket, key), { headers: identityHeader() });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    toast.error(body?.error?.code ?? "Download failed", { description: body?.error?.message });
+    return;
+  }
+  const url = URL.createObjectURL(await res.blob());
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = key.split("/").filter(Boolean).pop() ?? "download";
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
 
 export function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
@@ -202,10 +219,8 @@ export function ObjectsPanel({ bucket }: { bucket: string }) {
                     <TableCell className="text-right text-xs tabular-nums">{formatBytes(o.size)}</TableCell>
                     <TableCell className="text-xs text-muted-foreground">{format(new Date(o.lastModified), "PP p")}</TableCell>
                     <TableCell className="text-right whitespace-nowrap">
-                      <Button size="icon" variant="ghost" asChild aria-label={`Download ${o.key}`}>
-                        <a href={api.objectDownloadUrl(bucket, o.key)} download>
-                          <DownloadIcon />
-                        </a>
+                      <Button size="icon" variant="ghost" aria-label={`Download ${o.key}`} onClick={() => downloadObject(bucket, o.key)}>
+                        <DownloadIcon />
                       </Button>
                       <Button
                         size="icon"

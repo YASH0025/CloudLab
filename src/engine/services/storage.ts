@@ -1,4 +1,5 @@
 import { EngineError } from "../errors";
+import { s3BucketArn } from "../iam/arns";
 import type { ResourceTypeDef, ServiceDef } from "../types";
 
 /**
@@ -31,6 +32,18 @@ const bucket: ResourceTypeDef = {
   idFromName: true,
   notFoundCode: "NoSuchBucket",
   apiNoun: "bucket",
+  iam: {
+    create: "s3:CreateBucket",
+    read: "s3:ListAllMyBuckets",
+    update: (changed) => [
+      ...(changed.includes("versioning") ? ["s3:PutBucketVersioning"] : []),
+      ...(changed.includes("blockPublicAccess") ? ["s3:PutBucketPublicAccessBlock"] : []),
+      ...(changed.includes("publicRead") ? ["s3:PutBucketPolicy"] : []),
+      ...(changed.some((c) => ["websiteEnabled", "indexDocument", "errorDocument"].includes(c)) ? ["s3:PutBucketWebsite"] : []),
+    ],
+    delete: "s3:DeleteBucket",
+    arn: s3BucketArn,
+  },
   dependencyError: () => new EngineError("BucketNotEmpty", "The bucket you tried to delete is not empty", 409),
   fields: [
     {

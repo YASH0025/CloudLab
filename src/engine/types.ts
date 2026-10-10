@@ -187,6 +187,8 @@ export interface HookContext {
   get(id: string): Promise<Resource | null>;
   /** List the account's resources of a type in the current region. */
   list(service: string, type: string): Promise<Resource[]>;
+  /** List the account's resources of a type in every region. */
+  listAll(service: string, type: string): Promise<Resource[]>;
   /** Check whether an ID exists in any account (for globally unique names). */
   existsGlobally(id: string): Promise<Resource | null>;
 }
@@ -218,6 +220,8 @@ export interface ResourceTypeDef {
   canDelete?: (resource: Resource) => EngineError | undefined;
   /** Not shown in the console's navigation; managed through its own screens (bucket objects). */
   hidden?: boolean;
+  /** Attributes kept on the server and never sent to the browser (e.g. an encrypted secret). */
+  privateAttributes?: string[];
   /** Global service (IAM): not tied to a region. Stored under the region "global". */
   global?: boolean;
   /** Builds the resource ID when the real API's format isn't "<prefix>-<hex>" (IAM's AIDA…, AKIA…). */
@@ -290,6 +294,7 @@ export type ResolvedTypeDef = Omit<
   | "makeId"
   | "iam"
   | "beforeDelete"
+  | "privateAttributes"
 >;
 
 export interface ResolvedServiceDef extends Omit<ServiceDef, "types"> {

@@ -116,7 +116,7 @@ export function DashboardView() {
             ? {
                 title: `Reset everything in ${region}?`,
                 description:
-                  "Every VPC, subnet, gateway, route table, security group, instance and bucket in this region is deleted, and a fresh default VPC is created. Tutorial progress starts over. This can't be undone.",
+                  "Every VPC, subnet, gateway, route table, security group, instance and bucket in this region is deleted, and a fresh default VPC is created. Tutorial progress starts over. IAM users, groups, roles and policies are global, so they stay. This can't be undone.",
                 confirmLabel: "Reset region",
                 onConfirm: () => reset.mutate(),
               }

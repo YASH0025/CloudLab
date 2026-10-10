@@ -1,4 +1,5 @@
 import { cidrContains, cidrOverlaps, parseCidr, usableHosts } from "../cidr";
+import { ec2Arn } from "../iam/arns";
 import { availabilityZones } from "../catalog";
 import { EngineError } from "../errors";
 import { systemOf, type FieldDef, type ResourceTypeDef, type ServiceDef } from "../types";
@@ -22,6 +23,7 @@ const vpc: ResourceTypeDef = {
   idPrefix: "vpc",
   notFoundCode: "InvalidVpcID.NotFound",
   apiNoun: "vpc",
+  iam: { create: "ec2:CreateVpc", read: "ec2:DescribeVpcs", update: "ec2:ModifyVpcAttribute", delete: "ec2:DeleteVpc", arn: ec2Arn("vpc") },
   fields: [
     nameField("Name tag"),
     {
@@ -73,6 +75,7 @@ const subnet: ResourceTypeDef = {
   idPrefix: "subnet",
   notFoundCode: "InvalidSubnetID.NotFound",
   apiNoun: "subnet",
+  iam: { create: "ec2:CreateSubnet", read: "ec2:DescribeSubnets", update: "ec2:ModifySubnetAttribute", delete: "ec2:DeleteSubnet", arn: ec2Arn("subnet") },
   fields: [
     nameField("Name tag"),
     {
@@ -232,6 +235,17 @@ const securityGroup: ResourceTypeDef = {
   idPrefix: "sg",
   notFoundCode: "InvalidGroup.NotFound",
   apiNoun: "security group",
+  iam: {
+    create: "ec2:CreateSecurityGroup",
+    read: "ec2:DescribeSecurityGroups",
+    update: (changed) => [
+      ...(changed.includes("inboundRules") ? ["ec2:AuthorizeSecurityGroupIngress"] : []),
+      ...(changed.includes("outboundRules") ? ["ec2:AuthorizeSecurityGroupEgress"] : []),
+      ...(changed.some((c) => c !== "inboundRules" && c !== "outboundRules") ? ["ec2:ModifySecurityGroupRules"] : []),
+    ],
+    delete: "ec2:DeleteSecurityGroup",
+    arn: ec2Arn("security-group"),
+  },
   dependencyMessage: (id) => `resource ${id} has a dependent object`,
   canDelete: (sg) =>
     systemOf(sg).isDefault

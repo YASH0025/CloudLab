@@ -1,11 +1,12 @@
 import "server-only";
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
 import { unstable_rethrow } from "next/navigation";
 import { nanoid } from "nanoid";
 import { z } from "zod";
 import { getLocalStore, getStore } from "@/db/store";
 import { LocalService } from "@/local/service";
 import { Engine, EngineError } from "@/engine";
+import { authorize, consoleChecks, parseIdentity, resolvePrincipal, type Principal } from "@/engine/iam/authorize";
 import { getSignedInUser } from "./auth";
 
 const ACCOUNT_COOKIE = "cl_account";
@@ -59,6 +60,40 @@ export async function getAccountId(): Promise<string> {
     maxAge: 60 * 60 * 24 * 365,
   });
   return id;
+}
+
+// ---------- IAM: who is acting, and may they? ----------
+
+/** The console and terminal send the identity being used ("root", "user/dev", "role/admin"). */
+export const IDENTITY_HEADER = "x-cloudlab-identity";
+
+export interface Caller {
+  accountId: string;
+  principal: Principal;
+}
+
+/** The account plus the IAM identity the learner is acting as (root unless they switched). */
+export async function getCaller(): Promise<Caller> {
+  const accountId = await getAccountId();
+  const identity = parseIdentity((await headers()).get(IDENTITY_HEADER));
+  const principal = await resolvePrincipal(getEngine(), accountId, identity);
+  return { accountId, principal };
+}
+
+/** Checks a console operation on a resource type, throwing AWS's error if the identity may not. */
+export function authorizeConsole(
+  caller: Caller,
+  op: Parameters<typeof consoleChecks>[0],
+  def: { service: string; type: string },
+  target: Parameters<typeof consoleChecks>[3],
+  region: string,
+) {
+  authorize(caller.principal, consoleChecks(op, def, caller.accountId, target, region));
+}
+
+/** Checks explicit IAM actions (e.g. s3:GetObject on an object's ARN). */
+export function authorizeActions(caller: Caller, checks: { action: string; resource: string }[]) {
+  authorize(caller.principal, checks);
 }
 
 export function errorResponse(error: unknown): Response {

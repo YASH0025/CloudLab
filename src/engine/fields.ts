@@ -100,6 +100,22 @@ function fieldSchema(field: FieldDef): z.ZodType {
       schema = z.string();
       break;
     }
+    case "policies":
+      return z.array(z.string()).default([]);
+    case "json": {
+      schema = z.string().refine(
+        (v) => {
+          try {
+            JSON.parse(v);
+            return true;
+          } catch {
+            return false;
+          }
+        },
+        { message: `${field.label} must be valid JSON.` },
+      );
+      break;
+    }
     case "list": {
       const item = buildSchema(field.item ?? []);
       let arr = z.array(item);
@@ -141,7 +157,7 @@ export function defaultValues(fields: FieldDef[]): Record<string, unknown> {
   for (const field of fields) {
     if (field.default !== undefined) values[field.key] = field.default;
     else if (field.type === "boolean") values[field.key] = false;
-    else if (field.type === "list" || (field.type === "ref" && field.ref?.multiple)) values[field.key] = [];
+    else if (field.type === "list" || field.type === "policies" || (field.type === "ref" && field.ref?.multiple)) values[field.key] = [];
     else if (field.type === "enum" && field.required && field.options?.length) values[field.key] = field.options[0].value;
     else values[field.key] = "";
   }

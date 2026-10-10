@@ -1,7 +1,15 @@
 import type { NextRequest } from "next/server";
 import { EngineError } from "@/engine/errors";
 import { LIMITS } from "@/engine/objects";
-import { getAccountId, getEngine, handle } from "@/server/api";
+import { s3ObjectArn } from "@/engine/iam/arns";
+import { authorizeActions, getCaller, getEngine, handle, type Caller } from "@/server/api";
+
+/** Checks an object-level S3 action and returns the account to use. */
+async function allowed(action: string, bucket: string, key: string): Promise<Caller> {
+  const caller = await getCaller();
+  authorizeActions(caller, [{ action, resource: s3ObjectArn(bucket, key) }]);
+  return caller;
+}
 
 /**
  * One object, addressed by ?key=. GET downloads it, PUT uploads the request
@@ -18,7 +26,8 @@ export async function GET(request: NextRequest, ctx: RouteContext<"/api/buckets/
   return handle(async () => {
     const { bucket } = await ctx.params;
     const key = keyOf(request);
-    const { info, data } = await getEngine().objects.get(await getAccountId(), bucket, key);
+    const { accountId } = await allowed("s3:GetObject", bucket, key);
+    const { info, data } = await getEngine().objects.get(accountId, bucket, key);
     const filename = key.split("/").filter(Boolean).pop() ?? "download";
     return new Response(new Uint8Array(data), {
       headers: {
@@ -42,7 +51,8 @@ export async function PUT(request: NextRequest, ctx: RouteContext<"/api/buckets/
     }
     const data = Buffer.from(await request.arrayBuffer());
     const type = request.headers.get("content-type") ?? undefined;
-    const object = await getEngine().objects.put(await getAccountId(), bucket, key, data, type || undefined);
+    const { accountId } = await allowed("s3:PutObject", bucket, key);
+    const object = await getEngine().objects.put(accountId, bucket, key, data, type || undefined);
     return Response.json({ object });
   });
 }
@@ -50,7 +60,9 @@ export async function PUT(request: NextRequest, ctx: RouteContext<"/api/buckets/
 export async function DELETE(request: NextRequest, ctx: RouteContext<"/api/buckets/[bucket]/object">) {
   return handle(async () => {
     const { bucket } = await ctx.params;
-    await getEngine().objects.delete(await getAccountId(), bucket, keyOf(request));
+    const key = keyOf(request);
+    const { accountId } = await allowed("s3:DeleteObject", bucket, key);
+    await getEngine().objects.delete(accountId, bucket, key);
     return Response.json({ deleted: true });
   });
 }

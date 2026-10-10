@@ -1,7 +1,9 @@
 import { isRegion } from "@/engine/catalog";
 import { EngineError } from "@/engine/errors";
 import { Args, COMMANDS, findCommand, servicesList, type CliContext, type CliEffects } from "./commands";
+import { authorize } from "@/engine/iam/authorize";
 import { applyQuery, formatOutput, QueryError } from "./output";
+import { cliChecks } from "./permissions";
 import { LocalPathError, parseAws, tokenize, UsageError } from "./parse";
 
 export interface CliResult {
@@ -176,6 +178,10 @@ export async function executeCli(line: string, ctx: CliContext): Promise<CliResu
 
   const effects: CliEffects = {};
   try {
+    // IAM: an identity other than root may only do what its policies allow.
+    if (ctx.principal && ctx.principal.identity.kind !== "root") {
+      authorize(ctx.principal, cliChecks(command, new Args(parsed.options, parsed.positionals), { ...ctx, region }));
+    }
     const result = await command.run(new Args(parsed.options, parsed.positionals), { ...ctx, region, effects });
     const output =
       typeof result === "string" ? result : formatOutput(applyQuery(result, parsed.query), parsed.output);

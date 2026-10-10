@@ -1,4 +1,5 @@
 import { IMAGES } from "../catalog";
+import { ec2Arn } from "../iam/arns";
 import { EngineError } from "../errors";
 import { generateId } from "../ids";
 import { generateKey, type KeyType } from "../keys";
@@ -41,6 +42,7 @@ const keyPair: ResourceTypeDef = {
   idPrefix: "key",
   notFoundCode: "InvalidKeyPair.NotFound",
   apiNoun: "key pair",
+  iam: { create: "ec2:CreateKeyPair", read: "ec2:DescribeKeyPairs", delete: "ec2:DeleteKeyPair", arn: ec2Arn("key-pair") },
   revealOnce: ["keyMaterial"],
   fields: [
     {
@@ -100,6 +102,18 @@ const instance: ResourceTypeDef = {
   idPrefix: "i",
   notFoundCode: "InvalidInstanceID.NotFound",
   apiNoun: "instance",
+  iam: {
+    create: "ec2:RunInstances",
+    read: "ec2:DescribeInstances",
+    update: (changed) => [
+      ...(changed.includes("iamRole") ? ["ec2:AssociateIamInstanceProfile", "iam:PassRole"] : []),
+      ...(changed.some((c) => c !== "iamRole" && c !== "name") ? ["ec2:ModifyInstanceAttribute"] : []),
+      ...(changed.includes("name") ? ["ec2:CreateTags"] : []),
+    ],
+    delete: "ec2:TerminateInstances",
+    actions: { start: "ec2:StartInstances", stop: "ec2:StopInstances", reboot: "ec2:RebootInstances", terminate: "ec2:TerminateInstances" },
+    arn: ec2Arn("instance"),
+  },
   stateErrorCode: "IncorrectInstanceState",
   fields: [
     { key: "name", label: "Name", type: "string", maxLength: 255, placeholder: "web-server-1" },
@@ -158,6 +172,13 @@ const instance: ResourceTypeDef = {
       immutable: true,
       ref: { service: "compute", type: "key-pair", by: "name" },
       description: "Without a key pair you cannot SSH in. Deleting the key pair later doesn't affect the instance.",
+    },
+    {
+      key: "iamRole",
+      label: "IAM role",
+      type: "ref",
+      ref: { service: "iam", type: "role", by: "name" },
+      description: "Gives software on the instance the role's permissions, with no keys stored on the server. The role must trust ec2.amazonaws.com.",
     },
   ],
   columns: [
@@ -270,6 +291,13 @@ const elasticIp: ResourceTypeDef = {
   idPrefix: "eipalloc",
   notFoundCode: "InvalidAllocationID.NotFound",
   apiNoun: "allocation",
+  iam: {
+    create: "ec2:AllocateAddress",
+    read: "ec2:DescribeAddresses",
+    update: (changed) => (changed.includes("instanceId") ? ["ec2:AssociateAddress"] : ["ec2:CreateTags"]),
+    delete: "ec2:ReleaseAddress",
+    arn: ec2Arn("elastic-ip"),
+  },
   canDelete: (eip) =>
     eip.attributes.natGatewayId || (eip.config.instanceId && !eip.attributes.inDefaultVpc)
       ? new EngineError("InvalidIPAddress.InUse", `Address ${eip.attributes.publicIp} is in use.`)

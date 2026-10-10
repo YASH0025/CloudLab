@@ -41,7 +41,14 @@ export function ResourceCreateView() {
         </Link>
         <h1 className="mt-1 text-2xl font-semibold tracking-tight">Create {inSentence(typeDef.label)}</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          {typeDef.description} Region: <span className="font-mono">{region}</span>
+          {typeDef.description}{" "}
+          {typeDef.global ? (
+            "IAM is global: it isn't tied to a region."
+          ) : (
+            <>
+              Region: <span className="font-mono">{region}</span>
+            </>
+          )}
         </p>
       </div>
       <Card>
@@ -64,6 +71,17 @@ export function ResourceCreateView() {
                     downloadText(`${item.name}.pem`, item.attributes.keyMaterial);
                     toast.success(`Saved ${item.name}.pem to your downloads`, {
                       description: "Keep it safe. This is the only time the private key is available.",
+                      duration: 10000,
+                    });
+                  }
+                  // A new access key's secret is shown once too: save it as AWS's console does (a .csv file).
+                  if (typeof item.attributes.secretAccessKey === "string") {
+                    downloadText(
+                      `${item.config.userName}_accessKeys.csv`,
+                      `Access key ID,Secret access key\n${item.id},${item.attributes.secretAccessKey}\n`,
+                    );
+                    toast.success("Saved the access key to your downloads", {
+                      description: `${item.id} · Keep the secret safe: this is the only time it's available.`,
                       duration: 10000,
                     });
                   }

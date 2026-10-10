@@ -9,6 +9,7 @@ import { useServices } from "@/hooks/use-cloud";
 import { useConsoleStore } from "@/stores/console-store";
 import { useGuideStore } from "@/stores/guide-store";
 import { UserMenu } from "@/components/auth/user-menu";
+import { ActingAs } from "./acting-as";
 import { MobileNav } from "./sidebar";
 
 export function Topbar() {
@@ -39,6 +40,7 @@ export function Topbar() {
           </SelectContent>
         </Select>
       </div>
+      <ActingAs />
       <Button
         variant={guideOpen ? "secondary" : "default"}
         size="sm"

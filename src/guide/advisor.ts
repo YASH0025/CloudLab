@@ -351,6 +351,40 @@ export async function advise(engine: Engine, accountId: string, region: string):
       link: { service: "compute", type: "instance", mode: "detail", id: i.id },
     });
   }
+  // IAM habits: admin rights handed straight to a person, and policies that allow everything.
+  const iam = (type: string) => engine.list(accountId, { service: "iam", type, region: "global" });
+  for (const u of await iam("user")) {
+    if (!((u.config.policyArns as string[]) ?? []).includes("arn:aws:iam::aws:policy/AdministratorAccess")) continue;
+    push({
+      id: `admin-direct-${u.name}`,
+      level: "intermediate",
+      title: `${u.name} has AdministratorAccess attached directly`,
+      why: "Full admin rights attached to one person are hard to keep track of and easy to forget to remove. Grant permissions through groups, and give admin rights to as few people as possible.",
+      steps: ["Create an admins group with AdministratorAccess (if you really need one).", `Add ${u.name} to it, then detach the policy from the user.`],
+      link: { service: "iam", type: "user", mode: "detail", id: u.id },
+      cli: `aws iam detach-user-policy --user-name ${u.name} --policy-arn arn:aws:iam::aws:policy/AdministratorAccess`,
+    });
+  }
+  for (const p of await iam("policy")) {
+    const text = String(p.config.document);
+    let everything = false;
+    try {
+      const doc = JSON.parse(text) as { Statement: unknown };
+      const sts = (Array.isArray(doc.Statement) ? doc.Statement : [doc.Statement]) as { Effect?: string; Action?: unknown; Resource?: unknown }[];
+      everything = sts.some((st) => st.Effect === "Allow" && [st.Action].flat().includes("*") && [st.Resource].flat().includes("*"));
+    } catch {
+      everything = false;
+    }
+    if (!everything) continue;
+    push({
+      id: `star-policy-${p.name}`,
+      level: "intermediate",
+      title: `Policy ${p.name} allows every action on every resource`,
+      why: '"Action": "*" with "Resource": "*" is full admin access by another name. Least privilege means listing the actions and resources someone actually needs.',
+      steps: [`Open ${p.name}.`, "Replace * with the specific actions (e.g. s3:GetObject) and resource ARNs needed, and save."],
+      link: { service: "iam", type: "policy", mode: "detail", id: p.id },
+    });
+  }
   for (const eip of s.addresses) {
     if (eip.config.instanceId || eip.attributes.natGatewayId) continue;
     push({

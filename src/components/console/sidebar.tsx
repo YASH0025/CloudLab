@@ -8,6 +8,7 @@ import {
   MenuIcon,
   NetworkIcon,
   ServerIcon,
+  ShieldIcon,
   TerminalIcon,
   XIcon,
 } from "lucide-react";
@@ -25,6 +26,7 @@ const icons: Record<string, ComponentType<{ className?: string }>> = {
   Networking: NetworkIcon,
   Compute: ServerIcon,
   Storage: DatabaseIcon,
+  Security: ShieldIcon,
 };
 
 /** The navigation itself, shared by the desktop sidebar and the mobile menu. */

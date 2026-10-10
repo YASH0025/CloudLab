@@ -174,6 +174,9 @@ export async function instance(r: Resource, ctx: PresentContext) {
     ImageId: r.config.imageId,
     InstanceType: r.config.instanceType,
     KeyName: r.config.keyName ?? undefined,
+    IamInstanceProfile: r.config.iamRole
+      ? { Arn: `arn:aws:iam::${ownerId(ctx.accountId)}:instance-profile/${r.config.iamRole}`, Id: `AIPA${String(r.id).slice(2, 19).toUpperCase()}` }
+      : undefined,
     LaunchTime: r.createdAt,
     Placement: { AvailabilityZone: r.attributes.availabilityZone, Tenancy: "default" },
     Platform: r.attributes.platform === "windows" ? "windows" : undefined,

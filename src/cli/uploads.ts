@@ -15,6 +15,11 @@ export function localUploads(line: string): string[] {
       const [src, dest] = p.positionals;
       return src && dest && src !== "-" && !src.startsWith("s3://") && dest.startsWith("s3://") ? [src] : [];
     }
+    if (p.service === "iam") {
+      // --policy-document file://policy.json
+      const docs = ["policy-document", "assume-role-policy-document"].map((o) => p.options.get(o)?.[0]).filter((v): v is string => !!v);
+      return docs.filter((d) => d.startsWith("file://")).map((d) => d.slice("file://".length));
+    }
     if (p.service === "s3api" && p.operation === "put-object") {
       const body = p.options.get("body")?.[0];
       return body ? [body] : [];

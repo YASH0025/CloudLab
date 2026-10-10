@@ -2,7 +2,7 @@
 
 import { zodResolver } from "@hookform/resolvers/zod";
 import { AlertTriangleIcon, PlusIcon, Trash2Icon } from "lucide-react";
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Controller,
   useFieldArray,
@@ -18,7 +18,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { buildSchema, defaultValues } from "@/engine/fields";
 import type { FieldDef } from "@/engine/types";
-import { useResources } from "@/hooks/use-cloud";
+import { useIamPolicies, useResources } from "@/hooks/use-cloud";
 import { ApiError } from "@/lib/api-client";
 import { getPath, inSentence } from "@/lib/utils";
 
@@ -178,6 +178,32 @@ function FieldControl({ field, name, control, errors, disabled, lockReason, comp
         control={control}
         name={name}
         render={({ field: f }) => {
+          if (field.type === "json") {
+            return (
+              <textarea
+                id={id}
+                aria-label={field.label}
+                aria-invalid={!!message}
+                disabled={disabled}
+                spellCheck={false}
+                rows={Math.min(18, Math.max(6, String(f.value ?? "").split("\n").length + 1))}
+                className="w-full rounded-md border bg-background px-3 py-2 font-mono text-xs leading-relaxed shadow-xs outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 aria-invalid:border-destructive disabled:opacity-60"
+                value={f.value === undefined || f.value === null ? "" : String(f.value)}
+                onChange={(e) => f.onChange(e.target.value)}
+                onBlur={f.onBlur}
+              />
+            );
+          }
+          if (field.type === "policies") {
+            return (
+              <PolicyPicker
+                id={id}
+                value={Array.isArray(f.value) ? (f.value as string[]) : []}
+                onChange={f.onChange}
+                disabled={disabled}
+              />
+            );
+          }
           if (field.type === "enum") {
             return (
               <Select value={(f.value as string) || undefined} onValueChange={f.onChange} disabled={disabled}>
@@ -272,13 +298,13 @@ function RefControl({
       <div id={id} className="divide-y rounded-md border" aria-invalid={invalid}>
         {options.map((r) => {
           const d = describe(r);
-          const checked = selected.includes(r.id);
+          const checked = selected.includes(valueOf(r));
           return (
             <label key={r.id} className="flex cursor-pointer items-center gap-3 px-3 py-2 text-sm hover:bg-muted/40">
               <Checkbox
                 checked={checked}
                 disabled={disabled}
-                onCheckedChange={(v) => onChange(v ? [...selected, r.id] : selected.filter((s) => s !== r.id))}
+                onCheckedChange={(v) => onChange(v ? [...selected, valueOf(r)] : selected.filter((s) => s !== valueOf(r)))}
               />
               <span>
                 {d.title}
@@ -385,5 +411,40 @@ function ListControl({
         <PlusIcon /> Add rule
       </Button>
     </fieldset>
+  );
+}
+
+/** Attach policies: AWS managed ones and the account's own, with a filter. */
+function PolicyPicker({ id, value, onChange, disabled }: { id: string; value: string[]; onChange: (v: string[]) => void; disabled?: boolean }) {
+  const { data = [], isLoading } = useIamPolicies();
+  const [filter, setFilter] = useState("");
+  const shown = data.filter((p) => !filter || p.name.toLowerCase().includes(filter.toLowerCase()));
+  // Attached ones first, so it's easy to see what's selected.
+  shown.sort((a, b) => Number(value.includes(b.arn)) - Number(value.includes(a.arn)));
+  return (
+    <div id={id} className="space-y-2">
+      <Input placeholder="Filter policies…" value={filter} onChange={(e) => setFilter(e.target.value)} aria-label="Filter policies" />
+      <div className="max-h-64 divide-y overflow-y-auto rounded-md border">
+        {isLoading && <p className="px-3 py-2 text-sm text-muted-foreground">Loading…</p>}
+        {shown.map((p) => (
+          <label key={p.arn} className="flex cursor-pointer items-start gap-3 px-3 py-2 text-sm hover:bg-muted/40">
+            <Checkbox
+              className="mt-0.5"
+              checked={value.includes(p.arn)}
+              disabled={disabled}
+              onCheckedChange={(v) => onChange(v ? [...value, p.arn] : value.filter((a) => a !== p.arn))}
+            />
+            <span className="min-w-0">
+              {p.name}{" "}
+              <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground uppercase">
+                {p.managed ? "AWS managed" : "Customer managed"}
+              </span>
+              {p.description && <span className="block text-xs text-muted-foreground">{p.description}</span>}
+            </span>
+          </label>
+        ))}
+      </div>
+      <p className="text-xs text-muted-foreground">{value.length} attached</p>
+    </div>
   );
 }

@@ -1,4 +1,5 @@
 import { cidrContains, parseCidr } from "../cidr";
+import { ec2Arn } from "../iam/arns";
 import { EngineError } from "../errors";
 import { generateId } from "../ids";
 import { systemOf, type ResourceTypeDef } from "../types";
@@ -28,6 +29,13 @@ export const internetGateway: ResourceTypeDef = {
   idPrefix: "igw",
   notFoundCode: "InvalidInternetGatewayID.NotFound",
   apiNoun: "internetGateway",
+  iam: {
+    create: "ec2:CreateInternetGateway",
+    read: "ec2:DescribeInternetGateways",
+    update: (changed) => (changed.includes("vpcId") ? ["ec2:AttachInternetGateway"] : ["ec2:CreateTags"]),
+    delete: "ec2:DeleteInternetGateway",
+    arn: ec2Arn("internet-gateway"),
+  },
   canDelete: (igw) =>
     igw.config.vpcId
       ? new EngineError("DependencyViolation", `The internetGateway '${igw.id}' has dependencies and cannot be deleted.`)
@@ -95,6 +103,17 @@ export const routeTable: ResourceTypeDef = {
   idPrefix: "rtb",
   notFoundCode: "InvalidRouteTableID.NotFound",
   apiNoun: "routeTable",
+  iam: {
+    create: "ec2:CreateRouteTable",
+    read: "ec2:DescribeRouteTables",
+    update: (changed) => [
+      ...(changed.includes("routes") ? ["ec2:CreateRoute"] : []),
+      ...(changed.includes("subnetIds") ? ["ec2:AssociateRouteTable"] : []),
+      ...(changed.includes("name") ? ["ec2:CreateTags"] : []),
+    ],
+    delete: "ec2:DeleteRouteTable",
+    arn: ec2Arn("route-table"),
+  },
   canDelete: (rt) =>
     systemOf(rt).main || ((rt.config.subnetIds as string[]) ?? []).length > 0
       ? new EngineError("DependencyViolation", `The routeTable '${rt.id}' has dependencies and cannot be deleted.`)
@@ -261,6 +280,7 @@ export const natGateway: ResourceTypeDef = {
   notFoundMessage: (id) => `The Nat Gateway ${id} was not found`,
   malformedCode: "NatGatewayMalformed",
   apiNoun: "natGateway",
+  iam: { create: "ec2:CreateNatGateway", read: "ec2:DescribeNatGateways", update: "ec2:CreateTags", delete: "ec2:DeleteNatGateway", arn: ec2Arn("natgateway") },
   fields: [
     { key: "name", label: "Name tag", type: "string", maxLength: 255, placeholder: "main-nat" },
     {

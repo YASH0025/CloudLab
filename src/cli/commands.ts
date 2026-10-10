@@ -1,15 +1,19 @@
 import { REGIONS, availabilityZones } from "@/engine/catalog";
 import type { Engine } from "@/engine/engine";
 import { EngineError } from "@/engine/errors";
+import type { Principal } from "@/engine/iam/authorize";
 import { systemOf, type Resource } from "@/engine/types";
 import { parseShorthand, UsageError } from "./parse";
 import * as present from "./present";
+import { IAM_COMMANDS } from "./iam";
 import { S3_COMMANDS } from "./s3";
 
 export interface CliContext {
   engine: Engine;
   accountId: string;
   region: string;
+  /** The IAM identity running the command. Absent means the account's root user. */
+  principal?: Principal;
   /** Local files the terminal sent along with the command (name as typed → base64 contents). */
   files?: Record<string, string>;
   /** Side channel for what a command wants to happen besides printing output. */
@@ -78,6 +82,8 @@ export interface Command {
   usage?: string;
   /** Changes resources, so the console should refresh afterwards. */
   mutates: boolean;
+  /** The IAM actions the command needs, when the default (service:ApiName on the IDs given) isn't right. */
+  permissions?: (args: Args, ctx: CliContext) => { action: string; resource: string }[];
   run(args: Args, ctx: CliContext): Promise<unknown>;
 }
 
@@ -223,6 +229,15 @@ async function instanceAction(ctx: CliContext, args: Args, action: string) {
   return changes;
 }
 
+/** --iam-instance-profile Name=x or Arn=arn:aws:iam::…:instance-profile/x → the role name. */
+function instanceProfile(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const v = parseShorthand(value);
+  const name = v.Name ?? String(v.Arn ?? "").split("/").pop();
+  if (!name) throw new EngineError("InvalidParameterValue", `Value (${value}) for parameter iamInstanceProfile is invalid.`);
+  return String(name);
+}
+
 /** A key pair by name, failing like the real API. */
 async function keyPairByName(ctx: CliContext, name: string): Promise<Resource> {
   const found = (await listOf(ctx, "compute", "key-pair")).find((k) => k.name === name);
@@ -236,17 +251,6 @@ const cmd = (c: Command) => c;
 
 export const COMMANDS: Command[] = [
   // --- account / region ---
-  cmd({
-    service: "sts",
-    operation: "get-caller-identity",
-    apiName: "GetCallerIdentity",
-    summary: "Show which lab account you are using",
-    mutates: false,
-    async run(_args, ctx) {
-      const account = present.ownerId(ctx.accountId);
-      return { UserId: ctx.accountId.toUpperCase(), Account: account, Arn: `arn:lab:iam::${account}:user/learner` };
-    },
-  }),
   cmd({
     service: "ec2",
     operation: "describe-regions",
@@ -721,7 +725,7 @@ export const COMMANDS: Command[] = [
     apiName: "RunInstances",
     summary: "Launch instances",
     usage:
-      "--image-id <ami> [--subnet-id <id>] [--security-group-ids <id> ...] [--instance-type t3.micro] [--count 1] [--key-name <name>] [--associate-public-ip-address | --no-associate-public-ip-address]",
+      "--image-id <ami> [--subnet-id <id>] [--security-group-ids <id> ...] [--instance-type t3.micro] [--count 1] [--key-name <name>] [--iam-instance-profile Name=<role>] [--associate-public-ip-address | --no-associate-public-ip-address]",
     mutates: true,
     async run(args, ctx) {
       const imageId = args.one("image-id");
@@ -754,6 +758,7 @@ export const COMMANDS: Command[] = [
             subnetId,
             securityGroupIds: groups,
             keyName: args.one("key-name"),
+            iamRole: instanceProfile(args.one("iam-instance-profile")),
             associatePublicIp: pub === undefined ? "subnet-default" : pub ? "enable" : "disable",
             name: nameTag(args),
           }),
@@ -995,6 +1000,9 @@ export const COMMANDS: Command[] = [
 
   // --- S3 (buckets, objects, websites) ---
   ...S3_COMMANDS,
+
+  // --- IAM and STS ---
+  ...IAM_COMMANDS,
 ];
 
 export function findCommand(service: string, operation: string) {

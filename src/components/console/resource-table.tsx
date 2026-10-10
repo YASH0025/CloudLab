@@ -196,7 +196,7 @@ export function ResourceTable({ typeDef, data, onAction, onDelete }: ResourceTab
           {table.getRowModel().rows.length === 0 ? (
             <TableRow className="hover:bg-transparent">
               <TableCell colSpan={columns.length} className="py-10 text-center text-muted-foreground">
-                {data.length === 0 ? `No ${inSentence(typeDef.pluralLabel)} in this region.` : "No matches."}
+                {data.length === 0 ? `No ${inSentence(typeDef.pluralLabel)} ${typeDef.global ? "yet" : "in this region"}.` : "No matches."}
               </TableCell>
             </TableRow>
           ) : (

@@ -8,6 +8,7 @@ import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 import { commonPrefix, complete } from "@/cli/complete";
 import type { CliResult } from "@/cli/execute";
 import { localUploads } from "@/cli/uploads";
+import { identityHeader } from "@/lib/api-client";
 import { downloadBase64, downloadText } from "@/lib/utils";
 import { useConsoleStore } from "@/stores/console-store";
 import { useGuideStore } from "@/stores/guide-store";
@@ -39,7 +40,7 @@ function saveHistory(history: string[]) {
 async function runCommand(command: string, region: string, files?: Record<string, string>): Promise<CliResult> {
   const res = await fetch("/api/cli", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...identityHeader() },
     body: JSON.stringify({ command, region, files }),
   });
   const body = await res.json().catch(() => ({}));

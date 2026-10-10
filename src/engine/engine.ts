@@ -21,7 +21,9 @@ import {
 export function toDTO(r: Resource): ResourceDTO {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const { accountId, refs, ...dto } = r;
-  return dto;
+  const hidden = getTypeDef(r.service, r.type).privateAttributes;
+  if (!hidden?.length) return dto;
+  return { ...dto, attributes: Object.fromEntries(Object.entries(dto.attributes).filter(([k]) => !hidden.includes(k))) };
 }
 
 /** Keeps the platform's `system` markers when attributes are re-derived. */
@@ -134,6 +136,7 @@ export class Engine {
       // Global types (IAM) live under "global" whatever region the caller is in.
       list: async (service, type) =>
         (await this.list(accountId, { service, type, region: getTypeDef(service, type).global ? "global" : region })).filter(isActive),
+      listAll: async (service, type) => (await this.list(accountId, { service, type })).filter(isActive),
       existsGlobally: (id) => this.store.getAny(id),
     };
   }
@@ -172,9 +175,13 @@ export class Engine {
       const value = clean[field.key];
       if (field.ref.by === "name") {
         // Checked only when set or changed: an instance keeps working if its key pair is deleted later.
-        if (typeof value !== "string" || !value || (existing && existing.config[field.key] === value)) continue;
+        const before = existing?.config[field.key];
+        const kept = new Set(Array.isArray(before) ? (before as string[]) : typeof before === "string" ? [before] : []);
+        const names = (Array.isArray(value) ? (value as string[]) : typeof value === "string" && value ? [value] : []).filter((n) => !kept.has(n));
+        if (names.length === 0) continue;
         const targets = await ctx.list(field.ref.service, field.ref.type);
-        if (!targets.some((t) => t.name === value)) throw notFoundByNameError(getTypeDef(field.ref.service, field.ref.type), value);
+        const target = getTypeDef(field.ref.service, field.ref.type);
+        for (const n of names) if (!targets.some((t) => t.name === n)) throw notFoundByNameError(target, n);
         continue;
       }
       const ids = Array.isArray(value) ? (value as string[]) : typeof value === "string" ? [value] : [];

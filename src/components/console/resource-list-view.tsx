@@ -1,5 +1,7 @@
 "use client";
 
+import { ApiError } from "@/lib/api-client";
+
 import { PlusIcon, RefreshCwIcon } from "lucide-react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
@@ -46,7 +48,21 @@ export function ResourceListView() {
       {resources.isLoading ? (
         <Skeleton className="h-48" />
       ) : resources.isError ? (
-        <p className="text-sm text-destructive">Could not load {inSentence(typeDef.pluralLabel)}.</p>
+        <div className="rounded-md border border-destructive/40 bg-destructive/8 p-4 text-sm">
+          {resources.error instanceof ApiError ? (
+            <>
+              <p className="font-mono text-xs font-semibold text-destructive">{resources.error.code}</p>
+              <p className="mt-1 break-words">{resources.error.message}</p>
+              {resources.error.status === 403 && (
+                <p className="mt-2 text-muted-foreground">
+                  The identity you&apos;re acting as (top right) isn&apos;t allowed to list these. Attach a policy that allows it, or switch back to the root user.
+                </p>
+              )}
+            </>
+          ) : (
+            <p className="text-destructive">Could not load {inSentence(typeDef.pluralLabel)}.</p>
+          )}
+        </div>
       ) : (
         <ResourceTable
           typeDef={typeDef}

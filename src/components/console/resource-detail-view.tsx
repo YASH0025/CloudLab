@@ -16,6 +16,7 @@ import { routes } from "@/lib/routes";
 import { formatValue } from "@/lib/utils";
 import { ConfirmDialog } from "./confirm-dialog";
 import { ObjectsPanel, WebsiteCard } from "./objects-panel";
+import { PermissionChecker } from "./permission-checker";
 import { ReachabilityPanel } from "./reachability-panel";
 import { ResourceForm } from "./resource-form";
 import { StateBadge } from "./state-badge";
@@ -49,6 +50,28 @@ function FieldValue({ field, value }: { field: FieldDef; value: unknown }) {
           </Link>
         ))}
       </span>
+    );
+  }
+  if (field.type === "json") {
+    let pretty = String(value ?? "");
+    try {
+      pretty = JSON.stringify(JSON.parse(pretty), null, 2);
+    } catch {
+      // Shown as stored.
+    }
+    return <pre className="max-h-80 overflow-auto rounded-md bg-muted/60 p-3 font-mono text-xs leading-relaxed">{pretty}</pre>;
+  }
+  if (field.type === "policies") {
+    const arns = Array.isArray(value) ? (value as string[]) : [];
+    if (arns.length === 0) return <span className="text-muted-foreground">None</span>;
+    return (
+      <ul className="space-y-0.5">
+        {arns.map((a) => (
+          <li key={a}>
+            {a.split("/").pop()} <span className="font-mono text-xs text-muted-foreground">{a}</span>
+          </li>
+        ))}
+      </ul>
     );
   }
   if (field.type === "enum") {
@@ -239,6 +262,9 @@ export function ResourceDetailView() {
       </Card>
 
       {item.service === "compute" && item.type === "instance" && <ReachabilityPanel instanceId={item.id} />}
+      {item.service === "iam" && (item.type === "user" || item.type === "group" || item.type === "role") && (
+        <PermissionChecker kind={item.type} name={item.name} />
+      )}
       {item.service === "storage" && item.type === "bucket" && (
         <>
           <ObjectsPanel bucket={item.id} />

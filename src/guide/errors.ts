@@ -108,6 +108,38 @@ const EXPLANATIONS: Record<string, ErrorExplanation> = {
     meaning: "The Elastic IP is still attached to an instance, so it can't be released.",
     fix: "Disassociate it first (disassociate-address), then release it.",
   },
+  UnauthorizedOperation: {
+    meaning: "The identity you're using (top right: Acting as) has no policy that allows this EC2 action, or a policy denies it.",
+    fix: "Attach a policy that allows the action named in the message, or switch back to the root user. The user's Check permissions panel shows which policy decides.",
+  },
+  AccessDenied: {
+    meaning: "The identity you're using isn't allowed to do this: no policy allows the action on that resource, or one explicitly denies it.",
+    fix: "Read the action and resource in the message, then allow exactly that in a policy (or switch back to the root user).",
+  },
+  InvalidClientTokenId: {
+    meaning: "The credentials belong to an IAM user that no longer exists.",
+    fix: "Switch to another identity at the top right (Acting as).",
+  },
+  NoSuchEntity: {
+    meaning: "The IAM user, group, role or policy you named doesn't exist. IAM names are case sensitive.",
+    fix: "List them (aws iam list-users, list-groups, list-roles, list-policies) and check the spelling.",
+  },
+  EntityAlreadyExists: {
+    meaning: "An IAM user, group, role or policy with that name already exists.",
+    fix: "Use the existing one or pick another name.",
+  },
+  DeleteConflict: {
+    meaning: "It's still attached to something. IAM won't delete users, groups, roles or policies that are in use.",
+    fix: "Do what the message says first: detach policies, remove users from groups, delete access keys, or take the role off instances.",
+  },
+  MalformedPolicyDocument: {
+    meaning: "The policy JSON isn't valid IAM policy grammar.",
+    fix: 'Each statement needs "Effect" (Allow or Deny), "Action" (like "s3:GetObject") and "Resource" (an ARN or "*"). Identity policies have no "Principal".',
+  },
+  LimitExceeded: {
+    meaning: "You've hit an IAM limit, e.g. 10 policies per user or 2 access keys per user.",
+    fix: "Remove one first. Too many policies on one user usually means it's time for a group.",
+  },
   NatGatewayNotFound: {
     meaning: "No NAT gateway with that ID exists in this region (or it has been deleted).",
     fix: "List them with describe-nat-gateways, and check the region selector.",

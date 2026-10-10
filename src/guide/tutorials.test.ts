@@ -58,8 +58,9 @@ describe("tutorials", () => {
       "private-network",
       "bastion-host",
       "web-and-database",
+      "least-privilege",
     ]);
-    expect(listTutorials().filter((t) => t.level === "intermediate")).toHaveLength(3);
+    expect(listTutorials().filter((t) => t.level === "intermediate")).toHaveLength(4);
     expect(listTutorials().find((t) => t.id === "troubleshoot-reachability")?.nextId).toBe("static-website");
   });
 
@@ -167,5 +168,26 @@ describe("tutorials", () => {
       },
     });
     expect(done).toBe(5);
+  });
+
+  it("teaches least privilege with IAM", async () => {
+    const view2 = async (identity = "root") => (await viewTutorial(engine, ACCOUNT, REGION, "least-privilege", identity))!;
+    const progress = async (identity?: string) => advanceProgress(0, (await view2(identity)).steps.map((s) => s.passes));
+    const create = (type: string, config: Record<string, unknown>) => engine.create(ACCOUNT, { service: "iam", type, region: REGION, config });
+    expect(await progress()).toBe(0);
+
+    const t = await view2();
+    await create("group", t.steps[0].link!.prefill!);
+    await create("user", t.steps[1].link!.prefill!);
+    expect(await progress()).toBe(2);
+    expect(await progress("user/dev")).toBe(3);
+
+    await engine.create(ACCOUNT, { service: "storage", type: "bucket", region: REGION, config: { name: "team-bucket-tut" } });
+    const prefill = { ...t.steps[3].link!.prefill! };
+    prefill.document = String(prefill.document).replaceAll("my-team-bucket", "team-bucket-tut");
+    const policy = await create("policy", prefill);
+    const group = (await engine.list(ACCOUNT, { service: "iam", type: "group", region: "global" }))[0];
+    await engine.update(ACCOUNT, group.id, { policyArns: [...(group.config.policyArns as string[]), policy.attributes.arn] });
+    expect(await progress("user/dev")).toBe(6);
   });
 });

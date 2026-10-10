@@ -2,6 +2,20 @@ import type { ResolvedServiceDef, ResourceDTO } from "@/engine/types";
 import type { Region } from "@/engine/catalog";
 import type { ReachabilityInput, ReachabilityResult } from "@/engine/analysis/reachability";
 import type { Advice, TutorialInfo, TutorialView } from "@/guide/types";
+import type { Evaluation } from "@/engine/iam/policy";
+import { useConsoleStore } from "@/stores/console-store";
+
+export interface IamPolicyOption {
+  name: string;
+  arn: string;
+  description: string;
+  managed: boolean;
+}
+
+export interface SimulateResponse {
+  result: Evaluation;
+  policies: { name: string; arn: string; via: string }[];
+}
 import type { ObjectInfo } from "@/engine/objects";
 
 export type { ObjectInfo };
@@ -20,10 +34,15 @@ export class ApiError extends Error {
   }
 }
 
+/** The IAM identity the console is acting as, sent with every request so permissions apply. */
+export function identityHeader(): Record<string, string> {
+  return { "x-cloudlab-identity": useConsoleStore.getState().identity || "root" };
+}
+
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, {
     ...init,
-    headers: { "Content-Type": "application/json", ...init?.headers },
+    headers: { "Content-Type": "application/json", ...identityHeader(), ...init?.headers },
   });
   const body = await res.json().catch(() => ({}));
   if (!res.ok) {
@@ -109,6 +128,21 @@ export const api = {
     }),
 
   objectDownloadUrl: objectUrl,
+
+  iamPolicies: () => request<{ policies: IamPolicyOption[] }>(`/api/iam/policies`),
+
+  /** Checks an identity before switching to it ("root", "user/dev", "role/admin"). */
+  whoami: (identity: string) =>
+    request<{ identity: unknown; arn: string }>(`/api/iam/whoami`, { headers: { "x-cloudlab-identity": identity } }),
+
+  simulate: (input: { kind: "user" | "group" | "role"; name: string; action: string; resource: string }) =>
+    request<SimulateResponse>(`/api/iam/simulate`, { method: "POST", body: JSON.stringify(input) }),
+
+  /** Lists resources as the root user, for the identity switcher. */
+  listAsRoot: (service: string, type: string) =>
+    request<{ items: ResourceDTO[] }>(`/api/resources?service=${service}&type=${type}&region=global`, {
+      headers: { "x-cloudlab-identity": "root" },
+    }),
 
   runAction: (id: string, action: string) =>
     request<{ item: ResourceDTO }>(`/api/resources/${encodeURIComponent(id)}/actions`, {

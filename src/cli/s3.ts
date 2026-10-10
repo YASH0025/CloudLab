@@ -620,3 +620,95 @@ export const S3_COMMANDS: Command[] = [
   }),
 ];
 
+
+// ---------- IAM permissions for each command ----------
+
+type Perm = { action: string; resource: string };
+const bucketArn = (b: string) => `arn:aws:s3:::${b}`;
+const objectArn = (b: string, k: string) => `arn:aws:s3:::${b}/${k}`;
+
+/** Bucket and key from --bucket/--key, or from the first s3:// path. */
+function target(args: Parameters<NonNullable<Command["permissions"]>>[0]): S3Path {
+  const uri = args.positionals.find(isS3);
+  const fromUri = uri ? parseS3(uri) : { bucket: "", key: "" };
+  return { bucket: args.one("bucket") ?? fromUri.bucket, key: args.one("key") ?? fromUri.key };
+}
+
+/** Simple commands: one action on the bucket or on the object. */
+const SIMPLE: Record<string, [string, "bucket" | "object" | "all"]> = {
+  "s3:mb": ["s3:CreateBucket", "bucket"],
+  "s3:website": ["s3:PutBucketWebsite", "bucket"],
+  "s3api:create-bucket": ["s3:CreateBucket", "bucket"],
+  "s3api:list-buckets": ["s3:ListAllMyBuckets", "all"],
+  "s3api:delete-bucket": ["s3:DeleteBucket", "bucket"],
+  "s3api:put-bucket-versioning": ["s3:PutBucketVersioning", "bucket"],
+  "s3api:get-bucket-versioning": ["s3:GetBucketVersioning", "bucket"],
+  "s3api:put-object": ["s3:PutObject", "object"],
+  "s3api:get-object": ["s3:GetObject", "object"],
+  "s3api:head-object": ["s3:GetObject", "object"],
+  "s3api:list-objects-v2": ["s3:ListBucket", "bucket"],
+  "s3api:delete-object": ["s3:DeleteObject", "object"],
+  "s3api:put-bucket-website": ["s3:PutBucketWebsite", "bucket"],
+  "s3api:get-bucket-website": ["s3:GetBucketWebsite", "bucket"],
+  "s3api:delete-bucket-website": ["s3:DeleteBucketWebsite", "bucket"],
+  "s3api:put-bucket-policy": ["s3:PutBucketPolicy", "bucket"],
+  "s3api:get-bucket-policy": ["s3:GetBucketPolicy", "bucket"],
+  "s3api:delete-bucket-policy": ["s3:DeleteBucketPolicy", "bucket"],
+  "s3api:put-public-access-block": ["s3:PutBucketPublicAccessBlock", "bucket"],
+  "s3api:get-public-access-block": ["s3:GetBucketPublicAccessBlock", "bucket"],
+  "s3api:delete-public-access-block": ["s3:PutBucketPublicAccessBlock", "bucket"],
+};
+
+const PERMISSIONS: Record<string, NonNullable<Command["permissions"]>> = {
+  "s3:ls": (args) => {
+    const t = target(args);
+    return t.bucket ? [{ action: "s3:ListBucket", resource: bucketArn(t.bucket) }] : [{ action: "s3:ListAllMyBuckets", resource: "*" }];
+  },
+  "s3:rb": (args) => {
+    const { bucket } = target(args);
+    const perms: Perm[] = [{ action: "s3:DeleteBucket", resource: bucketArn(bucket) }];
+    if (args.has("force")) perms.unshift({ action: "s3:ListBucket", resource: bucketArn(bucket) }, { action: "s3:DeleteObject", resource: objectArn(bucket, "*") });
+    return perms;
+  },
+  "s3:rm": (args) => {
+    const { bucket, key } = target(args);
+    return args.has("recursive")
+      ? [{ action: "s3:ListBucket", resource: bucketArn(bucket) }, { action: "s3:DeleteObject", resource: objectArn(bucket, `${key}*`) }]
+      : [{ action: "s3:DeleteObject", resource: objectArn(bucket, key) }];
+  },
+  "s3:cp": (args) => {
+    const [src, dest] = args.positionals;
+    const perms: Perm[] = [];
+    if (isS3(src)) {
+      const f = parseS3(src);
+      perms.push({ action: "s3:GetObject", resource: objectArn(f.bucket, args.has("recursive") ? `${f.key}*` : f.key) });
+    }
+    if (isS3(dest)) {
+      const t = parseS3(dest);
+      const key = !t.key || t.key.endsWith("/") ? t.key + (src && !args.has("recursive") ? baseName(isS3(src) ? parseS3(src).key : src) : "*") : t.key;
+      perms.push({ action: "s3:PutObject", resource: objectArn(t.bucket, key) });
+    }
+    return perms;
+  },
+  "s3api:copy-object": (args) => {
+    const source = (args.one("copy-source") ?? "").replace(/^\//, "");
+    return [
+      { action: "s3:GetObject", resource: `arn:aws:s3:::${source}` },
+      { action: "s3:PutObject", resource: objectArn(args.one("bucket") ?? "", args.one("key") ?? "") },
+    ];
+  },
+};
+
+for (const c of S3_COMMANDS) {
+  const id = `${c.service}:${c.operation}`;
+  const simple = SIMPLE[id];
+  c.permissions =
+    PERMISSIONS[id] ??
+    (simple
+      ? (args) => {
+          const t = target(args);
+          const resource = simple[1] === "all" ? "*" : simple[1] === "bucket" ? bucketArn(t.bucket) : objectArn(t.bucket, t.key);
+          return [{ action: simple[0], resource }];
+        }
+      : undefined);
+}
