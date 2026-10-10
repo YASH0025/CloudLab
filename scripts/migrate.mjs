@@ -1,10 +1,9 @@
-// Applies database migrations from ./drizzle using Neon's HTTP driver (the same one
-// the app uses). Runs automatically before every build (see the "build" script),
-// and can be run locally with `npm run db:migrate`.
+// Applies database migrations using Neon's HTTP driver (the same one the app uses).
+// Runs automatically before every build (see the "build" script), and can be run
+// locally with `npm run db:migrate`.
 import "dotenv/config";
 import { neon } from "@neondatabase/serverless";
-import { drizzle } from "drizzle-orm/neon-http";
-import { migrate } from "drizzle-orm/neon-http/migrator";
+import { runMigrations } from "./migrate-core.mjs";
 
 const url = process.env.DATABASE_URL;
 if (!url) {
@@ -18,5 +17,13 @@ if (!url) {
   process.exit(0);
 }
 
-await migrate(drizzle({ client: neon(url) }), { migrationsFolder: "./drizzle" });
-console.log("✓ Database migrations applied.");
+const sql = neon(url);
+const applied = await runMigrations(
+  {
+    query: (text, params) => sql.query(text, params ?? []),
+    transaction: (statements) => sql.transaction(statements.map((s) => sql.query(s.text, s.params ?? []))),
+  },
+  "./drizzle",
+  console.log,
+);
+console.log(`✓ Database migrations applied${applied ? ` (${applied} new)` : " (already up to date)"}.`);
