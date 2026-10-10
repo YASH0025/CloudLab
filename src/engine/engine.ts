@@ -131,7 +131,9 @@ export class Engine {
       accountId,
       region,
       get: (id) => this.get(accountId, id).catch(() => null),
-      list: async (service, type) => (await this.list(accountId, { service, type, region })).filter(isActive),
+      // Global types (IAM) live under "global" whatever region the caller is in.
+      list: async (service, type) =>
+        (await this.list(accountId, { service, type, region: getTypeDef(service, type).global ? "global" : region })).filter(isActive),
       existsGlobally: (id) => this.store.getAny(id),
     };
   }
@@ -216,6 +218,9 @@ export class Engine {
   }
 
   async list(accountId: string, filter: { service?: string; type?: string; region?: string } = {}) {
+    if (filter.service && filter.type && filter.region && getTypeDef(filter.service, filter.type).global) {
+      filter = { ...filter, region: "global" };
+    }
     const items = await this.store.list(accountId, filter);
     return Promise.all(items.map((r) => this.settleAndSave(r)));
   }
@@ -240,7 +245,7 @@ export class Engine {
     const def = getTypeDef(service, type);
     if (!isWellFormed(def, id)) throw malformedError(def, id);
     const r = await this.store.get(accountId, id);
-    if (!r || r.service !== service || r.type !== type || (region && r.region !== region)) throw notFoundError(def, id);
+    if (!r || r.service !== service || r.type !== type || (region && !def.global && r.region !== region)) throw notFoundError(def, id);
     return this.settleAndSave(r);
   }
 
@@ -254,12 +259,13 @@ export class Engine {
     options: { system?: SystemInfo; settled?: boolean; id?: string } = {},
   ): Promise<Resource> {
     const def = getTypeDef(input.service, input.type);
-    if (!isRegion(input.region)) throw errors.invalidParameter(`Invalid region: '${input.region}'`);
+    if (def.global) input = { ...input, region: "global" };
+    else if (!isRegion(input.region)) throw errors.invalidParameter(`Invalid region: '${input.region}'`);
     const ctx = this.context(accountId, input.region);
     const config = await this.validateConfig(def, input.region, input.config ?? {}, null, ctx);
 
     const name = typeof config.name === "string" ? config.name : "";
-    const id = options.id ?? (def.idFromName ? name : generateId(def.idPrefix));
+    const id = options.id ?? (def.idFromName ? name : def.makeId ? def.makeId() : generateId(def.idPrefix));
     if (def.idFromName && (await this.store.getAny(id))) {
       throw new EngineError("BucketAlreadyExists", "The requested bucket name is not available.", 409);
     }
@@ -367,6 +373,7 @@ export class Engine {
 
     const reason = def.canDelete?.(existing);
     if (reason) throw reason;
+    if (def.beforeDelete) await def.beforeDelete({ resource: existing, ctx: this.context(accountId, existing.region) });
 
     // Resources the platform made for this one (a VPC's main route table and default
     // security group) go with it. A reference blocks deletion unless every field holding

@@ -17,7 +17,11 @@ export type FieldType =
   | "enum"
   | "cidr"
   | "ref"
-  | "list";
+  | "list"
+  /** A JSON document edited as text, e.g. an IAM policy. */
+  | "json"
+  /** IAM policy ARNs to attach (AWS managed and the account's own). */
+  | "policies";
 
 export interface FieldOption {
   value: string;
@@ -141,6 +145,21 @@ export interface SystemApi {
   setAttributes(id: string, patch: Record<string, unknown>): Promise<void>;
 }
 
+/**
+ * How the console's generic operations on a type map to IAM actions, e.g.
+ * create → "ec2:CreateVpc". `update` may depend on which settings changed.
+ */
+export interface IamMapping {
+  create: string;
+  read: string;
+  update?: string | ((changed: string[]) => string[]);
+  delete: string;
+  /** Lifecycle actions, e.g. { stop: "ec2:StopInstances" }. */
+  actions?: Record<string, string>;
+  /** The resource's ARN, given the 12-digit account number. */
+  arn: (r: { id: string; name: string; region: string; config: Record<string, unknown> }, account: string) => string;
+}
+
 /** What a resource looks like to the rest of the app (API, UI, engine hooks). */
 export interface Resource {
   id: string;
@@ -199,6 +218,14 @@ export interface ResourceTypeDef {
   canDelete?: (resource: Resource) => EngineError | undefined;
   /** Not shown in the console's navigation; managed through its own screens (bucket objects). */
   hidden?: boolean;
+  /** Global service (IAM): not tied to a region. Stored under the region "global". */
+  global?: boolean;
+  /** Builds the resource ID when the real API's format isn't "<prefix>-<hex>" (IAM's AIDA…, AKIA…). */
+  makeId?: () => string;
+  /** IAM actions and ARNs for the console's operations, used to check permissions. */
+  iam?: IamMapping;
+  /** Async checks before deletion (e.g. IAM's DeleteConflict). Throw to refuse. */
+  beforeDelete?: (input: { resource: Resource; ctx: HookContext }) => Promise<void>;
   /** The error when dependents block deletion, if not DependencyViolation (e.g. S3's BucketNotEmpty). */
   dependencyError?: (id: string) => EngineError;
   /** Message when deletion is blocked by dependents. Defaults to "The <noun> '<id>' has dependencies and cannot be deleted." */
@@ -260,6 +287,9 @@ export type ResolvedTypeDef = Omit<
   | "onSettled"
   | "dependencyError"
   | "notFoundMessage"
+  | "makeId"
+  | "iam"
+  | "beforeDelete"
 >;
 
 export interface ResolvedServiceDef extends Omit<ServiceDef, "types"> {

@@ -12,12 +12,10 @@ export interface PresentContext {
   accountId: string;
 }
 
-/** A stable fake 12-digit account number derived from the lab account ID. */
-export function ownerId(accountId: string): string {
-  let h = 0;
-  for (const ch of accountId) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
-  return String(100000000000 + (h % 900000000000)).padStart(12, "0");
-}
+import { accountNumber } from "@/engine/ids";
+
+/** The 12-digit account number shown as OwnerId. */
+export const ownerId = accountNumber;
 
 export function tags(r: Resource) {
   return r.name ? [{ Key: "Name", Value: r.name }] : undefined;
