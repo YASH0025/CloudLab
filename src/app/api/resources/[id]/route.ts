@@ -47,7 +47,10 @@ export async function DELETE(_request: NextRequest, ctx: RouteContext<"/api/reso
     const existing = await getEngine().get(caller.accountId, id);
     authorizeConsole(caller, { kind: "delete" }, existing, existing, existing.region);
     // The console deletes an Auto Scaling group together with its instances, as AWS's console does.
-    await getEngine().remove(caller.accountId, id, { force: existing.type === "auto-scaling-group" });
+    // A database deleted from the console keeps a final snapshot, the console's default.
+    const stamp = new Date().toISOString().replace(/\D/g, "").slice(0, 14);
+    const params = existing.type === "db-instance" ? { finalSnapshotIdentifier: `${existing.name.slice(0, 42).replace(/-+$/, "")}-final-${stamp}` } : {};
+    await getEngine().remove(caller.accountId, id, { force: existing.type === "auto-scaling-group", params });
     return Response.json({ deleted: id });
   });
 }

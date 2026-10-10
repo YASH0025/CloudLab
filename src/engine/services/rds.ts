@@ -223,7 +223,7 @@ const dbInstance: ResourceTypeDef = {
   malformedMessage: (id) => `DBInstance ${id} not found.`,
   apiNoun: "DB instance",
   stateErrorCode: "InvalidDBInstanceState",
-  panelAttributes: ["passwordChangedAt", "dbiResourceId"],
+  panelAttributes: ["standbySubnetId", "standbyPrivateIp", "pendingModifiedValues", "failovers", "lastFailoverAt", "arn"],
   fields: [
     identifierField("app-db", "DBInstanceIdentifier"),
     {
@@ -287,7 +287,8 @@ const dbInstance: ResourceTypeDef = {
       maxLength: 128,
       param: "MasterUserPassword",
       mutableInStates: ["available"],
-      description: "At least 8 characters, without / @ \" or spaces. Never shown again; on an existing database, leave empty to keep it.",
+      description:
+        "At least 8 characters, without / @ \" or spaces. Never shown again. Leave empty to keep the current one, or when restoring from a snapshot (it keeps the original's).",
     },
     {
       key: "dbName",

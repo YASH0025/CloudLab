@@ -19,6 +19,7 @@ export interface SimulateResponse {
 import type { ObjectInfo } from "@/engine/objects";
 import type { TargetHealth } from "@/engine/analysis/health";
 import type { LoadTestResult } from "@/engine/analysis/loadtest";
+import type { DbConnectInput, DbConnectResult } from "@/engine/analysis/dbconnect";
 
 export type { ObjectInfo };
 
@@ -113,6 +114,12 @@ export const api = {
 
   testRequests: (id: string, input: { port?: number; count?: number }) =>
     request<{ result: LoadTestResult }>(`/api/resources/${encodeURIComponent(id)}/test-requests`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+
+  dbConnect: (id: string, input: DbConnectInput) =>
+    request<{ result: DbConnectResult }>(`/api/resources/${encodeURIComponent(id)}/db-connect`, {
       method: "POST",
       body: JSON.stringify(input),
     }),

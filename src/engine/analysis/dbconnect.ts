@@ -73,6 +73,9 @@ export async function analyzeDbConnection(engine: Engine, accountId: string, db:
   const steps = result.steps.map((s): ReachabilityStep => {
     if (s.id === "state") return stateStep(db);
     if (s.id === "public-ip") return publicStep(db);
+    if (s.id === "security-group") {
+      return { ...s, title: s.title.replace(/^Target's security group|^Security group/, "Database's security group") };
+    }
     if (s.id === "return-traffic") {
       return { ...s, detail: "Security groups are stateful, so the database's replies go back automatically. Network ACLs aren't simulated yet." };
     }
@@ -99,7 +102,7 @@ const dbLink = (db: Resource) => ({ id: db.id, service: "rds", type: "db-instanc
 
 function stateStep(db: Resource): ReachabilityStep {
   if (ACCEPTING.includes(db.state ?? "")) {
-    return { id: "state", title: "Database accepts connections", status: "pass", detail: `${db.name} is ${db.state}.`, resource: dbLink(db) };
+    return { id: "state", title: "Database accepts connections", status: "pass", detail: `${db.name} is ${db.state}.` };
   }
   return {
     id: "state",

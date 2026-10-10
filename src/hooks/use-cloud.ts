@@ -10,6 +10,7 @@ import { useConsoleStore } from "@/stores/console-store";
 import { useGuideStore } from "@/stores/guide-store";
 import type { ResourceDTO } from "@/engine/types";
 import type { ReachabilityInput } from "@/engine/analysis/reachability";
+import type { DbConnectInput } from "@/engine/analysis/dbconnect";
 
 export { queryKeys };
 
@@ -18,8 +19,12 @@ function transitionInterval(items: ResourceDTO[] | undefined) {
   return items?.some((r) => r.pendingState) ? 1500 : false;
 }
 
+/** How a resource is named in messages: ARN-identified resources (load balancers, databases) by their name. */
+const shortName = (id: string, name?: string) => (id.startsWith("arn:") ? name || id.split(/[:/]/).pop() || id : id);
+
 /** Load balancing and Auto Scaling change on their own (health checks, scaling), so their pages stay live. */
 const LIVE_TYPES = new Set(["auto-scaling-group", "target-group", "load-balancer"]);
+// Databases poll only while changing state (creating, modifying, rebooting…), like other resources.
 
 /**
  * The service catalogue is static data, so it's computed in place rather than fetched.
@@ -74,6 +79,13 @@ export function useTargetHealth(id: string) {
   });
 }
 
+/** Checks a connection to a database. Errors show inline in the panel. */
+export function useDbConnect(id: string) {
+  return useMutation({
+    mutationFn: (input: DbConnectInput) => api.dbConnect(id, input).then((r) => r.result),
+  });
+}
+
 /** Sends simulated requests to a load balancer. Errors show inline in the panel. */
 export function useTestRequests(id: string) {
   return useMutation({
@@ -118,7 +130,7 @@ export function useCreateResource(service: string, type: string) {
     mutationFn: (config: Record<string, unknown>) => api.createResource({ service, type, region, config }),
     onSuccess: ({ item }) => {
       invalidate();
-      toast.success(`Created ${item.id}`);
+      toast.success(`Created ${shortName(item.id, item.name)}`);
     },
     onError,
   });
@@ -130,7 +142,7 @@ export function useUpdateResource(id: string) {
     mutationFn: (config: Record<string, unknown>) => api.updateResource(id, config),
     onSuccess: () => {
       invalidate();
-      toast.success(`Updated ${id}`);
+      toast.success(`Updated ${shortName(id)}`);
     },
     onError,
   });
@@ -142,7 +154,7 @@ export function useResourceAction() {
     mutationFn: ({ id, action }: { id: string; action: string }) => api.runAction(id, action),
     onSuccess: ({ item }) => {
       invalidate();
-      toast.success(`${item.id} is ${item.state}`);
+      toast.success(`${shortName(item.id, item.name)} is ${item.state}`);
     },
     onError,
   });
@@ -200,7 +212,7 @@ export function useDeleteResource() {
     mutationFn: (id: string) => api.deleteResource(id),
     onSuccess: ({ deleted }) => {
       invalidate();
-      toast.success(`Deleted ${deleted}`);
+      toast.success(`Deleted ${shortName(deleted)}`);
     },
     onError,
   });

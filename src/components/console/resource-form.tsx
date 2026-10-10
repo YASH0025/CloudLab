@@ -100,6 +100,7 @@ export function ResourceForm({
           control={form.control}
           errors={form.formState.errors}
           disabled={isLocked(f)}
+          editing={mode === "edit"}
           lockReason={
             isLocked(f)
               ? f.immutable
@@ -132,9 +133,11 @@ interface FieldControlProps {
   disabled?: boolean;
   lockReason?: string;
   compact?: boolean;
+  /** Editing an existing resource: secret fields start empty and mean "keep". */
+  editing?: boolean;
 }
 
-function FieldControl({ field, name, control, errors, disabled, lockReason, compact }: FieldControlProps) {
+function FieldControl({ field, name, control, errors, disabled, lockReason, compact, editing }: FieldControlProps) {
   const message = errorMessage(errors, name);
   const id = `field-${name}`;
 
@@ -241,7 +244,9 @@ function FieldControl({ field, name, control, errors, disabled, lockReason, comp
               id={id}
               aria-label={field.label}
               aria-invalid={!!message}
-              placeholder={field.placeholder}
+              type={field.secret ? "password" : undefined}
+              autoComplete={field.secret ? "new-password" : undefined}
+              placeholder={field.secret && editing ? "Leave empty to keep the current one" : field.placeholder}
               disabled={disabled}
               inputMode={field.type === "number" ? "numeric" : undefined}
               className={field.type === "cidr" ? "font-mono" : undefined}

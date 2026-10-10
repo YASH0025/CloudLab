@@ -34,7 +34,9 @@ export function useResourceCommands(typeDef: ResolvedTypeDef | undefined, onDele
         description:
           r.type === "auto-scaling-group"
             ? `${r.name} will be deleted and all of its instances terminated. (In the CLI this needs --force-delete.)`
-            : `${r.id} will be permanently removed. Resources that still depend on it will block the delete.`,
+            : r.type === "db-instance"
+              ? `${r.name} will be deleted. A final snapshot named ${r.name}-final-… is kept, so you can restore it later. (In the CLI you choose: --final-db-snapshot-identifier or --skip-final-snapshot.)`
+              : `${r.id} will be permanently removed. Resources that still depend on it will block the delete.`,
         confirmLabel: "Delete",
         onConfirm: () => del.mutate(r.id, { onSuccess: () => onDeleted?.() }),
       });
