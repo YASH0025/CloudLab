@@ -9,6 +9,7 @@ export async function GET(request: NextRequest) {
     const requested = request.nextUrl.searchParams.get("region") ?? DEFAULT_REGION;
     const region = isRegion(requested) ? requested : DEFAULT_REGION;
     const accountId = await getAccountId();
+    await getEngine().ensureDefaults(accountId, region);
     return Response.json({ advice: await advise(getEngine(), accountId, region) });
   });
 }

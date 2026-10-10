@@ -75,7 +75,9 @@ describe("tutorials", () => {
     let progress = advanceProgress(0, t0.steps.map((s) => s.passes));
     expect(progress).toBe(1);
 
-    const [table] = await engine.list(ACCOUNT, { service: "networking", type: "route-table", region: REGION });
+    const table = (await engine.list(ACCOUNT, { service: "networking", type: "route-table", region: REGION })).find(
+      (t) => ((t.config.subnetIds as string[]) ?? []).length > 0,
+    )!;
     const savedRoutes = table.config.routes;
     await engine.update(ACCOUNT, table.id, { routes: [] });
     progress = advanceProgress(progress, (await view(id)).steps.map((s) => s.passes));
@@ -85,7 +87,9 @@ describe("tutorials", () => {
     progress = advanceProgress(progress, (await view(id)).steps.map((s) => s.passes));
     expect(progress).toBe(3);
 
-    const [group] = await engine.list(ACCOUNT, { service: "networking", type: "security-group", region: REGION });
+    const group = (await engine.list(ACCOUNT, { service: "networking", type: "security-group", region: REGION })).find(
+      (g) => g.name !== "default",
+    )!;
     const savedRules = group.config.inboundRules;
     await engine.update(ACCOUNT, group.id, { inboundRules: [] });
     progress = advanceProgress(progress, (await view(id)).steps.map((s) => s.passes));

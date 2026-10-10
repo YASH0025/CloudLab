@@ -15,7 +15,7 @@ export default function ConsoleLayout({ children }: LayoutProps<"/console">) {
       <div className="flex min-w-0 flex-1 flex-col">
         <Topbar />
         <main className="flex-1 overflow-y-auto">
-          <div className="mx-auto max-w-6xl px-6 py-6">
+          <div className="mx-auto max-w-6xl px-4 py-5 sm:px-6 sm:py-6">
             <Suspense fallback={<Skeleton className="h-64" />}>{children}</Suspense>
           </div>
         </main>

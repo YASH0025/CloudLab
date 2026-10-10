@@ -2,7 +2,7 @@ import { analyzeReachability, reachabilityInput, type ReachabilityResult } from 
 import { availabilityZones } from "@/engine/catalog";
 import type { Engine } from "@/engine/engine";
 import type { Resource } from "@/engine/types";
-import { focusVpc, freeSubnetCidr, label, takeSnapshot, type SgRule, type Snapshot } from "./snapshot";
+import { effectiveRouteTable, focusVpc, freeSubnetCidr, isOwn, label, takeSnapshot, type SgRule, type Snapshot } from "./snapshot";
 import type { GuideLink, Level, TutorialInfo, TutorialView } from "./types";
 
 /**
@@ -23,8 +23,10 @@ interface Ctx {
   publicSubnet?: Resource;
   /** Internet gateway attached to the focus VPC. */
   gateway?: Resource;
-  /** A route table in the focus VPC, preferring the one the public subnet uses. */
+  /** One of the learner's own route tables in the focus VPC, preferring the one the public subnet uses. */
   table?: Resource;
+  /** The route table the instance's subnet actually uses (explicit, else the VPC's main table). */
+  liveTable?: Resource;
   /** A security group in the focus VPC, preferring one that allows HTTP. */
   group?: Resource;
   /** Newest instance in the focus VPC. */
@@ -69,15 +71,18 @@ const subnetIds = (t: Resource) => (t.config.subnetIds as string[]) ?? [];
 
 async function buildCtx(engine: Engine, accountId: string, region: string): Promise<Ctx> {
   const s = await takeSnapshot(engine, accountId, region);
-  const vpc = focusVpc(s);
+  // Tutorials teach building your own network, so the platform's default VPC is ignored.
+  const vpc = focusVpc(s, false);
   const subnets = vpc ? s.subnets.filter((x) => x.config.vpcId === vpc.id) : [];
   const publicSubnet = subnets.find((x) => x.config.mapPublicIpOnLaunch) ?? subnets[0];
   const gateway = vpc ? s.gateways.find((g) => g.config.vpcId === vpc.id) : undefined;
-  const vpcTables = vpc ? s.routeTables.filter((t) => t.config.vpcId === vpc.id) : [];
+  const vpcTables = vpc ? s.routeTables.filter((t) => t.config.vpcId === vpc.id && isOwn(t)) : [];
   const table = vpcTables.find((t) => publicSubnet && subnetIds(t).includes(publicSubnet.id)) ?? vpcTables[0];
-  const vpcGroups = vpc ? s.groups.filter((g) => g.config.vpcId === vpc.id) : [];
+  const vpcGroups = vpc ? s.groups.filter((g) => g.config.vpcId === vpc.id && isOwn(g)) : [];
   const group = vpcGroups.find(allowsHttp) ?? vpcGroups[0];
   const instance = vpc ? s.instances.find((i) => i.attributes.vpcId === vpc.id) : undefined;
+  const instanceSubnet = instance ? s.subnets.find((x) => x.id === instance.config.subnetId) : undefined;
+  const liveTable = instanceSubnet ? effectiveRouteTable(s, instanceSubnet) : undefined;
 
   let reach: Promise<ReachabilityResult | null> | null = null;
   return {
@@ -88,6 +93,7 @@ async function buildCtx(engine: Engine, accountId: string, region: string): Prom
     publicSubnet,
     gateway,
     table,
+    liveTable,
     group,
     instance,
     reach() {
@@ -373,12 +379,12 @@ const TUTORIALS: TutorialDef[] = [
         title: "Break it: remove the internet route",
         why: "One of the most common real outages: someone edits a route table and traffic can no longer find its way back to the internet.",
         instructions: (c) => [
-          `Open ${c.table ? label(c.table) : "your route table"}.`,
+          `Open ${c.liveTable ? label(c.liveTable) : "your route table"}.`,
           "In Edit settings, delete the 0.0.0.0/0 route (the bin icon) and click Save changes.",
           `Then open ${c.instance ? label(c.instance) : "your instance"} and run the HTTP reachability check: see which link turns red.`,
         ],
-        link: (c) => (c.table ? { service: "networking", type: "route-table", mode: "detail", id: c.table.id } : undefined),
-        cli: (c) => (c.table ? `aws ec2 delete-route --route-table-id ${c.table.id} --destination-cidr-block 0.0.0.0/0` : undefined),
+        link: (c) => (c.liveTable ? { service: "networking", type: "route-table", mode: "detail", id: c.liveTable.id } : undefined),
+        cli: (c) => (c.liveTable ? `aws ec2 delete-route --route-table-id ${c.liveTable.id} --destination-cidr-block 0.0.0.0/0` : undefined),
         check: (c) => failsAt(c, "route", "route-table", "gateway"),
       },
       {
@@ -386,14 +392,14 @@ const TUTORIALS: TutorialDef[] = [
         title: "Fix it: put the route back",
         why: "The reachability check said 'no route back to the source'. The fix is to restore the route to the internet gateway.",
         instructions: (c) => [
-          `Open ${c.table ? label(c.table) : "your route table"}.`,
+          `Open ${c.liveTable ? label(c.liveTable) : "your route table"}.`,
           `Add the route 0.0.0.0/0 → ${c.gateway?.id ?? "your internet gateway"} and save.`,
           "Run the reachability check again: it should be green.",
         ],
-        link: (c) => (c.table ? { service: "networking", type: "route-table", mode: "detail", id: c.table.id } : undefined),
+        link: (c) => (c.liveTable ? { service: "networking", type: "route-table", mode: "detail", id: c.liveTable.id } : undefined),
         cli: (c) =>
-          c.table && c.gateway
-            ? `aws ec2 create-route --route-table-id ${c.table.id} --destination-cidr-block 0.0.0.0/0 --gateway-id ${c.gateway.id}`
+          c.liveTable && c.gateway
+            ? `aws ec2 create-route --route-table-id ${c.liveTable.id} --destination-cidr-block 0.0.0.0/0 --gateway-id ${c.gateway.id}`
             : undefined,
         check: reachable,
       },

@@ -17,10 +17,37 @@ export interface ResourceStore {
   insert(resource: Resource): Promise<void>;
   update(resource: Resource): Promise<void>;
   delete(accountId: string, id: string): Promise<void>;
+  /** Deletes every resource the account has in a region (used by "Reset my lab"). */
+  deleteRegion(accountId: string, region: string): Promise<number>;
+  /** Claims a one-off key; true only for the first caller. Guards one-time setup such as default VPCs. */
+  tryClaim(key: string): Promise<boolean>;
+  releaseClaim(key: string): Promise<void>;
 }
 
 export class MemoryStore implements ResourceStore {
   private items = new Map<string, Resource>();
+  private claims = new Set<string>();
+
+  async deleteRegion(accountId: string, region: string) {
+    let n = 0;
+    for (const [id, r] of this.items) {
+      if (r.accountId === accountId && r.region === region) {
+        this.items.delete(id);
+        n++;
+      }
+    }
+    return n;
+  }
+
+  async tryClaim(key: string) {
+    if (this.claims.has(key)) return false;
+    this.claims.add(key);
+    return true;
+  }
+
+  async releaseClaim(key: string) {
+    this.claims.delete(key);
+  }
 
   async get(accountId: string, id: string) {
     const r = this.items.get(id);

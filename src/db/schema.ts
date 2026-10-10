@@ -39,3 +39,9 @@ export const resources = pgTable(
 );
 
 export type ResourceRow = typeof resources.$inferSelect;
+
+/** One-off keys, e.g. "this account's default VPC in us-east-1 has been created". */
+export const claims = pgTable("claims", {
+  key: text("key").primaryKey(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});

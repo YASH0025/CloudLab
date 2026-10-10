@@ -107,6 +107,31 @@ export interface ColumnDef {
   /** Dot path into the resource DTO, e.g. "config.cidrBlock" or "attributes.privateIp". */
   path: string;
   mono?: boolean;
+  /** Show Yes/No, treating a missing value as No. */
+  boolean?: boolean;
+}
+
+/**
+ * Markers for resources the platform creates itself, kept in `attributes.system`
+ * and preserved across updates: default VPCs and subnets, a VPC's main route
+ * table and default security group.
+ */
+export interface SystemInfo {
+  isDefault?: boolean;
+  defaultForAz?: boolean;
+  main?: boolean;
+  /** Deleted together with this resource (a VPC owns its main route table and default security group). */
+  ownedBy?: string;
+}
+
+export function systemOf(r: { attributes: Record<string, unknown> }): SystemInfo {
+  return (r.attributes.system as SystemInfo | undefined) ?? {};
+}
+
+/** What `afterCreate` hooks can do: create and update resources as the platform. */
+export interface SystemApi {
+  create(service: string, type: string, config: Record<string, unknown>, system?: SystemInfo): Promise<Resource>;
+  update(id: string, patch: Record<string, unknown>): Promise<Resource>;
 }
 
 /** What a resource looks like to the rest of the app (API, UI, engine hooks). */
@@ -174,6 +199,8 @@ export interface ResourceTypeDef {
    * the generic mapping can't express (e.g. unknown AMI → InvalidAMIID.NotFound).
    */
   invalidValue?: (input: { field: FieldDef; value: unknown; region: string }) => EngineError | undefined;
+  /** Runs after a resource is created, e.g. a VPC creating its main route table. */
+  afterCreate?: (input: { resource: Resource; system: SystemApi }) => Promise<void>;
   /** Compute platform-assigned attributes (IPs, ARNs, counts...). */
   derive?: (input: {
     id: string;
@@ -196,7 +223,7 @@ export interface ServiceDef {
 /** A resource type definition with region-dependent options filled in, safe to send to the browser. */
 export type ResolvedTypeDef = Omit<
   ResourceTypeDef,
-  "validate" | "derive" | "invalidValue" | "dependencyMessage" | "canDelete"
+  "validate" | "derive" | "invalidValue" | "dependencyMessage" | "canDelete" | "afterCreate"
 >;
 
 export interface ResolvedServiceDef extends Omit<ServiceDef, "types"> {

@@ -8,7 +8,7 @@ Nothing here provisions real infrastructure. Every resource is a record in a dat
 
 | Service | Modelled on | Resource types |
 | --- | --- | --- |
-| Virtual Network | VPC | VPCs, subnets, internet gateways, route tables, security groups |
+| Virtual Network | VPC | VPCs (incl. default VPCs), subnets, internet gateways, route tables (incl. main tables), security groups (incl. default groups and group-to-group rules) |
 | Compute | EC2 | Instances (launch, stop, start, reboot, terminate) |
 | Object Storage | S3 | Buckets |
 
@@ -47,15 +47,23 @@ The console has an in-browser terminal (xterm.js) that runs a simulated AWS CLI 
 
 Supported commands:
 
-- `aws ec2`: create/describe/delete VPCs and subnets, `modify-subnet-attribute`, internet gateways (create, attach, detach, describe, delete), route tables (create, `create-route`, `delete-route`, associate, disassociate, describe, delete), security groups (create, authorize/revoke ingress, describe, delete), instances (`run-instances`, describe, start, stop, reboot, terminate, `modify-instance-attribute`), `describe-regions`, `describe-availability-zones`
+- `aws ec2`: create/describe/delete VPCs and subnets, `create-default-vpc`, `modify-subnet-attribute`, internet gateways (create, attach, detach, describe, delete), route tables (create, `create-route`, `delete-route`, associate, disassociate, describe, delete), security groups (create, authorize/revoke ingress with `--cidr` or `--source-group`, describe, delete), instances (`run-instances`, describe, start, stop, reboot, terminate, `modify-instance-attribute`), `describe-regions`, `describe-availability-zones`
 - `aws s3`: `mb`, `rb`, `ls`
 - `aws s3api`: `create-bucket`, `list-buckets`, `delete-bucket`, `put-bucket-versioning`, `get-bucket-versioning`
 - `aws sts get-caller-identity`
-- Global `--region`, `--filters` (vpc-id, subnet-id, instance-state-name, availability-zone, tag:Name, group-name) and `--tag-specifications` for Name tags
+- Global `--region`, `--filters` (vpc-id, subnet-id, instance-state-name, availability-zone, tag:Name, group-name, isDefault, default-for-az, association.main, attachment.vpc-id) and `--tag-specifications` for Name tags
 
 ### Reachability check
 
 Every instance page has a **reachability check**: pick HTTP, HTTPS, SSH, ping or any protocol/port/source, and CloudLab walks the same chain a real network would (instance state → public IP → subnet route table → route → internet gateway → security group rules). Each link passes or fails with an explanation and, when it fails, the exact fix. Network ACLs are not simulated yet.
+
+## Default VPCs, like a real account
+
+The first time an account uses a region, it gets a **default VPC** just like a new AWS account: `172.31.0.0/16`, a `/20` default subnet in every availability zone with public IPs on, an attached internet gateway, and a `0.0.0.0/0` route in the main route table. `aws ec2 run-instances --image-id …` works with no subnet or security group, exactly as in AWS. Deleting the default VPC is allowed, and `aws ec2 create-default-vpc` brings it back.
+
+Every VPC also gets a **main route table** and a **`default` security group** (members can reach each other; all outbound allowed). Subnets without an explicit association use the main route table, and the reachability check follows that. Both are protected (`DependencyViolation`, `CannotDelete`) and are deleted together with their VPC. Security group rules can use **another security group as the source** (`--source-group sg-…`), which blocks deleting the referenced group while in use.
+
+**Reset this region** on the dashboard deletes everything in the region, recreates the default VPC and restarts tutorial progress.
 
 ## Errors match AWS
 
@@ -125,7 +133,7 @@ Open http://localhost:3000. Without `DATABASE_URL`, an in-memory store is used a
 
 1. Create a free project at neon.tech and copy its connection string.
 2. `cp .env.example .env` and paste it as `DATABASE_URL`.
-3. Create the table: `npm run db:push`
+3. Create the tables: `npm run db:push`
 4. `npm run dev`
 
 ### Deploying to Vercel
@@ -161,6 +169,7 @@ An in-memory store is not shared between serverless instances, so a database is 
 | DELETE | `/api/resources/:id` | – |
 | POST | `/api/resources/:id/actions` | `{ action }` |
 | POST | `/api/resources/:id/reachability` | `{ protocol, port?, source? }` |
+| POST | `/api/lab/reset` | `{ region }` → `{ removed }` |
 | GET | `/api/guide/tutorials` | – → `{ tutorials }` |
 | GET | `/api/guide/tutorials/:id?region=` | – → `{ tutorial }` with each step's `passes` |
 | GET | `/api/guide?region=` | – → `{ advice: { level, next, more, milestones } }` |

@@ -3,7 +3,7 @@ import { drizzle } from "drizzle-orm/neon-http";
 import { neon } from "@neondatabase/serverless";
 import { MemoryStore, type ListFilter, type ResourceStore } from "@/engine/store";
 import type { Resource } from "@/engine/types";
-import { resources, type ResourceRow } from "./schema";
+import { claims, resources, type ResourceRow } from "./schema";
 
 function toResource(row: ResourceRow): Resource {
   return {
@@ -99,6 +99,23 @@ export class PostgresStore implements ResourceStore {
 
   async delete(accountId: string, id: string) {
     await this.db.delete(resources).where(and(eq(resources.accountId, accountId), eq(resources.id, id)));
+  }
+
+  async deleteRegion(accountId: string, region: string) {
+    const rows = await this.db
+      .delete(resources)
+      .where(and(eq(resources.accountId, accountId), eq(resources.region, region)))
+      .returning({ id: resources.id });
+    return rows.length;
+  }
+
+  async tryClaim(key: string) {
+    const rows = await this.db.insert(claims).values({ key }).onConflictDoNothing().returning({ key: claims.key });
+    return rows.length > 0;
+  }
+
+  async releaseClaim(key: string) {
+    await this.db.delete(claims).where(eq(claims.key, key));
   }
 }
 

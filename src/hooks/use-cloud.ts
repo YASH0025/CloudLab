@@ -3,30 +3,34 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { api, ApiError } from "@/lib/api-client";
+import { queryKeys } from "@/lib/query-keys";
+import { REGIONS } from "@/engine/catalog";
+import { resolveServices } from "@/engine/registry";
 import { useConsoleStore } from "@/stores/console-store";
 import { useGuideStore } from "@/stores/guide-store";
 import type { ResourceDTO } from "@/engine/types";
 import type { ReachabilityInput } from "@/engine/analysis/reachability";
 
-export const queryKeys = {
-  services: (region: string) => ["services", region] as const,
-  resources: (filter: { service?: string; type?: string; region?: string }) => ["resources", filter] as const,
-  resource: (id: string) => ["resource", id] as const,
-  guide: (region: string) => ["guide", region] as const,
-  tutorial: (id: string, region: string) => ["guide", "tutorial", id, region] as const,
-};
+export { queryKeys };
 
 /** Poll quickly while anything is mid-transition (pending, stopping...), otherwise not at all. */
 function transitionInterval(items: ResourceDTO[] | undefined) {
   return items?.some((r) => r.pendingState) ? 1500 : false;
 }
 
+/**
+ * The service catalogue is static data, so it's computed in place rather than fetched.
+ * That way the server and the browser render exactly the same thing on first load.
+ */
 export function useServices() {
   const region = useConsoleStore((s) => s.region);
   return useQuery({
     queryKey: queryKeys.services(region),
     queryFn: () => api.services(region),
-    staleTime: Infinity,
+    initialData: () => ({ region, regions: REGIONS, services: resolveServices(region) }),
+    // Never stale, so TanStack Query doesn't need the clock (prerendering can't read it).
+    initialDataUpdatedAt: 0,
+    staleTime: "static",
   });
 }
 
@@ -142,6 +146,21 @@ export function useTutorial(id: string | null) {
 export function useReachability(id: string) {
   return useMutation({
     mutationFn: (input: ReachabilityInput) => api.checkReachability(id, input).then((r) => r.result),
+  });
+}
+
+/** Deletes everything in the current region. The default VPC is recreated, and tutorial progress starts over. */
+export function useResetLab() {
+  const region = useConsoleStore((s) => s.region);
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.resetLab(region),
+    onSuccess: ({ removed }) => {
+      qc.invalidateQueries();
+      useGuideStore.setState({ progress: {}, activeTutorial: null, lastError: null });
+      toast.success(`Lab reset: removed ${removed} resource${removed === 1 ? "" : "s"} in ${region}`);
+    },
+    onError,
   });
 }
 

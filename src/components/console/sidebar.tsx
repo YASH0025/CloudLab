@@ -1,9 +1,20 @@
 "use client";
 
-import { BoxIcon, DatabaseIcon, LayoutDashboardIcon, NetworkIcon, ServerIcon, TerminalIcon } from "lucide-react";
+import * as DialogPrimitive from "@radix-ui/react-dialog";
+import {
+  BoxIcon,
+  DatabaseIcon,
+  LayoutDashboardIcon,
+  MenuIcon,
+  NetworkIcon,
+  ServerIcon,
+  TerminalIcon,
+  XIcon,
+} from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import type { ComponentType } from "react";
+import { useState, type ComponentType } from "react";
+import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { site } from "@/config/site";
 import { useServices } from "@/hooks/use-cloud";
@@ -16,19 +27,24 @@ const icons: Record<string, ComponentType<{ className?: string }>> = {
   Storage: DatabaseIcon,
 };
 
-export function Sidebar() {
+/** The navigation itself, shared by the desktop sidebar and the mobile menu. */
+function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname();
   const { data, isLoading } = useServices();
 
   return (
-    <aside className="hidden w-60 shrink-0 flex-col bg-sidebar text-sidebar-foreground md:flex">
-      <Link href="/" className="flex h-14 items-center gap-2 border-b border-white/10 px-4 font-semibold">
+    <>
+      <Link
+        href="/"
+        onClick={onNavigate}
+        className="flex h-14 shrink-0 items-center gap-2 border-b border-white/10 px-4 font-semibold"
+      >
         <span className="flex size-7 items-center justify-center rounded-md bg-primary text-primary-foreground">
           <BoxIcon className="size-4" />
         </span>
         {site.name}
       </Link>
-      <nav className="flex-1 overflow-y-auto px-2 py-3 text-sm">
+      <nav className="flex-1 overflow-y-auto px-2 py-3 text-sm" onClick={(e) => (e.target as HTMLElement).closest("a") && onNavigate?.()}>
         <Link
           href={routes.console()}
           className={cn(
@@ -83,6 +99,46 @@ export function Sidebar() {
       <p className="border-t border-white/10 px-4 py-3 text-xs text-sidebar-muted">
         Everything here is simulated. Nothing is billed.
       </p>
+    </>
+  );
+}
+
+export function Sidebar() {
+  return (
+    <aside className="hidden w-60 shrink-0 flex-col bg-sidebar text-sidebar-foreground md:flex">
+      <SidebarContent />
     </aside>
+  );
+}
+
+/** On small screens the sidebar becomes a slide-in menu opened from the top bar. */
+export function MobileNav() {
+  // Closed by SidebarContent's onNavigate whenever a link is followed.
+  const [open, setOpen] = useState(false);
+
+  return (
+    <DialogPrimitive.Root open={open} onOpenChange={setOpen}>
+      <DialogPrimitive.Trigger asChild>
+        <Button variant="ghost" size="icon" className="md:hidden" aria-label="Open menu">
+          <MenuIcon />
+        </Button>
+      </DialogPrimitive.Trigger>
+      <DialogPrimitive.Portal>
+        <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-black/50 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 md:hidden" />
+        <DialogPrimitive.Content
+          aria-describedby={undefined}
+          className="fixed inset-y-0 left-0 z-50 flex w-72 max-w-[85vw] flex-col bg-sidebar text-sidebar-foreground shadow-xl data-[state=open]:animate-in data-[state=open]:slide-in-from-left data-[state=closed]:animate-out data-[state=closed]:slide-out-to-left md:hidden"
+        >
+          <DialogPrimitive.Title className="sr-only">Navigation</DialogPrimitive.Title>
+          <DialogPrimitive.Close
+            className="absolute top-4 right-3 rounded-sm p-0.5 opacity-70 hover:opacity-100"
+            aria-label="Close menu"
+          >
+            <XIcon className="size-4" />
+          </DialogPrimitive.Close>
+          <SidebarContent onNavigate={() => setOpen(false)} />
+        </DialogPrimitive.Content>
+      </DialogPrimitive.Portal>
+    </DialogPrimitive.Root>
   );
 }

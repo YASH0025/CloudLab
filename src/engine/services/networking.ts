@@ -1,7 +1,7 @@
 import { cidrContains, cidrOverlaps, parseCidr, usableHosts } from "../cidr";
 import { availabilityZones } from "../catalog";
 import { EngineError } from "../errors";
-import type { FieldDef, ResourceTypeDef, ServiceDef } from "../types";
+import { systemOf, type FieldDef, type ResourceTypeDef, type ServiceDef } from "../types";
 import { internetGateway, routeTable } from "./routing";
 
 const nameField = (label: string, required = false): FieldDef => ({
@@ -46,9 +46,22 @@ const vpc: ResourceTypeDef = {
   ],
   columns: [
     { label: "CIDR", path: "config.cidrBlock", mono: true },
+    { label: "Default VPC", path: "attributes.system.isDefault", boolean: true },
     { label: "DNS hostnames", path: "config.enableDnsHostnames" },
   ],
   lifecycle: { create: { state: "pending", settlesTo: "available", afterMs: 1500 } },
+  /** Like the real thing, every VPC comes with a main route table and a "default" security group. */
+  async afterCreate({ resource, system }) {
+    await system.create("networking", "route-table", { vpcId: resource.id }, { main: true, ownedBy: resource.id });
+    const sg = await system.create(
+      "networking",
+      "security-group",
+      { name: "default", description: "default VPC security group", vpcId: resource.id },
+      { isDefault: true, ownedBy: resource.id },
+    );
+    // Members of the default group can reach each other on anything.
+    await system.update(sg.id, { inboundRules: [{ protocol: "all", sourceGroupId: sg.id }] });
+  },
 };
 
 const subnet: ResourceTypeDef = {
@@ -102,6 +115,7 @@ const subnet: ResourceTypeDef = {
     { label: "VPC", path: "config.vpcId", mono: true },
     { label: "CIDR", path: "config.cidrBlock", mono: true },
     { label: "AZ", path: "config.availabilityZone" },
+    { label: "Default for AZ", path: "attributes.system.defaultForAz", boolean: true },
     { label: "Usable IPs", path: "attributes.availableIpCount" },
   ],
   lifecycle: { create: { state: "available" } },
@@ -154,26 +168,49 @@ const ruleItem: FieldDef[] = [
   { key: "toPort", label: "To port", type: "number", min: 0, max: 65535, placeholder: "22" },
   {
     key: "cidr",
-    label: "Source / destination",
+    label: "Source / destination CIDR",
     type: "cidr",
-    required: true,
     prefix: { min: 0, max: 32 },
     placeholder: "0.0.0.0/0",
+  },
+  {
+    key: "sourceGroupId",
+    label: "…or security group",
+    type: "ref",
+    ref: { service: "networking", type: "security-group" },
+    description: "Allow traffic from (or to) instances in another security group instead of an address range.",
   },
   { key: "description", label: "Description", type: "string", maxLength: 255 },
 ];
 
+interface SgRuleIn {
+  sourceGroupId?: string;
+}
+
 function checkRules(rules: unknown, direction: string) {
   if (!Array.isArray(rules)) return;
+  const key = direction === "Inbound" ? "inboundRules" : "outboundRules";
   rules.forEach((rule: Record<string, unknown>, index) => {
     const n = index + 1;
+    const hasCidr = typeof rule.cidr === "string" && rule.cidr !== "";
+    const hasGroup = typeof rule.sourceGroupId === "string" && rule.sourceGroupId !== "";
+    if (hasCidr === hasGroup) {
+      throw new EngineError(
+        "InvalidParameterValue",
+        hasCidr
+          ? "A rule can have a CIDR range or a security group as its source, not both. Add them as two rules."
+          : "Invalid value for IpPermissions. A rule must specify a CIDR range or a security group.",
+        400,
+        [{ field: `${key}.${index}.cidr`, message: `${direction} rule ${n}: enter a CIDR or pick a security group.` }],
+      );
+    }
     if (rule.protocol === "tcp" || rule.protocol === "udp") {
       if (rule.fromPort === undefined || rule.toPort === undefined) {
         throw new EngineError(
           "InvalidParameterValue",
           "Invalid value for portRange. Must specify both from and to ports with TCP/UDP.",
           400,
-          [{ field: `${direction === "Inbound" ? "inboundRules" : "outboundRules"}.${index}.fromPort`, message: `${direction} rule ${n}: TCP/UDP rules need a port range.` }],
+          [{ field: `${key}.${index}.fromPort`, message: `${direction} rule ${n}: TCP/UDP rules need a port range.` }],
         );
       }
       if ((rule.fromPort as number) > (rule.toPort as number)) {
@@ -196,6 +233,10 @@ const securityGroup: ResourceTypeDef = {
   notFoundCode: "InvalidGroup.NotFound",
   apiNoun: "security group",
   dependencyMessage: (id) => `resource ${id} has a dependent object`,
+  canDelete: (sg) =>
+    systemOf(sg).isDefault
+      ? new EngineError("CannotDelete", `the specified group: "${sg.id}" name: "default" cannot be deleted by a user`)
+      : undefined,
   fields: [
     {
       key: "name",
@@ -253,6 +294,15 @@ const securityGroup: ResourceTypeDef = {
   async validate({ config, existing, ctx }) {
     checkRules(config.inboundRules, "Inbound");
     checkRules(config.outboundRules, "Outbound");
+    // A rule can only name a security group from the same VPC.
+    const rules = [...((config.inboundRules as SgRuleIn[]) ?? []), ...((config.outboundRules as SgRuleIn[]) ?? [])];
+    for (const rule of rules) {
+      if (!rule.sourceGroupId || rule.sourceGroupId === existing?.id) continue;
+      const other = await ctx.get(rule.sourceGroupId);
+      if (other && other.config.vpcId !== config.vpcId) {
+        throw new EngineError("InvalidGroup.NotFound", "You have specified two resources that belong to different networks.");
+      }
+    }
     const groups = await ctx.list("networking", "security-group");
     const duplicate = groups.find(
       (g) => g.id !== existing?.id && g.config.vpcId === config.vpcId && g.name === config.name,

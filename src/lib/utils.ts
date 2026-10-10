@@ -20,3 +20,14 @@ export function formatValue(value: unknown): string {
   if (typeof value === "object") return JSON.stringify(value);
   return String(value);
 }
+
+/**
+ * Lower-cases a label for use mid-sentence while keeping acronyms:
+ * "Security group" → "security group", "VPC" → "VPC", "VPCs" → "VPCs".
+ */
+export function inSentence(label: string): string {
+  return label
+    .split(" ")
+    .map((word) => (/^[A-Z0-9]{2,}s?$/.test(word) ? word : word.toLowerCase()))
+    .join(" ");
+}

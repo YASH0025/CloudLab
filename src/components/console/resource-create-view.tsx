@@ -9,6 +9,7 @@ import { useCreateResource, useTypeDef } from "@/hooks/use-cloud";
 import { routes } from "@/lib/routes";
 import { useConsoleStore } from "@/stores/console-store";
 import { ResourceForm } from "./resource-form";
+import { inSentence } from "@/lib/utils";
 
 export function ResourceCreateView() {
   const { service, type } = useParams<{ service: string; type: string }>();
@@ -37,7 +38,7 @@ export function ResourceCreateView() {
         >
           <ChevronLeftIcon className="size-4" /> {typeDef.pluralLabel}
         </Link>
-        <h1 className="mt-1 text-2xl font-semibold tracking-tight">Create {typeDef.label.toLowerCase()}</h1>
+        <h1 className="mt-1 text-2xl font-semibold tracking-tight">Create {inSentence(typeDef.label)}</h1>
         <p className="mt-1 text-sm text-muted-foreground">
           {typeDef.description} Region: <span className="font-mono">{region}</span>
         </p>
@@ -50,7 +51,7 @@ export function ResourceCreateView() {
             initialValues={prefill}
             fields={typeDef.fields}
             mode="create"
-            submitLabel={`Create ${typeDef.label.toLowerCase()}`}
+            submitLabel={`Create ${inSentence(typeDef.label)}`}
             pending={create.isPending}
             error={create.error}
             onCancel={() => router.push(routes.list(service, type))}

@@ -1,7 +1,7 @@
 import { REGIONS, availabilityZones } from "@/engine/catalog";
 import type { Engine } from "@/engine/engine";
 import { EngineError } from "@/engine/errors";
-import type { Resource } from "@/engine/types";
+import { systemOf, type Resource } from "@/engine/types";
 import { parseShorthand, UsageError } from "./parse";
 import * as present from "./present";
 
@@ -100,6 +100,11 @@ function applyFilters(args: Args, items: Resource[]): Resource[] {
       if (name === "availability-zone") return r.config.availabilityZone ?? r.attributes.availabilityZone;
       if (name === "tag:Name") return r.name;
       if (name === "group-name") return r.config.name;
+      if (name === "isDefault" || name === "is-default") return String(systemOf(r).isDefault === true);
+      if (name === "default-for-az" || name === "defaultForAz") return String(systemOf(r).defaultForAz === true);
+      if (name === "association.main") return String(systemOf(r).main === true);
+      if (name === "internet-gateway-id") return r.id;
+      if (name === "attachment.vpc-id") return r.config.vpcId;
       throw new EngineError("InvalidParameterValue", `The filter '${name}' is invalid`);
     };
     return acc.filter((r) => values.includes(String(pick(r))));
@@ -120,7 +125,8 @@ interface Rule {
   protocol: string;
   fromPort?: number;
   toPort?: number;
-  cidr: string;
+  cidr?: string;
+  sourceGroupId?: string;
   description?: string;
 }
 
@@ -129,10 +135,16 @@ function ruleFromArgs(args: Args): Rule {
   let protocol = args.required("protocol").toLowerCase();
   if (protocol === "-1") protocol = "all";
   if (!["tcp", "udp", "icmp", "all"].includes(protocol)) {
-    throw new EngineError("InvalidParameterValue", `Invalid value '${protocol}' for IP protocol.`);
+    throw new EngineError("InvalidParameterValue", `Invalid value '${protocol}' for IP protocol. Unknown protocol.`);
   }
-  const cidr = args.one("cidr") ?? "0.0.0.0/0";
-  if (protocol !== "tcp" && protocol !== "udp") return { protocol, cidr };
+  const cidr = args.one("cidr");
+  const sourceGroupId = args.one("source-group");
+  if (cidr && sourceGroupId) throw new UsageError("--cidr and --source-group cannot be used together; add them as two rules");
+  if (!cidr && !sourceGroupId) {
+    throw new EngineError("MissingParameter", "Either --cidr or --source-group must be specified.");
+  }
+  const source = cidr ? { cidr } : { sourceGroupId };
+  if (protocol !== "tcp" && protocol !== "udp") return { protocol, ...source };
   const port = args.required("port");
   const [from, to = from] = port.split("-");
   const fromPort = Number(from);
@@ -140,11 +152,30 @@ function ruleFromArgs(args: Args): Rule {
   if (!Number.isInteger(fromPort) || !Number.isInteger(toPort)) {
     throw new EngineError("InvalidParameterValue", `Invalid value '${port}' for portRange. Must specify both from and to ports with TCP/UDP.`);
   }
-  return { protocol, fromPort, toPort, cidr };
+  return { protocol, fromPort, toPort, ...source };
 }
 
 const sameRule = (a: Rule, b: Rule) =>
-  a.protocol === b.protocol && a.cidr === b.cidr && (a.fromPort ?? -1) === (b.fromPort ?? -1) && (a.toPort ?? -1) === (b.toPort ?? -1);
+  a.protocol === b.protocol &&
+  (a.cidr ?? "") === (b.cidr ?? "") &&
+  (a.sourceGroupId ?? "") === (b.sourceGroupId ?? "") &&
+  (a.fromPort ?? -1) === (b.fromPort ?? -1) &&
+  (a.toPort ?? -1) === (b.toPort ?? -1);
+
+/** The default VPC's subnet in the first availability zone, used when no subnet is given. */
+async function defaultSubnet(ctx: CliContext): Promise<Resource | undefined> {
+  const vpc = await ctx.engine.defaultVpc(ctx.accountId, ctx.region);
+  if (!vpc) return undefined;
+  const subnets = (await listOf(ctx, "networking", "subnet")).filter(
+    (s) => s.config.vpcId === vpc.id && systemOf(s).defaultForAz,
+  );
+  return subnets.sort((a, b) => String(a.config.availabilityZone).localeCompare(String(b.config.availabilityZone)))[0];
+}
+
+/** A VPC's "default" security group. */
+async function defaultGroup(ctx: CliContext, vpcId: string): Promise<Resource | undefined> {
+  return (await listOf(ctx, "networking", "security-group")).find((g) => g.config.vpcId === vpcId && systemOf(g).isDefault);
+}
 
 /** Runs a lifecycle action on several instances and reports state changes like the real API. */
 async function instanceAction(ctx: CliContext, args: Args, action: string) {
@@ -249,6 +280,17 @@ export const COMMANDS: Command[] = [
     async run(args, ctx) {
       const items = await describe(ctx, args, { service: "networking", type: "vpc", idsOption: "vpc-ids" });
       return { Vpcs: items.map((r) => present.vpc(r, pctx(ctx))) };
+    },
+  }),
+  cmd({
+    service: "ec2",
+    operation: "create-default-vpc",
+    apiName: "CreateDefaultVpc",
+    summary: "Recreate the region's default VPC",
+    mutates: true,
+    async run(_args, ctx) {
+      const r = await ctx.engine.createDefaultVpc(ctx.accountId, ctx.region);
+      return { Vpc: present.vpc(r, pctx(ctx)) };
     },
   }),
   cmd({
@@ -512,10 +554,11 @@ export const COMMANDS: Command[] = [
     operation: "create-security-group",
     apiName: "CreateSecurityGroup",
     summary: "Create a security group",
-    usage: "--group-name <name> --description <text> --vpc-id <id>",
+    usage: "--group-name <name> --description <text> [--vpc-id <id>]",
     mutates: true,
     async run(args, ctx) {
-      const vpcId = args.one("vpc-id");
+      // Without --vpc-id the group goes into the default VPC, if there is one.
+      const vpcId = args.one("vpc-id") ?? (await ctx.engine.defaultVpc(ctx.accountId, ctx.region))?.id;
       if (!vpcId) {
         throw new EngineError("VPCIdNotSpecified", "No default VPC for this user");
       }
@@ -533,7 +576,7 @@ export const COMMANDS: Command[] = [
     operation: "authorize-security-group-ingress",
     apiName: "AuthorizeSecurityGroupIngress",
     summary: "Allow inbound traffic",
-    usage: "--group-id <id> --protocol tcp|udp|icmp|all --port <port|from-to> --cidr <cidr>",
+    usage: "--group-id <id> --protocol tcp|udp|icmp|all --port <port|from-to> (--cidr <cidr> | --source-group <sg-id>)",
     mutates: true,
     async run(args, ctx) {
       const sg = await load(ctx, "networking", "security-group", args.required("group-id"));
@@ -542,7 +585,7 @@ export const COMMANDS: Command[] = [
       if (rules.some((r) => sameRule(r, rule))) {
         throw new EngineError(
           "InvalidPermission.Duplicate",
-          `the specified rule "peer: ${rule.cidr}, ${rule.protocol === "all" ? "ALL" : rule.protocol.toUpperCase()}, ${rule.fromPort === undefined ? "ALL PORTS" : `from port: ${rule.fromPort}, to port: ${rule.toPort}`}, ALLOW" already exists`,
+          `the specified rule "peer: ${rule.cidr ?? rule.sourceGroupId}, ${rule.protocol === "all" ? "ALL" : rule.protocol.toUpperCase()}, ${rule.fromPort === undefined ? "ALL PORTS" : `from port: ${rule.fromPort}, to port: ${rule.toPort}`}, ALLOW" already exists`,
         );
       }
       await ctx.engine.update(ctx.accountId, sg.id, { inboundRules: [...rules, rule] });
@@ -554,7 +597,7 @@ export const COMMANDS: Command[] = [
     operation: "revoke-security-group-ingress",
     apiName: "RevokeSecurityGroupIngress",
     summary: "Remove an inbound rule",
-    usage: "--group-id <id> --protocol tcp|udp|icmp|all --port <port|from-to> --cidr <cidr>",
+    usage: "--group-id <id> --protocol tcp|udp|icmp|all --port <port|from-to> (--cidr <cidr> | --source-group <sg-id>)",
     mutates: true,
     async run(args, ctx) {
       const sg = await load(ctx, "networking", "security-group", args.required("group-id"));
@@ -603,24 +646,24 @@ export const COMMANDS: Command[] = [
     apiName: "RunInstances",
     summary: "Launch instances",
     usage:
-      "--image-id <ami> --subnet-id <id> --security-group-ids <id> ... [--instance-type t3.micro] [--count 1] [--key-name <name>] [--associate-public-ip-address | --no-associate-public-ip-address]",
+      "--image-id <ami> [--subnet-id <id>] [--security-group-ids <id> ...] [--instance-type t3.micro] [--count 1] [--key-name <name>] [--associate-public-ip-address | --no-associate-public-ip-address]",
     mutates: true,
     async run(args, ctx) {
       const imageId = args.one("image-id");
-      const subnetId = args.one("subnet-id");
+      // Like the real API: no subnet means the default VPC's default subnet,
+      // and no security groups means the VPC's "default" group.
+      const subnetId = args.one("subnet-id") ?? (await defaultSubnet(ctx))?.id;
       if (!subnetId) {
         throw new EngineError(
           "VPCIdNotSpecified",
           "No default VPC for this user. GroupName is only supported for EC2-Classic and default VPC.",
         );
       }
-      const groups = args.list("security-group-ids");
+      let groups = args.list("security-group-ids");
       if (groups.length === 0) {
-        // The real API would fall back to the VPC's default security group; CloudLab doesn't create those yet.
-        throw new EngineError(
-          "MissingParameter",
-          "The request must contain the parameter SecurityGroupIds (CloudLab doesn't simulate default security groups yet).",
-        );
+        const subnet = await load(ctx, "networking", "subnet", subnetId);
+        const fallback = await defaultGroup(ctx, subnet.config.vpcId as string);
+        if (fallback) groups = [fallback.id];
       }
       const count = Number(args.one("count") ?? "1");
       if (!Number.isInteger(count) || count < 1 || count > 10) {

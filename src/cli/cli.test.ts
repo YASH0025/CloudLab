@@ -150,3 +150,51 @@ describe("commands", () => {
     expect((await run("aws ec2 describe-vpcs --region mars-1")).exitCode).toBe(255);
   });
 });
+
+describe("default VPC in the CLI", () => {
+  it("launches into the default VPC when no subnet or group is given", async () => {
+    const vpcs = await json("aws ec2 describe-vpcs --filters Name=isDefault,Values=true");
+    expect(vpcs.Vpcs).toHaveLength(1);
+    expect(vpcs.Vpcs[0]).toMatchObject({ CidrBlock: "172.31.0.0/16", IsDefault: true });
+    const res = await json("aws ec2 run-instances --image-id ami-0lab2023linux0001");
+    const inst = res.Instances[0];
+    expect(inst.VpcId).toBe(vpcs.Vpcs[0].VpcId);
+    expect(inst.PublicIpAddress).toMatch(/^203\.0\.113\./);
+    expect(inst.SecurityGroups[0].GroupName).toBe("default");
+    const subnets = await json("aws ec2 describe-subnets --filters Name=default-for-az,Values=true");
+    expect(subnets.Subnets).toHaveLength(3);
+  });
+
+  it("shows the main route table and refuses to delete the default security group", async () => {
+    const tables = await json("aws ec2 describe-route-tables --filters Name=association.main,Values=true");
+    expect(tables.RouteTables[0].Associations[0].Main).toBe(true);
+    const groups = await json("aws ec2 describe-security-groups --filters Name=group-name,Values=default");
+    const sg = groups.SecurityGroups[0];
+    expect(sg.IpPermissions[0].UserIdGroupPairs[0].GroupId).toBe(sg.GroupId);
+    const r = await run(`aws ec2 delete-security-group --group-id ${sg.GroupId}`);
+    expect(r.output).toContain("(CannotDelete) when calling the DeleteSecurityGroup operation");
+  });
+
+  it("allows only one default VPC, and create-default-vpc brings a deleted one back", async () => {
+    expect((await run("aws ec2 create-default-vpc")).output).toContain("(DefaultVpcAlreadyExists)");
+    const vpc = (await json("aws ec2 describe-vpcs --filters Name=isDefault,Values=true")).Vpcs[0].VpcId;
+    // Empty it the way a learner would, then delete it.
+    for (const s of (await json("aws ec2 describe-subnets")).Subnets) await json(`aws ec2 delete-subnet --subnet-id ${s.SubnetId}`).catch(() => {});
+    const igw = (await json("aws ec2 describe-internet-gateways")).InternetGateways[0].InternetGatewayId;
+    await run(`aws ec2 detach-internet-gateway --internet-gateway-id ${igw} --vpc-id ${vpc}`);
+    await run(`aws ec2 delete-internet-gateway --internet-gateway-id ${igw}`);
+    expect((await run(`aws ec2 delete-vpc --vpc-id ${vpc}`)).exitCode).toBe(0);
+    expect((await json("aws ec2 create-default-vpc")).Vpc.IsDefault).toBe(true);
+  });
+
+  it("accepts a source security group in rules", async () => {
+    const { GroupId: web } = await json("aws ec2 create-security-group --group-name web --description web");
+    const { GroupId: db } = await json("aws ec2 create-security-group --group-name db --description db");
+    await json(`aws ec2 authorize-security-group-ingress --group-id ${db} --protocol tcp --port 5432 --source-group ${web}`);
+    const out = await json(`aws ec2 describe-security-groups --group-ids ${db}`);
+    expect(out.SecurityGroups[0].IpPermissions[0]).toMatchObject({ FromPort: 5432, UserIdGroupPairs: [{ GroupId: web }] });
+    expect((await run(`aws ec2 authorize-security-group-ingress --group-id ${db} --protocol tcp --port 22`)).output).toContain(
+      "(MissingParameter)",
+    );
+  });
+});

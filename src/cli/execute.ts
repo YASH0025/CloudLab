@@ -129,6 +129,9 @@ export async function executeCli(line: string, ctx: CliContext): Promise<CliResu
     };
   }
 
+  // A region's default VPC appears the first time it's used, as in a new AWS account.
+  await ctx.engine.ensureDefaults(ctx.accountId, region);
+
   try {
     const result = await command.run(new Args(parsed.options, parsed.positionals), { ...ctx, region });
     const output = result === undefined ? "" : typeof result === "string" ? result : JSON.stringify(result, null, 4);

@@ -2,7 +2,17 @@ import { analyzeReachability, reachabilityInput, type ReachabilityResult } from 
 import { availabilityZones } from "@/engine/catalog";
 import type { Engine } from "@/engine/engine";
 import type { Resource } from "@/engine/types";
-import { bucketName, focusVpc, freeSubnetCidr, label, takeSnapshot, type SgRule, type Snapshot } from "./snapshot";
+import {
+  bucketName,
+  effectiveRouteTable,
+  focusVpc,
+  freeSubnetCidr,
+  isOwn,
+  label,
+  takeSnapshot,
+  type SgRule,
+  type Snapshot,
+} from "./snapshot";
 import type { Advice, Level, Milestone, Suggestion } from "./types";
 
 /**
@@ -22,7 +32,8 @@ export async function advise(engine: Engine, accountId: string, region: string):
 
   const vpc = focusVpc(s);
   const vpcSubnets = vpc ? s.subnets.filter((x) => x.config.vpcId === vpc.id) : [];
-  const vpcGroups = vpc ? s.groups.filter((g) => g.config.vpcId === vpc.id) : [];
+  // The learner's own security groups; every VPC also has a "default" one made by the platform.
+  const vpcGroups = vpc ? s.groups.filter((g) => g.config.vpcId === vpc.id && isOwn(g)) : [];
   const vpcInstances = vpc ? s.instances.filter((i) => i.attributes.vpcId === vpc.id) : [];
   const vpcGateway = vpc ? s.gateways.find((g) => g.config.vpcId === vpc.id) : undefined;
   const looseGateway = s.gateways.find((g) => !g.config.vpcId);
@@ -76,7 +87,7 @@ export async function advise(engine: Engine, accountId: string, region: string):
       },
       cli: `aws ec2 create-subnet --vpc-id ${vpc.id} --cidr-block ${cidr} --availability-zone ${availabilityZones(region)[0]}`,
     });
-  } else if (vpcGroups.length === 0) {
+  } else if (vpcGroups.length === 0 && !s.instances.some((i) => i.attributes.vpcId === vpc.id)) {
     push({
       id: "create-sg",
       level: "beginner",
@@ -203,7 +214,8 @@ export async function advise(engine: Engine, accountId: string, region: string):
           cli: `aws ec2 attach-internet-gateway --internet-gateway-id ${looseGateway.id} --vpc-id ${vpc.id}`,
         });
       } else if (!table) {
-        const unassociated = s.routeTables.find((t) => t.config.vpcId === vpc.id);
+        // A table of their own that just isn't associated yet (not the VPC's main table).
+        const unassociated = s.routeTables.find((t) => t.config.vpcId === vpc.id && isOwn(t));
         if (unassociated) {
           push({
             id: "associate-rt",
@@ -412,10 +424,11 @@ export async function advise(engine: Engine, accountId: string, region: string):
     });
   }
 
+  const ownVpcIds = new Set(s.vpcs.filter(isOwn).map((v) => v.id));
   const milestones: Milestone[] = [
-    { id: "vpc", label: "Private network (VPC)", done: s.vpcs.some((v) => v.state === "available") },
-    { id: "subnet", label: "Subnet", done: s.subnets.length > 0 },
-    { id: "firewall", label: "Security group", done: s.groups.length > 0 },
+    { id: "vpc", label: "Private network (VPC)", done: s.vpcs.some((v) => isOwn(v) && v.state === "available") },
+    { id: "subnet", label: "Subnet", done: s.subnets.some((x) => ownVpcIds.has(x.config.vpcId as string)) },
+    { id: "firewall", label: "Security group", done: s.groups.some(isOwn) },
     { id: "server", label: "Server running", done: s.instances.some((i) => i.state === "running") },
     { id: "internet", label: "Internet gateway & route", done: !!reach && !["route-table", "route", "gateway"].some((id) => reach!.steps.find((x) => x.id === id)?.status === "fail") },
     { id: "reachable", label: "Reachable over HTTP", done: reachable },
@@ -429,6 +442,7 @@ export async function advise(engine: Engine, accountId: string, region: string):
 
 /** Link to the route table the instance's subnet uses, if any. */
 function routeTableLink(s: Snapshot, instance: Resource) {
-  const t = s.routeTables.find((x) => ((x.config.subnetIds as string[]) ?? []).includes(instance.config.subnetId as string));
+  const subnet = s.subnets.find((x) => x.id === instance.config.subnetId);
+  const t = subnet ? effectiveRouteTable(s, subnet) : undefined;
   return t ? { service: "networking", type: "route-table", mode: "detail" as const, id: t.id } : undefined;
 }

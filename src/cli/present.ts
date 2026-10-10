@@ -1,5 +1,5 @@
 import type { Engine } from "@/engine/engine";
-import type { Resource } from "@/engine/types";
+import { systemOf, type Resource } from "@/engine/types";
 
 /**
  * Shapes simulated resources like the real CLI's JSON output (PascalCase
@@ -49,7 +49,7 @@ export function vpc(r: Resource, ctx: PresentContext) {
     VpcId: r.id,
     OwnerId: ownerId(ctx.accountId),
     InstanceTenancy: "default",
-    IsDefault: false,
+    IsDefault: systemOf(r).isDefault === true,
     Tags: tags(r),
   };
 }
@@ -59,6 +59,7 @@ export function subnet(r: Resource, ctx: PresentContext) {
     AvailabilityZone: r.config.availabilityZone,
     AvailableIpAddressCount: r.attributes.availableIpCount,
     CidrBlock: r.config.cidrBlock,
+    DefaultForAz: systemOf(r).defaultForAz === true,
     MapPublicIpOnLaunch: Boolean(r.config.mapPublicIpOnLaunch),
     State: r.state,
     SubnetId: r.id,
@@ -92,14 +93,24 @@ export async function routeTable(r: Resource, ctx: PresentContext) {
       };
     }),
   );
+  const main = systemOf(r).main
+    ? [
+        {
+          Main: true,
+          RouteTableAssociationId: `rtbassoc-${r.id.replace(/^rtb-/, "")}`,
+          RouteTableId: r.id,
+          AssociationState: { State: "associated" },
+        },
+      ]
+    : [];
   return {
-    Associations: ((r.config.subnetIds as string[]) ?? []).map((subnetId) => ({
+    Associations: [...main, ...((r.config.subnetIds as string[]) ?? []).map((subnetId) => ({
       Main: false,
       RouteTableAssociationId: associationId(subnetId),
       RouteTableId: r.id,
       SubnetId: subnetId,
       AssociationState: { State: "associated" },
-    })),
+    }))],
     RouteTableId: r.id,
     Routes: [
       ...(vpcRes
@@ -117,15 +128,18 @@ interface Rule {
   protocol: string;
   fromPort?: number;
   toPort?: number;
-  cidr: string;
+  cidr?: string;
+  sourceGroupId?: string;
   description?: string;
 }
 
-function permissions(rules: Rule[] | undefined) {
+function permissions(rules: Rule[] | undefined, owner: string) {
+  const desc = (rule: Rule) => (rule.description ? { Description: rule.description } : {});
   return (rules ?? []).map((rule) => ({
     IpProtocol: rule.protocol === "all" ? "-1" : rule.protocol,
     ...(rule.protocol === "all" ? {} : { FromPort: rule.fromPort ?? -1, ToPort: rule.toPort ?? -1 }),
-    IpRanges: [{ CidrIp: rule.cidr, ...(rule.description ? { Description: rule.description } : {}) }],
+    IpRanges: rule.cidr ? [{ CidrIp: rule.cidr, ...desc(rule) }] : [],
+    UserIdGroupPairs: rule.sourceGroupId ? [{ GroupId: rule.sourceGroupId, UserId: owner, ...desc(rule) }] : [],
   }));
 }
 
@@ -133,10 +147,10 @@ export function securityGroup(r: Resource, ctx: PresentContext) {
   return {
     Description: r.config.description,
     GroupName: r.config.name,
-    IpPermissions: permissions(r.config.inboundRules as Rule[]),
+    IpPermissions: permissions(r.config.inboundRules as Rule[], ownerId(ctx.accountId)),
     OwnerId: ownerId(ctx.accountId),
     GroupId: r.id,
-    IpPermissionsEgress: permissions(r.config.outboundRules as Rule[]),
+    IpPermissionsEgress: permissions(r.config.outboundRules as Rule[], ownerId(ctx.accountId)),
     VpcId: r.config.vpcId,
   };
 }

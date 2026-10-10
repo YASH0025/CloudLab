@@ -1,6 +1,6 @@
 import { cidrOverlaps, intToIp, parseCidr } from "@/engine/cidr";
 import type { Engine } from "@/engine/engine";
-import type { Resource } from "@/engine/types";
+import { systemOf, type Resource } from "@/engine/types";
 
 /** Everything the learner has in a region, loaded once for the guide's checks. */
 export interface Snapshot {
@@ -66,11 +66,32 @@ export function freeSubnetCidr(vpc: Resource, subnets: Resource[]): string | und
   return undefined;
 }
 
-/** The VPC the learner is working in: the one with the newest instance, else the newest with subnets, else the newest. */
-export function focusVpc(s: Snapshot): Resource | undefined {
-  const byInstance = s.instances[0] && s.vpcs.find((v) => v.id === s.instances[0].attributes.vpcId);
+/** Resources the learner made, as opposed to the platform (default VPC, main route tables, default groups). */
+export const isOwn = (r: Resource) => {
+  const sys = systemOf(r);
+  return !sys.isDefault && !sys.main && !sys.defaultForAz;
+};
+
+/**
+ * The VPC the learner is working in: the one with their newest instance, else their
+ * newest VPC with subnets, else their newest VPC. The default VPC only counts if
+ * `includeDefault` is set and they've launched something into it.
+ */
+export function focusVpc(s: Snapshot, includeDefault = true): Resource | undefined {
+  const candidates = includeDefault ? s.vpcs : s.vpcs.filter(isOwn);
+  const newest = s.instances.find((i) => candidates.some((v) => v.id === i.attributes.vpcId));
+  const byInstance = newest && candidates.find((v) => v.id === newest.attributes.vpcId);
   if (byInstance) return byInstance;
-  return s.vpcs.find((v) => s.subnets.some((sub) => sub.config.vpcId === v.id)) ?? s.vpcs[0];
+  const own = candidates.filter(isOwn);
+  return own.find((v) => s.subnets.some((sub) => sub.config.vpcId === v.id)) ?? own[0];
+}
+
+/** The route table a subnet actually uses: its explicit association, else its VPC's main table. */
+export function effectiveRouteTable(s: Snapshot, subnet: Resource): Resource | undefined {
+  return (
+    s.routeTables.find((t) => ((t.config.subnetIds as string[]) ?? []).includes(subnet.id)) ??
+    s.routeTables.find((t) => systemOf(t).main && t.config.vpcId === subnet.config.vpcId)
+  );
 }
 
 /** A bucket name that is stable per account and very likely unique. */

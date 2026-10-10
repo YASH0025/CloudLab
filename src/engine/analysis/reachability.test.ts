@@ -81,11 +81,21 @@ describe("reachability", () => {
     expect(statusOf(result, "route")).toBe("pass");
   });
 
-  it("fails when the subnet has no route table", async () => {
+  it("falls back to the VPC's main route table, which has no internet route", async () => {
     const { instance } = await build({ associate: false });
     const result = await analyzeReachability(engine, ACCOUNT, instance.id, http);
-    expect(statusOf(result, "route-table")).toBe("fail");
-    expect(statusOf(result, "route")).toBe("skip");
+    expect(statusOf(result, "route-table")).toBe("pass");
+    expect(result.steps.find((st) => st.id === "route-table")?.detail).toContain("main route table");
+    expect(statusOf(result, "route")).toBe("fail");
+  });
+
+  it("is reachable through the main route table once it has an internet route", async () => {
+    const { vpc, gateway, instance } = await build({ associate: false });
+    const [main] = (await engine.list(ACCOUNT, { service: "networking", type: "route-table", region: REGION })).filter(
+      (t) => t.config.vpcId === vpc.id && (t.attributes.system as { main?: boolean } | undefined)?.main,
+    );
+    await engine.update(ACCOUNT, main.id, { routes: [{ destination: "0.0.0.0/0", gatewayId: gateway!.id }] });
+    expect((await analyzeReachability(engine, ACCOUNT, instance.id, http)).reachable).toBe(true);
   });
 
   it("fails when the route table has no internet route", async () => {

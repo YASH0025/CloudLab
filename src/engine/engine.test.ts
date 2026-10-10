@@ -260,3 +260,110 @@ describe("storage", () => {
     expect((await engine.update(ACCOUNT, b.id, { versioning: "Suspended" })).config.versioning).toBe("Suspended");
   });
 });
+
+describe("defaults, like a real AWS account", () => {
+  const list = (type: string) => engine.list(ACCOUNT, { service: "networking", type, region: REGION });
+  const sys = (r: { attributes: Record<string, unknown> }) => (r.attributes.system ?? {}) as Record<string, unknown>;
+
+  it("gives every VPC a main route table and a default security group", async () => {
+    const vpc = await engine.create(ACCOUNT, { service: "networking", type: "vpc", region: REGION, config: { cidrBlock: "10.0.0.0/16" } });
+    const main = (await list("route-table")).find((t) => t.config.vpcId === vpc.id)!;
+    expect(sys(main).main).toBe(true);
+    const sg = (await list("security-group")).find((g) => g.config.vpcId === vpc.id)!;
+    expect(sg.name).toBe("default");
+    expect(sg.config.inboundRules).toEqual([expect.objectContaining({ protocol: "all", sourceGroupId: sg.id })]);
+  });
+
+  it("protects them, then deletes them with the VPC", async () => {
+    const vpc = await engine.create(ACCOUNT, { service: "networking", type: "vpc", region: REGION, config: { cidrBlock: "10.0.0.0/16" } });
+    const main = (await list("route-table")).find((t) => t.config.vpcId === vpc.id)!;
+    const sg = (await list("security-group")).find((g) => g.config.vpcId === vpc.id)!;
+    await expectCode(engine.remove(ACCOUNT, main.id), "DependencyViolation");
+    await expect(engine.remove(ACCOUNT, sg.id)).rejects.toMatchObject({
+      code: "CannotDelete",
+      message: `the specified group: "${sg.id}" name: "default" cannot be deleted by a user`,
+    });
+    await expectCode(
+      engine.create(ACCOUNT, { service: "networking", type: "security-group", region: REGION, config: { name: "default", description: "x", vpcId: vpc.id } }),
+      "InvalidGroup.Duplicate",
+    );
+    await engine.remove(ACCOUNT, vpc.id);
+    expect((await list("route-table")).length + (await list("security-group")).length).toBe(0);
+  });
+
+  it("creates a default VPC once per region, with default subnets, a gateway and an internet route", async () => {
+    await engine.ensureDefaults(ACCOUNT, REGION);
+    await engine.ensureDefaults(ACCOUNT, REGION);
+    const vpcs = await list("vpc");
+    expect(vpcs).toHaveLength(1);
+    const vpc = vpcs[0];
+    expect(vpc.config.cidrBlock).toBe("172.31.0.0/16");
+    expect(vpc.state).toBe("available");
+    const subnets = await list("subnet");
+    expect(subnets.map((x) => x.config.cidrBlock).sort()).toEqual(["172.31.0.0/20", "172.31.16.0/20", "172.31.32.0/20"]);
+    expect(subnets.every((x) => x.config.mapPublicIpOnLaunch && sys(x).defaultForAz)).toBe(true);
+    const [igw] = await list("internet-gateway");
+    expect(igw.config.vpcId).toBe(vpc.id);
+    const main = (await list("route-table")).find((t) => sys(t).main)!;
+    expect(main.config.routes).toEqual([{ destination: "0.0.0.0/0", gatewayId: igw.id }]);
+    await expectCode(engine.createDefaultVpc(ACCOUNT, REGION), "DefaultVpcAlreadyExists");
+  });
+
+  it("makes a server in a default subnet reachable once its group allows HTTP", async () => {
+    await engine.ensureDefaults(ACCOUNT, REGION);
+    const subnet = (await list("subnet"))[0];
+    const sg = (await list("security-group"))[0];
+    await engine.update(ACCOUNT, sg.id, {
+      inboundRules: [...(sg.config.inboundRules as unknown[]), { protocol: "tcp", fromPort: 80, toPort: 80, cidr: "0.0.0.0/0" }],
+    });
+    const inst = await launch(subnet.id, sg.id);
+    expect(inst.attributes.publicIp).toBeTruthy();
+    advance(10_000);
+    const { analyzeReachability, reachabilityInput } = await import("./analysis/reachability");
+    const result = await analyzeReachability(engine, ACCOUNT, inst.id, reachabilityInput.parse({ protocol: "tcp", port: 80 }));
+    expect(result.reachable).toBe(true);
+  });
+
+  it("resets a region and brings the default VPC back", async () => {
+    await engine.ensureDefaults(ACCOUNT, REGION);
+    await engine.create(ACCOUNT, { service: "networking", type: "vpc", region: REGION, config: { cidrBlock: "10.0.0.0/16" } });
+    expect(await engine.resetRegion(ACCOUNT, REGION)).toBeGreaterThan(5);
+    expect(await list("vpc")).toHaveLength(0);
+    await engine.ensureDefaults(ACCOUNT, REGION);
+    expect(await list("vpc")).toHaveLength(1);
+  });
+});
+
+describe("security group sources", () => {
+  it("allows another group from the same VPC as a source, and blocks deleting it while used", async () => {
+    const { vpc, sg } = await network();
+    const db = await engine.create(ACCOUNT, {
+      service: "networking",
+      type: "security-group",
+      region: REGION,
+      config: { name: "db", description: "db", vpcId: vpc.id, inboundRules: [{ protocol: "tcp", fromPort: 5432, toPort: 5432, sourceGroupId: sg.id }] },
+    });
+    expect(db.refs).toContain(sg.id);
+    await expect(engine.remove(ACCOUNT, sg.id)).rejects.toMatchObject({
+      code: "DependencyViolation",
+      message: `resource ${sg.id} has a dependent object`,
+    });
+  });
+
+  it("rejects groups from another VPC and rules with no source", async () => {
+    const { sg } = await network();
+    const other = await engine.create(ACCOUNT, { service: "networking", type: "vpc", region: REGION, config: { cidrBlock: "10.9.0.0/16" } });
+    const make = (rule: Record<string, unknown>) =>
+      engine.create(ACCOUNT, {
+        service: "networking",
+        type: "security-group",
+        region: REGION,
+        config: { name: `x${Math.random()}`, description: "x", vpcId: other.id, inboundRules: [rule] },
+      });
+    await expect(make({ protocol: "tcp", fromPort: 22, toPort: 22, sourceGroupId: sg.id })).rejects.toMatchObject({
+      code: "InvalidGroup.NotFound",
+      message: "You have specified two resources that belong to different networks.",
+    });
+    await expectCode(make({ protocol: "tcp", fromPort: 22, toPort: 22 }), "InvalidParameterValue");
+  });
+});

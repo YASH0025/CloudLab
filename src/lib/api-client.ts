@@ -57,6 +57,9 @@ export const api = {
   deleteResource: (id: string) =>
     request<{ deleted: string }>(`/api/resources/${encodeURIComponent(id)}`, { method: "DELETE" }),
 
+  resetLab: (region: string) =>
+    request<{ region: string; removed: number }>(`/api/lab/reset`, { method: "POST", body: JSON.stringify({ region }) }),
+
   guide: (region: string) => request<{ advice: Advice }>(`/api/guide?region=${encodeURIComponent(region)}`),
 
   tutorials: () => request<{ tutorials: TutorialInfo[] }>(`/api/guide/tutorials`),

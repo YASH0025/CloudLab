@@ -8,6 +8,19 @@ export interface ErrorExplanation {
 }
 
 const EXPLANATIONS: Record<string, ErrorExplanation> = {
+  CannotDelete: {
+    meaning: "Every VPC has a 'default' security group made by AWS, and it can't be deleted on its own.",
+    fix: "Leave it, or remove its rules if you don't want it to allow anything. It goes away when the VPC is deleted.",
+  },
+  DefaultVpcAlreadyExists: {
+    meaning: "This region already has a default VPC; there can only be one.",
+    fix: "Use the existing one (describe-vpcs --filters Name=isDefault,Values=true), or delete it first.",
+  },
+  "InvalidGroup.NotFound": {
+    meaning:
+      "Either the security group ID doesn't exist in this region, or you tried to combine a security group and another resource from different VPCs.",
+    fix: "Check the ID and region. Security groups only work with subnets, instances and other groups in the same VPC.",
+  },
   DependencyViolation: {
     meaning: "Something else still uses this resource, so deleting or changing it would break that thing.",
     fix: "Open the resource's 'Used by' list, remove or detach those first, then try again.",

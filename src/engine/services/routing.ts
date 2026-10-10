@@ -1,6 +1,6 @@
 import { cidrContains, parseCidr } from "../cidr";
 import { EngineError } from "../errors";
-import type { ResourceTypeDef } from "../types";
+import { systemOf, type ResourceTypeDef } from "../types";
 
 /**
  * Internet gateways and route tables. Together with subnets and security
@@ -84,7 +84,7 @@ export const routeTable: ResourceTypeDef = {
   notFoundCode: "InvalidRouteTableID.NotFound",
   apiNoun: "routeTable",
   canDelete: (rt) =>
-    ((rt.config.subnetIds as string[]) ?? []).length > 0
+    systemOf(rt).main || ((rt.config.subnetIds as string[]) ?? []).length > 0
       ? new EngineError("DependencyViolation", `The routeTable '${rt.id}' has dependencies and cannot be deleted.`)
       : undefined,
   fields: [
@@ -117,7 +117,8 @@ export const routeTable: ResourceTypeDef = {
           label: "Target (internet gateway)",
           type: "ref",
           required: true,
-          ref: { service: "networking", type: "internet-gateway" },
+          // Not tracked as a dependency: a detached or deleted gateway leaves a "blackhole" route, as in AWS.
+          ref: { service: "networking", type: "internet-gateway", weak: true },
         },
       ],
     },
@@ -128,11 +129,12 @@ export const routeTable: ResourceTypeDef = {
       // Deleting a subnet quietly removes its association, as in the real API.
       ref: { service: "networking", type: "subnet", multiple: true, weak: true },
       description:
-        "Subnets that use this table. Subnets not associated with any table use the VPC's main table, which only routes locally.",
+        "Subnets that use this table. Subnets not associated with any table use the VPC's main route table.",
     },
   ],
   columns: [
     { label: "VPC", path: "config.vpcId", mono: true },
+    { label: "Main", path: "attributes.system.main", boolean: true },
     { label: "Routes", path: "attributes.routeCount" },
     { label: "Subnets", path: "attributes.associationCount" },
   ],

@@ -1,12 +1,15 @@
 "use client";
 
-import { ArrowRightIcon } from "lucide-react";
+import { ArrowRightIcon, RotateCcwIcon } from "lucide-react";
 import Link from "next/link";
+import { useState } from "react";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { useResources, useServices } from "@/hooks/use-cloud";
+import { useResetLab, useResources, useServices } from "@/hooks/use-cloud";
 import { routes } from "@/lib/routes";
 import { useConsoleStore } from "@/stores/console-store";
+import { ConfirmDialog } from "./confirm-dialog";
 
 const steps = [
   { label: "Create a VPC", href: routes.create("networking", "vpc") },
@@ -23,6 +26,8 @@ export function DashboardView() {
   const region = useConsoleStore((s) => s.region);
   const services = useServices();
   const all = useResources();
+  const reset = useResetLab();
+  const [confirmReset, setConfirmReset] = useState(false);
 
   const count = (service: string, type: string) =>
     (all.data ?? []).filter((r) => r.service === service && r.type === type && r.state !== "terminated").length;
@@ -87,6 +92,39 @@ export function DashboardView() {
           </ol>
         </CardContent>
       </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Your lab in {region}</CardTitle>
+          <CardDescription>
+            Like a new AWS account, every region starts with a default VPC (172.31.0.0/16) with a public subnet in each
+            availability zone, an internet gateway and a default security group, so you can launch a server straight
+            away. The tutorials have you build your own network instead.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-wrap items-center justify-between gap-3">
+          <p className="text-sm text-muted-foreground">Made a mess? Start this region over from scratch.</p>
+          <Button variant="outline" onClick={() => setConfirmReset(true)} disabled={reset.isPending}>
+            <RotateCcwIcon /> {reset.isPending ? "Resetting…" : "Reset this region"}
+          </Button>
+        </CardContent>
+      </Card>
+
+      <ConfirmDialog
+        request={
+          confirmReset
+            ? {
+                title: `Reset everything in ${region}?`,
+                description:
+                  "Every VPC, subnet, gateway, route table, security group, instance and bucket in this region is deleted, and a fresh default VPC is created. Tutorial progress starts over. This can't be undone.",
+                confirmLabel: "Reset region",
+                onConfirm: () => reset.mutate(),
+              }
+            : null
+        }
+        onClose={() => setConfirmReset(false)}
+        pending={reset.isPending}
+      />
     </div>
   );
 }

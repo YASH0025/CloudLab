@@ -7,6 +7,8 @@ export async function GET(request: NextRequest) {
   return handle(async () => {
     const params = request.nextUrl.searchParams;
     const accountId = await getAccountId();
+    const region = params.get("region");
+    if (region) await getEngine().ensureDefaults(accountId, region);
     const items = await getEngine().list(accountId, {
       service: params.get("service") ?? undefined,
       type: params.get("type") ?? undefined,
@@ -27,6 +29,7 @@ export async function POST(request: Request) {
   return handle(async () => {
     const body = createBody.parse(await request.json());
     const accountId = await getAccountId();
+    await getEngine().ensureDefaults(accountId, body.region);
     const item = await getEngine().create(accountId, body);
     return Response.json({ item: toDTO(item) }, { status: 201 });
   });

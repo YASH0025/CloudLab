@@ -20,7 +20,7 @@ import { buildSchema, defaultValues } from "@/engine/fields";
 import type { FieldDef } from "@/engine/types";
 import { useResources } from "@/hooks/use-cloud";
 import { ApiError } from "@/lib/api-client";
-import { getPath } from "@/lib/utils";
+import { getPath, inSentence } from "@/lib/utils";
 
 type Values = Record<string, unknown>;
 
@@ -182,7 +182,7 @@ function FieldControl({ field, name, control, errors, disabled, lockReason, comp
             return (
               <Select value={(f.value as string) || undefined} onValueChange={f.onChange} disabled={disabled}>
                 <SelectTrigger id={id} aria-invalid={!!message} aria-label={field.label}>
-                  <SelectValue placeholder={`Choose ${field.label.toLowerCase()}`} />
+                  <SelectValue placeholder={`Choose ${inSentence(field.label)}`} />
                 </SelectTrigger>
                 <SelectContent>
                   {(field.options ?? []).map((o) => (
@@ -259,7 +259,7 @@ function RefControl({
   if (!isLoading && options.length === 0) {
     return (
       <p className="rounded-md border border-dashed px-3 py-2 text-sm text-muted-foreground">
-        No {field.label.toLowerCase()} in this region yet. Create one first.
+        No {inSentence(field.label)} in this region yet. Create one first.
       </p>
     );
   }
@@ -299,7 +299,7 @@ function RefControl({
       disabled={disabled || isLoading}
     >
       <SelectTrigger id={id} aria-invalid={invalid} aria-label={field.label}>
-        <SelectValue placeholder={isLoading ? "Loading…" : `Choose ${field.label.toLowerCase()}`} />
+        <SelectValue placeholder={isLoading ? "Loading…" : `Choose ${inSentence(field.label)}`} />
       </SelectTrigger>
       <SelectContent>
         {!field.required && <SelectItem value={NONE}>None</SelectItem>}
@@ -333,7 +333,7 @@ function ListControl({
       {field.description && <p className="text-xs text-muted-foreground">{field.description}</p>}
       <div className="overflow-x-auto rounded-md border">
         <div
-          className="grid min-w-[640px] gap-2 border-b bg-muted/60 px-3 py-2 text-xs font-medium text-muted-foreground"
+          className="grid min-w-[860px] gap-2 border-b bg-muted/60 px-3 py-2 text-xs font-medium text-muted-foreground"
           style={{ gridTemplateColumns: `repeat(${items.length}, minmax(0, 1fr)) 2.25rem` }}
         >
           {items.map((i) => (
@@ -345,7 +345,7 @@ function ListControl({
         {rows.map((row, index) => (
           <div
             key={row.id}
-            className="grid min-w-[640px] items-start gap-2 border-b px-3 py-2 last:border-0"
+            className="grid min-w-[860px] items-start gap-2 border-b px-3 py-2 last:border-0"
             style={{ gridTemplateColumns: `repeat(${items.length}, minmax(0, 1fr)) 2.25rem` }}
           >
             {items.map((i) => (

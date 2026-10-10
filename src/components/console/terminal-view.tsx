@@ -7,6 +7,8 @@ import { Terminal, type TerminalHandle } from "./terminal";
 
 const examples: { label: string; command: string }[] = [
   { label: "Who am I?", command: "aws sts get-caller-identity" },
+  { label: "Find the default VPC", command: "aws ec2 describe-vpcs --filters Name=isDefault,Values=true" },
+  { label: "Launch into the default VPC", command: "aws ec2 run-instances --image-id ami-0lab2023linux0001 --instance-type t3.micro" },
   { label: "Create a VPC", command: "aws ec2 create-vpc --cidr-block 10.0.0.0/16 --tag-specifications 'ResourceType=vpc,Tags=[{Key=Name,Value=main}]'" },
   { label: "List VPCs", command: "aws ec2 describe-vpcs" },
   { label: "Create a subnet", command: "aws ec2 create-subnet --vpc-id <vpc-id> --cidr-block 10.0.1.0/24" },

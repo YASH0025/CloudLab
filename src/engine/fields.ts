@@ -148,14 +148,23 @@ export function defaultValues(fields: FieldDef[]): Record<string, unknown> {
   return values;
 }
 
-/** Collects the IDs referenced by ref fields, used for dependency tracking. */
+/**
+ * Collects the IDs referenced by ref fields, used for dependency tracking.
+ * Refs inside list items (e.g. a rule's source security group) count too,
+ * unless they are weak.
+ */
 export function collectRefs(fields: FieldDef[], config: Record<string, unknown>): string[] {
   const ids = new Set<string>();
-  for (const field of fields) {
-    if (field.type !== "ref") continue;
-    const value = config[field.key];
+  const add = (value: unknown) => {
     if (typeof value === "string" && value) ids.add(value);
     if (Array.isArray(value)) for (const v of value) if (typeof v === "string" && v) ids.add(v);
+  };
+  for (const field of fields) {
+    if (field.type === "ref") add(config[field.key]);
+    if (field.type === "list" && Array.isArray(config[field.key])) {
+      const itemRefs = (field.item ?? []).filter((f) => f.type === "ref" && !f.ref?.weak);
+      for (const item of config[field.key] as Record<string, unknown>[]) for (const f of itemRefs) add(item?.[f.key]);
+    }
   }
   return [...ids];
 }

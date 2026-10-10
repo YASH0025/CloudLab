@@ -10,6 +10,7 @@ import { routes } from "@/lib/routes";
 import { ConfirmDialog } from "./confirm-dialog";
 import { ResourceTable } from "./resource-table";
 import { useResourceCommands } from "./use-resource-commands";
+import { inSentence } from "@/lib/utils";
 
 export function ResourceListView() {
   const { service, type } = useParams<{ service: string; type: string }>();
@@ -36,7 +37,7 @@ export function ResourceListView() {
           </Button>
           <Button asChild>
             <Link href={routes.create(service, type)}>
-              <PlusIcon /> Create {typeDef.label.toLowerCase()}
+              <PlusIcon /> Create {inSentence(typeDef.label)}
             </Link>
           </Button>
         </div>
@@ -45,7 +46,7 @@ export function ResourceListView() {
       {resources.isLoading ? (
         <Skeleton className="h-48" />
       ) : resources.isError ? (
-        <p className="text-sm text-destructive">Could not load {typeDef.pluralLabel.toLowerCase()}.</p>
+        <p className="text-sm text-destructive">Could not load {inSentence(typeDef.pluralLabel)}.</p>
       ) : (
         <ResourceTable
           typeDef={typeDef}

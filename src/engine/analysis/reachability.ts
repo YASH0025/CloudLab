@@ -2,7 +2,7 @@ import { z } from "zod";
 import { cidrContains, cidrOverlaps, parseCidr } from "../cidr";
 import type { Engine } from "../engine";
 import { EngineError } from "../errors";
-import type { Resource } from "../types";
+import { systemOf, type Resource } from "../types";
 
 /**
  * "Can someone on the internet reach this instance?" Walks the same chain
@@ -60,7 +60,8 @@ interface Rule {
   protocol: string;
   fromPort?: number;
   toPort?: number;
-  cidr: string;
+  cidr?: string;
+  sourceGroupId?: string;
 }
 
 function ruleAllows(rule: Rule, input: ReachabilityInput): boolean {
@@ -70,6 +71,8 @@ function ruleAllows(rule: Rule, input: ReachabilityInput): boolean {
     if (rule.fromPort === undefined || rule.toPort === undefined) return false;
     if (port < rule.fromPort || port > rule.toPort) return false;
   }
+  // Rules naming a security group only match traffic from instances in that group, never the internet.
+  if (!rule.cidr) return false;
   const ruleCidr = parseCidr(rule.cidr);
   const source = parseCidr(input.source);
   return !!ruleCidr && !!source && cidrContains(ruleCidr, source);
@@ -130,8 +133,11 @@ export async function analyzeReachability(
   );
 
   // 3–5. Routing: subnet → route table → route → internet gateway.
+  // A subnet uses the route table it's explicitly associated with, otherwise its VPC's main route table.
   const tables = subnet ? await engine.list(accountId, { service: "networking", type: "route-table", region: instance.region }) : [];
-  const table = subnet ? tables.find((t) => ((t.config.subnetIds as string[]) ?? []).includes(subnet.id)) : undefined;
+  const explicit = subnet ? tables.find((t) => ((t.config.subnetIds as string[]) ?? []).includes(subnet.id)) : undefined;
+  const mainTable = subnet ? tables.find((t) => systemOf(t).main && t.config.vpcId === subnet.config.vpcId) : undefined;
+  const table = explicit ?? mainTable;
 
   if (!subnet) {
     steps.push({ id: "route-table", title: "Subnet has a route table", status: "fail", detail: "The instance's subnet no longer exists." });
@@ -140,7 +146,7 @@ export async function analyzeReachability(
       id: "route-table",
       title: "Subnet has a route table",
       status: "fail",
-      detail: `${subnet.id} isn't associated with any route table, so it uses the VPC's main table, which only has the local route. Return traffic has no way out to the internet.`,
+      detail: `${subnet.id} isn't associated with any route table and its VPC has no main route table, so traffic has no way out of the subnet.`,
       fix: `Create a route table in ${subnet.config.vpcId}, add a 0.0.0.0/0 route to an internet gateway, and associate ${subnet.id} with it.`,
       resource: link(subnet),
     });
@@ -149,7 +155,9 @@ export async function analyzeReachability(
       id: "route-table",
       title: "Subnet has a route table",
       status: "pass",
-      detail: `${subnet.id} uses ${table.id}.`,
+      detail: explicit
+        ? `${subnet.id} is associated with ${table.id}.`
+        : `${subnet.id} has no explicit association, so it uses the VPC's main route table ${table.id}.`,
       resource: link(table),
     });
   }
@@ -167,8 +175,10 @@ export async function analyzeReachability(
       id: "route",
       title: "Route back to the source",
       status: "fail",
-      detail: `${table.id} has no route covering ${input.source}, so responses can't leave the VPC.`,
-      fix: `Add a route 0.0.0.0/0 → your internet gateway to ${table.id}.`,
+      detail: `${table.id}${explicit ? "" : " (the main route table)"} has no route covering ${input.source}, so responses can't leave the VPC.`,
+      fix: explicit
+        ? `Add a route 0.0.0.0/0 → your internet gateway to ${table.id}.`
+        : `Create a route table with a 0.0.0.0/0 route to your internet gateway and associate ${subnet!.id} with it. (Adding the route to the main table also works, but makes every unassociated subnet public.)`,
       resource: link(table),
     });
   } else {

@@ -4,6 +4,7 @@ import { format } from "date-fns";
 import { ChevronLeftIcon, Trash2Icon } from "lucide-react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -114,7 +115,18 @@ export function ResourceDetailView() {
 
   const { item, referencedBy } = query.data!;
   const actions = Object.entries(typeDef.lifecycle?.actions ?? {});
-  const attributes = Object.entries(item.attributes).filter(([, v]) => v !== undefined);
+  // The platform's own markers are shown as badges, not as rows.
+  const attributes = Object.entries(item.attributes).filter(([k, v]) => v !== undefined && k !== "system");
+  const system = (item.attributes.system ?? {}) as { isDefault?: boolean; main?: boolean; defaultForAz?: boolean };
+  const systemBadge = system.main
+    ? "Main route table"
+    : system.defaultForAz
+      ? "Default subnet"
+      : system.isDefault
+        ? item.type === "vpc"
+          ? "Default VPC"
+          : "Default security group"
+        : null;
 
   return (
     <div className="space-y-5">
@@ -129,6 +141,11 @@ export function ResourceDetailView() {
           <div className="flex items-center gap-3">
             <h1 className="text-2xl font-semibold tracking-tight">{item.name || item.id}</h1>
             <StateBadge state={item.state} pending={item.pendingState} />
+            {systemBadge && (
+              <Badge variant="secondary" title="Created by the platform, as in a real AWS account">
+                {systemBadge}
+              </Badge>
+            )}
           </div>
           <div className="flex flex-wrap gap-2">
             {actions.map(([key, a]) => (

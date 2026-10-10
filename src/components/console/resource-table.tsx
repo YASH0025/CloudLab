@@ -31,7 +31,7 @@ import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import type { ResolvedTypeDef, ResourceDTO } from "@/engine/types";
 import { routes } from "@/lib/routes";
-import { cn, formatValue, getPath } from "@/lib/utils";
+import { cn, formatValue, getPath, inSentence } from "@/lib/utils";
 import { StateBadge } from "./state-badge";
 
 // Registered once at module scope, as TanStack Table v9 expects stable features.
@@ -101,7 +101,10 @@ export function ResourceTable({ typeDef, data, onAction, onDelete }: ResourceTab
     for (const c of typeDef.columns) {
       cols.push({
         id: c.path,
-        accessorFn: (r) => formatValue(getPath(r, c.path)),
+        accessorFn: (r) => {
+          const v = getPath(r, c.path);
+          return c.boolean ? (v === true ? "Yes" : "No") : formatValue(v);
+        },
         header: c.label,
         cell: ({ getValue }) => <span className={cn(c.mono && "font-mono text-xs")}>{String(getValue())}</span>,
       });
@@ -170,7 +173,7 @@ export function ResourceTable({ typeDef, data, onAction, onDelete }: ResourceTab
     <div className="rounded-lg border bg-card">
       <div className="border-b p-3">
         <Input
-          placeholder={`Filter ${typeDef.pluralLabel.toLowerCase()}…`}
+          placeholder={`Filter ${inSentence(typeDef.pluralLabel)}…`}
           value={globalFilter}
           onChange={(e) => setGlobalFilter(e.target.value)}
           className="h-8 max-w-xs"
@@ -193,7 +196,7 @@ export function ResourceTable({ typeDef, data, onAction, onDelete }: ResourceTab
           {table.getRowModel().rows.length === 0 ? (
             <TableRow className="hover:bg-transparent">
               <TableCell colSpan={columns.length} className="py-10 text-center text-muted-foreground">
-                {data.length === 0 ? `No ${typeDef.pluralLabel.toLowerCase()} in this region.` : "No matches."}
+                {data.length === 0 ? `No ${inSentence(typeDef.pluralLabel)} in this region.` : "No matches."}
               </TableCell>
             </TableRow>
           ) : (

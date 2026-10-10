@@ -6,12 +6,27 @@ import { generateId } from "./ids";
 import { scheduleTransition, settle } from "./lifecycle";
 import { getTypeDef, resolveTypeDef, SERVICES } from "./registry";
 import type { ResourceStore } from "./store";
-import type { FieldDef, HookContext, Resource, ResourceDTO, ResourceTypeDef } from "./types";
+import {
+  systemOf,
+  type FieldDef,
+  type HookContext,
+  type Resource,
+  type ResourceDTO,
+  type ResourceTypeDef,
+  type SystemApi,
+  type SystemInfo,
+} from "./types";
 
 export function toDTO(r: Resource): ResourceDTO {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const { accountId, refs, ...dto } = r;
   return dto;
+}
+
+/** Keeps the platform's `system` markers when attributes are re-derived. */
+function keepSystem(attributes: Record<string, unknown>, existing: Resource | null): Record<string, unknown> {
+  const system = existing?.attributes.system;
+  return system ? { ...attributes, system } : attributes;
 }
 
 function isActive(r: Resource): boolean {
@@ -144,8 +159,28 @@ export class Engine {
       }
     }
 
+    // Same for refs inside list items, e.g. a rule's source security group. Weak ones are left to the service.
+    for (const field of def.fields) {
+      if (field.type !== "list" || !Array.isArray(clean[field.key])) continue;
+      for (const sub of (field.item ?? []).filter((f) => f.type === "ref" && f.ref && !f.ref.weak)) {
+        for (const item of clean[field.key] as Record<string, unknown>[]) {
+          const id = item?.[sub.key];
+          if (typeof id !== "string" || !id) continue;
+          if (existing && id === existing.id) continue; // a security group may reference itself
+          await this.getTyped(ctx.accountId, id, sub.ref!.service, sub.ref!.type, region);
+        }
+      }
+    }
+
     if (def.validate) await def.validate({ config: clean, existing, ctx });
     return clean;
+  }
+
+  private systemApi(accountId: string, region: string): SystemApi {
+    return {
+      create: (service, type, config, system) => this.create(accountId, { service, type, region, config }, { system, settled: true }),
+      update: (id, patch) => this.update(accountId, id, patch),
+    };
   }
 
   async list(accountId: string, filter: { service?: string; type?: string; region?: string } = {}) {
@@ -177,9 +212,14 @@ export class Engine {
     return this.settleAndSave(r);
   }
 
+  /**
+   * Creates a resource. `options.system` marks platform-made resources (default VPC,
+   * main route table...); `options.settled` skips the "pending" phase.
+   */
   async create(
     accountId: string,
     input: { service: string; type: string; region: string; config: Record<string, unknown> },
+    options: { system?: SystemInfo; settled?: boolean } = {},
   ): Promise<Resource> {
     const def = getTypeDef(input.service, input.type);
     if (!isRegion(input.region)) throw errors.invalidParameter(`Invalid region: '${input.region}'`);
@@ -192,7 +232,8 @@ export class Engine {
       throw new EngineError("BucketAlreadyExists", "The requested bucket name is not available.", 409);
     }
 
-    const attributes = def.derive ? await def.derive({ id, config, existing: null, ctx }) : {};
+    const derived = def.derive ? await def.derive({ id, config, existing: null, ctx }) : {};
+    const attributes = options.system ? { ...derived, system: options.system } : derived;
     const nowIso = this.now().toISOString();
     let resource: Resource = {
       id,
@@ -213,12 +254,14 @@ export class Engine {
 
     const life = def.lifecycle?.create;
     if (life) {
-      resource = life.settlesTo
-        ? scheduleTransition(resource, { via: life.state, to: life.settlesTo, afterMs: life.afterMs }, this.now())
-        : { ...resource, state: life.state };
+      resource =
+        life.settlesTo && !options.settled
+          ? scheduleTransition(resource, { via: life.state, to: life.settlesTo, afterMs: life.afterMs }, this.now())
+          : { ...resource, state: life.settlesTo ?? life.state };
     }
 
     await this.store.insert(resource);
+    if (def.afterCreate) await def.afterCreate({ resource, system: this.systemApi(accountId, input.region) });
     return resource;
   }
 
@@ -241,7 +284,7 @@ export class Engine {
 
     const ctx = this.context(accountId, existing.region);
     const config = await this.validateConfig(def, existing.region, { ...existing.config, ...patch }, existing, ctx);
-    const attributes = def.derive ? await def.derive({ id, config, existing, ctx }) : existing.attributes;
+    const attributes = def.derive ? keepSystem(await def.derive({ id, config, existing, ctx }), existing) : existing.attributes;
 
     const updated: Resource = {
       ...existing,
@@ -286,10 +329,18 @@ export class Engine {
     const reason = def.canDelete?.(existing);
     if (reason) throw reason;
 
-    // A reference blocks deletion unless every field holding it is weak; weak ones are cleaned up instead.
+    // Resources the platform made for this one (a VPC's main route table and default
+    // security group) go with it. A reference blocks deletion unless every field holding
+    // it is weak; weak ones are cleaned up instead.
+    const owned: Resource[] = [];
     const blocking: Resource[] = [];
     const toPrune: { resource: Resource; fields: FieldDef[] }[] = [];
     for (const d of (await this.dependents(accountId, id)).filter(isActive)) {
+      if (d.id === id) continue;
+      if (systemOf(d).ownedBy === id) {
+        owned.push(d);
+        continue;
+      }
       const dDef = getTypeDef(d.service, d.type);
       const holding = dDef.fields.filter((f) => {
         if (f.type !== "ref") return false;
@@ -306,7 +357,22 @@ export class Engine {
       );
     }
 
+    // Owned resources must not be in use by anything else either (e.g. a default
+    // security group still referenced by another group's rule).
+    for (const o of owned) {
+      const users = (await this.dependents(accountId, o.id)).filter(
+        (d) => isActive(d) && d.id !== o.id && d.id !== id && systemOf(d).ownedBy !== id,
+      );
+      if (users.length > 0) {
+        throw errors.dependency(
+          def.dependencyMessage?.(id) ?? `The ${def.apiNoun} '${id}' has dependencies and cannot be deleted.`,
+          users.map((u) => u.id),
+        );
+      }
+    }
+
     await this.store.delete(accountId, id);
+    for (const o of owned) await this.store.delete(accountId, o.id);
     for (const { resource, fields } of toPrune) {
       const config = { ...resource.config };
       for (const f of fields) {
@@ -319,11 +385,68 @@ export class Engine {
         config,
         refs: collectRefs(dDef.fields, config),
         attributes: dDef.derive
-          ? await dDef.derive({ id: resource.id, config, existing: resource, ctx: this.context(accountId, resource.region) })
+          ? keepSystem(
+              await dDef.derive({ id: resource.id, config, existing: resource, ctx: this.context(accountId, resource.region) }),
+              resource,
+            )
           : resource.attributes,
         updatedAt: this.now().toISOString(),
       });
     }
+  }
+
+  // ---------- default VPCs ----------
+
+  /** The account's default VPC in a region, if it has one. */
+  async defaultVpc(accountId: string, region: string): Promise<Resource | undefined> {
+    const vpcs = await this.list(accountId, { service: "networking", type: "vpc", region });
+    return vpcs.find((v) => systemOf(v).isDefault);
+  }
+
+  /**
+   * Creates a default VPC like the real one: 172.31.0.0/16, a /20 default subnet in
+   * every availability zone with public IPs on, an attached internet gateway and a
+   * 0.0.0.0/0 route in the main route table.
+   */
+  async createDefaultVpc(accountId: string, region: string): Promise<Resource> {
+    if (await this.defaultVpc(accountId, region)) {
+      throw new EngineError("DefaultVpcAlreadyExists", "A Default VPC already exists for this account in this region.");
+    }
+    const sys = this.systemApi(accountId, region);
+    const vpc = await sys.create("networking", "vpc", { cidrBlock: "172.31.0.0/16", enableDnsHostnames: true }, { isDefault: true });
+    const igw = await sys.create("networking", "internet-gateway", { vpcId: vpc.id });
+    const main = (await this.list(accountId, { service: "networking", type: "route-table", region })).find(
+      (t) => systemOf(t).main && t.config.vpcId === vpc.id,
+    );
+    if (main) await sys.update(main.id, { routes: [{ destination: "0.0.0.0/0", gatewayId: igw.id }] });
+    const zones = resolveTypeDef(getTypeDef("networking", "subnet"), region).fields.find((f) => f.key === "availabilityZone")?.options ?? [];
+    for (const [i, zone] of zones.entries()) {
+      await sys.create(
+        "networking",
+        "subnet",
+        { vpcId: vpc.id, cidrBlock: `172.31.${i * 16}.0/20`, availabilityZone: zone.value, mapPublicIpOnLaunch: true },
+        { defaultForAz: true },
+      );
+    }
+    return this.get(accountId, vpc.id);
+  }
+
+  /**
+   * Makes sure a region has its default VPC the first time the account uses it,
+   * like a new AWS account. Runs once per account and region; if the learner later
+   * deletes the default VPC it stays deleted, as it would in AWS.
+   */
+  async ensureDefaults(accountId: string, region: string): Promise<void> {
+    if (!isRegion(region)) return;
+    if (!(await this.store.tryClaim(`default-vpc:${accountId}:${region}`))) return;
+    if (!(await this.defaultVpc(accountId, region))) await this.createDefaultVpc(accountId, region);
+  }
+
+  /** Deletes everything the account has in a region; the default VPC comes back on next use. */
+  async resetRegion(accountId: string, region: string): Promise<number> {
+    const removed = await this.store.deleteRegion(accountId, region);
+    await this.store.releaseClaim(`default-vpc:${accountId}:${region}`);
+    return removed;
   }
 
   /** Resources that point at `id`, settled to their current state. */

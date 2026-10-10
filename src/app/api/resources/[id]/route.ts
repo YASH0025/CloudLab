@@ -9,7 +9,8 @@ export async function GET(_request: NextRequest, ctx: RouteContext<"/api/resourc
     const accountId = await getAccountId();
     const engine = getEngine();
     const item = await engine.get(accountId, id);
-    const referencedBy = await engine.dependents(accountId, id);
+    // A default security group's rule points at itself; that isn't a dependency worth showing.
+    const referencedBy = (await engine.dependents(accountId, id)).filter((r) => r.id !== id);
     return Response.json({ item: toDTO(item), referencedBy: referencedBy.map(toDTO) });
   });
 }
