@@ -142,7 +142,7 @@ export function ResourceDetailView() {
   }
 
   const { item, referencedBy } = query.data!;
-  const actions = Object.entries(typeDef.lifecycle?.actions ?? {});
+  const actions = Object.entries(typeDef.lifecycle?.actions ?? {}).filter(([, a]) => !a.hidden);
   // The platform's own markers are shown as badges, not as rows.
   // Some attributes have a panel of their own (scaling activities, health check bookkeeping).
   const inPanels = new Set(typeDef.panelAttributes ?? []);
@@ -155,7 +155,9 @@ export function ResourceDetailView() {
       : system.isDefault
         ? item.type === "vpc"
           ? "Default VPC"
-          : "Default security group"
+          : item.type === "security-group"
+            ? "Default security group"
+            : "Default"
         : null;
 
   return (

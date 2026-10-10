@@ -11,7 +11,7 @@ export type Lister = (service: string, type: string) => Promise<Resource[]>;
  */
 export async function freePublicIp(list: Lister): Promise<string> {
   const used = new Set(
-    [...(await list("compute", "instance")), ...(await list("compute", "elastic-ip"))]
+    [...(await list("compute", "instance")), ...(await list("compute", "elastic-ip")), ...(await list("rds", "db-instance"))]
       .map((r) => r.attributes.publicIp)
       .filter(Boolean),
   );
@@ -23,15 +23,23 @@ export async function freePublicIp(list: Lister): Promise<string> {
   throw new EngineError("AddressLimitExceeded", "The maximum number of addresses has been reached.");
 }
 
-/** The lowest free private address in a subnet. Instances and NAT gateways each take one. */
-export async function nextPrivateIp(list: Lister, subnet: Resource): Promise<string | null> {
+/**
+ * The lowest free private address in a subnet. Instances, NAT gateways and
+ * databases (and a Multi-AZ database's standby) each take one.
+ */
+export async function nextPrivateIp(list: Lister, subnet: Resource, alsoTaken: string[] = []): Promise<string | null> {
   const block = parseCidr(subnet.config.cidrBlock as string);
   if (!block) return null;
-  const holders = [...(await list("compute", "instance")), ...(await list("networking", "nat-gateway"))];
+  const taken: [unknown, unknown][] = [];
+  for (const r of [...(await list("compute", "instance")), ...(await list("networking", "nat-gateway"))]) {
+    taken.push([r.config.subnetId, r.attributes.privateIp]);
+  }
+  for (const db of await list("rds", "db-instance")) {
+    taken.push([db.attributes.subnetId, db.attributes.privateIp], [db.attributes.standbySubnetId, db.attributes.standbyPrivateIp]);
+  }
   const used = new Set(
-    holders
-      .filter((r) => r.config.subnetId === subnet.id)
-      .map((r) => ipToInt(String(r.attributes.privateIp ?? "")))
+    [...taken.filter(([s]) => s === subnet.id).map(([, ip]) => String(ip ?? "")), ...alsoTaken]
+      .map((ip) => ipToInt(ip))
       .filter((n): n is number => n !== null),
   );
   const hosts = usableHosts(block);

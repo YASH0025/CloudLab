@@ -33,6 +33,11 @@ function keepSystem(attributes: Record<string, unknown>, existing: Resource | nu
   return system ? { ...attributes, system } : attributes;
 }
 
+/** Secret fields (passwords) are validated and seen by hooks, never stored. */
+function dropSecrets(def: ResourceTypeDef, config: Record<string, unknown>) {
+  for (const f of def.fields) if (f.secret) delete config[f.key];
+}
+
 function isActive(r: Resource): boolean {
   const def = getTypeDef(r.service, r.type);
   const inactive = def.lifecycle?.inactiveStates ?? [];
@@ -56,7 +61,7 @@ function isWellFormed(def: ResourceTypeDef, id: string): boolean {
 
 /** For references by name, e.g. `InvalidKeyPair.NotFound: The key pair 'my-key' does not exist`. */
 export function notFoundByNameError(def: ResourceTypeDef, name: string): EngineError {
-  return errors.notFound(def.notFoundCode, `The ${def.apiNoun} '${name}' does not exist`);
+  return errors.notFound(def.notFoundCode, def.notFoundByNameMessage?.(name) ?? `The ${def.apiNoun} '${name}' does not exist`);
 }
 
 export function notFoundError(def: ResourceTypeDef, id: string): EngineError {
@@ -283,6 +288,7 @@ export class Engine {
     }
 
     const derived = def.derive ? await def.derive({ id, config, existing: null, ctx }) : {};
+    dropSecrets(def, config);
     // Secrets such as a private key are handed back once and never stored.
     const revealed: Record<string, unknown> = {};
     for (const key of def.revealOnce ?? []) {
@@ -341,6 +347,7 @@ export class Engine {
     const ctx = this.context(accountId, existing.region);
     const config = await this.validateConfig(def, existing.region, { ...existing.config, ...patch }, existing, ctx);
     const attributes = def.derive ? keepSystem(await def.derive({ id, config, existing, ctx }), existing) : existing.attributes;
+    dropSecrets(def, config);
 
     const updated: Resource = {
       ...existing,
@@ -365,12 +372,17 @@ export class Engine {
     const alreadyThere =
       existing.state === actionDef.to ||
       (existing.pendingState === actionDef.to && (!actionDef.via || existing.state === actionDef.via));
-    if (alreadyThere && actionDef.via !== "rebooting") return existing;
+    if (alreadyThere && actionDef.via !== "rebooting" && !actionDef.strict) return existing;
 
     if (!existing.state || !actionDef.from.includes(existing.state)) {
-      throw stateError(def, `The ${def.apiNoun} '${id}' is not in a state from which it can be ${actionDef.pastTense}.`);
+      throw stateError(
+        def,
+        actionDef.stateErrorMessage?.(existing) ?? `The ${def.apiNoun} '${id}' is not in a state from which it can be ${actionDef.pastTense}.`,
+      );
     }
-    const updated = scheduleTransition(existing, actionDef, this.now());
+    const patch = def.beforeAction ? await def.beforeAction({ resource: existing, action, ctx: this.context(accountId, existing.region) }) : undefined;
+    const base = patch ? { ...existing, attributes: { ...existing.attributes, ...patch } } : existing;
+    const updated = scheduleTransition(base, actionDef, this.now());
     await this.store.update(updated);
     return updated;
   }
@@ -391,7 +403,7 @@ export class Engine {
   }
 
   /** Deletes a resource. `force` lets types clean up first (deleting an Auto Scaling group terminates its instances). */
-  async remove(accountId: string, id: string, options: { force?: boolean } = {}): Promise<void> {
+  async remove(accountId: string, id: string, options: { force?: boolean; params?: Record<string, unknown> } = {}): Promise<void> {
     const existing = await this.get(accountId, id);
     const def = getTypeDef(existing.service, existing.type);
     const deletable = def.lifecycle?.deletableStates;
@@ -406,6 +418,7 @@ export class Engine {
         resource: existing,
         ctx: this.context(accountId, existing.region),
         force: options.force === true,
+        params: options.params ?? {},
         system: this.systemApi(accountId, existing.region),
       });
     }

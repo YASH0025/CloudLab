@@ -41,7 +41,7 @@ export const reachabilityInput = z
   });
 
 export type ReachabilityInput = z.input<typeof reachabilityInput>;
-type Input = z.output<typeof reachabilityInput>;
+export type Input = z.output<typeof reachabilityInput>;
 
 export type StepStatus = "pass" | "fail" | "skip" | "info";
 
@@ -210,7 +210,7 @@ export async function analyzeReachability(
 
 // ---------- from the internet ----------
 
-async function analyzeInbound(engine: Engine, accountId: string, instance: Resource, input: Input): Promise<ReachabilityResult> {
+export async function analyzeInbound(engine: Engine, accountId: string, instance: Resource, input: Input): Promise<ReachabilityResult> {
   const steps: ReachabilityStep[] = [];
   const traffic = describeTraffic(input);
   const publicIp = instance.attributes.publicIp as string | null;
@@ -509,7 +509,7 @@ async function analyzeOutbound(engine: Engine, accountId: string, instance: Reso
 
 // ---------- from another instance ----------
 
-async function analyzeBetween(engine: Engine, accountId: string, source: Resource, target: Resource, input: Input): Promise<ReachabilityResult> {
+export async function analyzeBetween(engine: Engine, accountId: string, source: Resource, target: Resource, input: Input): Promise<ReachabilityResult> {
   const steps: ReachabilityStep[] = [];
   const traffic = describeTraffic(input);
   const targetIp = target.attributes.privateIp as string;

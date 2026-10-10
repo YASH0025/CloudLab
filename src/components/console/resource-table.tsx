@@ -127,7 +127,7 @@ export function ResourceTable({ typeDef, data, onAction, onDelete }: ResourceTab
       header: () => <span className="sr-only">Actions</span>,
       cell: ({ row }) => {
         const r = row.original;
-        const actions = Object.entries(typeDef.lifecycle?.actions ?? {});
+        const actions = Object.entries(typeDef.lifecycle?.actions ?? {}).filter(([, a]) => !a.hidden);
         return (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>

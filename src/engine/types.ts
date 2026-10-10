@@ -71,6 +71,12 @@ export interface FieldDef {
    * Such references are checked when set but never tracked as dependencies.
    */
   ref?: { service: string; type: string; multiple?: boolean; weak?: boolean; by?: "name" };
+  /**
+   * A secret the user types (a database password). Validated, handed to `validate`
+   * and `derive`, then dropped: it is never stored or shown again. The console uses
+   * a password input. Empty on update means "unchanged".
+   */
+  secret?: boolean;
   /** list: shape of each item */
   item?: FieldDef[];
   maxItems?: number;
@@ -97,6 +103,12 @@ export interface ActionDef {
   pastTense: string;
   afterMs?: number;
   destructive?: boolean;
+  /** Run by the platform itself (e.g. applying a modification), not offered as a button. */
+  hidden?: boolean;
+  /** Fail instead of quietly succeeding when the resource is already in the target state (RDS does). */
+  strict?: boolean;
+  /** The real API's message when the resource is in the wrong state for this action. */
+  stateErrorMessage?: (resource: Resource) => string;
 }
 
 export interface LifecycleDef {
@@ -216,6 +228,8 @@ export interface ResourceTypeDef {
   notFoundCode: string;
   /** Message for a missing ID when the real API doesn't use "The <noun> ID '<id>' does not exist". */
   notFoundMessage?: (id: string) => string;
+  /** Message when a by-name reference names nothing, if not "The <noun> '<name>' does not exist". */
+  notFoundByNameMessage?: (name: string) => string;
   /** Error code for a badly formed ID, when it isn't the not-found code with ".Malformed". */
   malformedCode?: string;
   /** Message for a badly formed ID, when the default (expecting "prefix-...") doesn't fit, e.g. ARNs. */
@@ -240,8 +254,22 @@ export interface ResourceTypeDef {
   idPattern?: RegExp;
   /** IAM actions and ARNs for the console's operations, used to check permissions. */
   iam?: IamMapping;
-  /** Async checks before deletion (e.g. IAM's DeleteConflict). Throw to refuse. */
-  beforeDelete?: (input: { resource: Resource; ctx: HookContext; force: boolean; system: SystemApi }) => Promise<void>;
+  /**
+   * Async checks before deletion (e.g. IAM's DeleteConflict). Throw to refuse.
+   * `params` carries delete options such as RDS's final snapshot.
+   */
+  beforeDelete?: (input: {
+    resource: Resource;
+    ctx: HookContext;
+    force: boolean;
+    params: Record<string, unknown>;
+    system: SystemApi;
+  }) => Promise<void>;
+  /**
+   * Runs before a lifecycle action is scheduled: throw to refuse, or return
+   * attributes to merge (e.g. a Multi-AZ failover swapping zones).
+   */
+  beforeAction?: (input: { resource: Resource; action: string; ctx: HookContext }) => Promise<Record<string, unknown> | void>;
   /** The error when dependents block deletion, if not DependencyViolation (e.g. S3's BucketNotEmpty). */
   dependencyError?: (id: string) => EngineError;
   /** Message when deletion is blocked by dependents. Defaults to "The <noun> '<id>' has dependencies and cannot be deleted." */
@@ -309,6 +337,8 @@ export type ResolvedTypeDef = Omit<
   | "privateAttributes"
   | "idPattern"
   | "malformedMessage"
+  | "notFoundByNameMessage"
+  | "beforeAction"
 >;
 
 export interface ResolvedServiceDef extends Omit<ServiceDef, "types"> {

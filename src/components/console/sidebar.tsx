@@ -4,6 +4,7 @@ import * as DialogPrimitive from "@radix-ui/react-dialog";
 import {
   BoxIcon,
   DatabaseIcon,
+  DatabaseZapIcon,
   LayoutDashboardIcon,
   MenuIcon,
   NetworkIcon,
@@ -26,6 +27,7 @@ const icons: Record<string, ComponentType<{ className?: string }>> = {
   Networking: NetworkIcon,
   Compute: ServerIcon,
   Storage: DatabaseIcon,
+  Database: DatabaseZapIcon,
   Security: ShieldIcon,
 };
 
