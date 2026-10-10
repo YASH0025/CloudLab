@@ -62,6 +62,54 @@ export const blobs = pgTable(
   (t) => [index("blobs_account_idx").on(t.accountId)],
 );
 
+// ---------- Local mode: the learner's own computer ----------
+
+/** A computer paired with an account. The agent authenticates with a token; only its hash is kept. */
+export const agents = pgTable(
+  "agents",
+  {
+    id: text("id").primaryKey(),
+    accountId: text("account_id").notNull(),
+    name: text("name").notNull(),
+    tokenHash: text("token_hash").notNull().unique(),
+    info: jsonb("info").$type<Record<string, unknown>>(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true }),
+  },
+  (t) => [index("agents_account_idx").on(t.accountId)],
+);
+
+/** Work queued for an agent: deploy, start, stop, restart, remove. */
+export const agentTasks = pgTable(
+  "agent_tasks",
+  {
+    id: text("id").primaryKey(),
+    agentId: text("agent_id").notNull(),
+    accountId: text("account_id").notNull(),
+    type: text("type").notNull(),
+    payload: jsonb("payload").$type<Record<string, unknown>>().notNull(),
+    status: text("status").notNull(),
+    error: text("error"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("agent_tasks_agent_status_idx").on(t.agentId, t.status)],
+);
+
+/** Apps deployed to a learner's computer. Everything but the keys lives in `data`. */
+export const localApps = pgTable(
+  "local_apps",
+  {
+    id: text("id").primaryKey(),
+    accountId: text("account_id").notNull(),
+    agentId: text("agent_id").notNull(),
+    data: jsonb("data").$type<Record<string, unknown>>().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("local_apps_account_idx").on(t.accountId)],
+);
+
 // ---------- sign-in (better-auth) ----------
 // Standard better-auth tables. A signed-in user's lab lives under the account ID "u_<user.id>".
 

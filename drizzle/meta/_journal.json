@@ -29,6 +29,13 @@
       "when": 1791637594755,
       "tag": "0003_objects",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1791644565597,
+      "tag": "0004_local_mode",
+      "breakpoints": true
     }
   ]
 }

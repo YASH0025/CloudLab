@@ -1,10 +1,13 @@
 import { neon } from "@neondatabase/serverless";
 import { drizzle } from "drizzle-orm/neon-http";
 import { MemoryStore, type ResourceStore } from "@/engine/store";
+import { MemoryLocalStore, type LocalStore } from "@/local/store";
+import { PostgresLocalStore } from "./local-store";
 import { PostgresStore } from "./postgres-store";
 
 const globalForStore = globalThis as unknown as {
   __cloudlabStore?: ResourceStore;
+  __cloudlabLocalStore?: LocalStore;
   __cloudlabDb?: ReturnType<typeof drizzle>;
 };
 
@@ -37,6 +40,15 @@ export function getStore(): ResourceStore {
   const db = getDb();
   globalForStore.__cloudlabStore = db ? new PostgresStore(db) : new MemoryStore();
   return globalForStore.__cloudlabStore;
+}
+
+/** Storage for Local mode (paired computers and their apps), alongside the resource store. */
+export function getLocalStore(): LocalStore {
+  if (globalForStore.__cloudlabLocalStore) return globalForStore.__cloudlabLocalStore;
+  getStore(); // same configuration checks
+  const db = getDb();
+  globalForStore.__cloudlabLocalStore = db ? new PostgresLocalStore(db) : new MemoryLocalStore();
+  return globalForStore.__cloudlabLocalStore;
 }
 
 /** Which store is in use, for the health check. */

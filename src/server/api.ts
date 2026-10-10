@@ -3,7 +3,8 @@ import { cookies } from "next/headers";
 import { unstable_rethrow } from "next/navigation";
 import { nanoid } from "nanoid";
 import { z } from "zod";
-import { getStore } from "@/db/store";
+import { getLocalStore, getStore } from "@/db/store";
+import { LocalService } from "@/local/service";
 import { Engine, EngineError } from "@/engine";
 import { getSignedInUser } from "./auth";
 
@@ -14,6 +15,14 @@ let engine: Engine | null = null;
 export function getEngine(): Engine {
   engine ??= new Engine(getStore());
   return engine;
+}
+
+let local: LocalService | null = null;
+
+/** Local mode: the learner's own computer, driven through its agent. */
+export function getLocal(): LocalService {
+  local ??= new LocalService(getLocalStore());
+  return local;
 }
 
 /** Lab account ID for a signed-in user. */
@@ -34,6 +43,7 @@ export async function getAccountId(): Promise<string> {
     const accountId = userAccountId(user.id);
     if (anonymous) {
       await getEngine().adoptLab(anonymous, accountId);
+      await getLocalStore().transferAccount(anonymous, accountId);
       jar.delete(ACCOUNT_COOKIE);
     }
     return accountId;
