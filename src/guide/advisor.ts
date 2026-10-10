@@ -160,6 +160,24 @@ export async function advise(engine: Engine, accountId: string, region: string):
       link: { service: "compute", type: "instance", mode: "detail", id: instance.id },
       cli: `aws ec2 start-instances --instance-ids ${instance.id}`,
     });
+  } else if (!instance.attributes.publicIp && vpcGateway) {
+    // With a gateway in place, an Elastic IP fixes this without relaunching.
+    const spare = s.addresses.find((a) => !a.config.instanceId);
+    push({
+      id: "needs-public-ip",
+      level: "beginner",
+      title: spare ? `Associate ${spare.attributes.publicIp} with your server` : "Your server has no public IP",
+      why: `${label(instance)} only has a private address (${instance.attributes.privateIp}), which works inside the VPC but can't be reached from the internet. An Elastic IP gives it a fixed public address that also survives stop and start.`,
+      steps: spare
+        ? [`Open Elastic IP ${spare.id}, choose ${instance.id} as the associated instance and save.`]
+        : ["Allocate an Elastic IP and choose this instance as its associated instance."],
+      link: spare
+        ? { service: "compute", type: "elastic-ip", mode: "detail", id: spare.id }
+        : { service: "compute", type: "elastic-ip", mode: "create", prefill: { name: "web-ip", instanceId: instance.id } },
+      cli: spare
+        ? `aws ec2 associate-address --instance-id ${instance.id} --allocation-id ${spare.id}`
+        : "aws ec2 allocate-address",
+    });
   } else if (!instance.attributes.publicIp) {
     const subnet = vpcSubnets.find((x) => x.id === instance.config.subnetId) ?? vpcSubnets[0];
     push({

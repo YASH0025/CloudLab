@@ -38,6 +38,7 @@
     "date-fns": "^4.4.0",
     "drizzle-orm": "^0.45.4",
     "geist": "^1.7.2",
+    "jmespath": "^0.16.0",
     "lucide-react": "^1.54.0",
     "nanoid": "^6.0.2",
     "next": "16.4.0",
@@ -54,6 +55,7 @@
   "devDependencies": {
     "@electric-sql/pglite": "^0.5.8",
     "@tailwindcss/turbopack": "^4",
+    "@types/jmespath": "^0.15.2",
     "@types/node": "^22.20.5",
     "@types/react": "^19",
     "@types/react-dom": "^19",

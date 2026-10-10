@@ -49,6 +49,11 @@ function isWellFormed(def: ResourceTypeDef, id: string): boolean {
   return def.idFromName || new RegExp(`^${def.idPrefix}-([0-9a-f]{8}|[0-9a-f]{17})$`).test(id);
 }
 
+/** For references by name, e.g. `InvalidKeyPair.NotFound: The key pair 'my-key' does not exist`. */
+export function notFoundByNameError(def: ResourceTypeDef, name: string): EngineError {
+  return errors.notFound(def.notFoundCode, `The ${def.apiNoun} '${name}' does not exist`);
+}
+
 export function notFoundError(def: ResourceTypeDef, id: string): EngineError {
   if (def.idFromName) return errors.notFound(def.notFoundCode, "The specified bucket does not exist");
   if (def.type === "security-group") return errors.notFound(def.notFoundCode, `The security group '${id}' does not exist`);
@@ -123,11 +128,16 @@ export class Engine {
     };
   }
 
-  /** Settles pending transitions and writes the new state back. */
+  /** Settles pending transitions, writes the new state back and runs the type's `onSettled` hook. */
   private async settleAndSave(resource: Resource): Promise<Resource> {
     const { resource: settled, changed } = settle(resource, this.now());
-    if (changed) await this.store.update(settled);
-    return settled;
+    if (!changed) return settled;
+    await this.store.update(settled);
+    const def = getTypeDef(settled.service, settled.type);
+    if (!def.onSettled) return settled;
+    await def.onSettled({ resource: settled, from: resource.state, system: this.systemApi(settled.accountId, settled.region) });
+    // The hook may have changed this resource's attributes (e.g. released its public IP).
+    return (await this.store.get(settled.accountId, settled.id)) ?? settled;
   }
 
   private async validateConfig(
@@ -150,6 +160,13 @@ export class Engine {
     for (const field of def.fields) {
       if (field.type !== "ref" || !field.ref) continue;
       const value = clean[field.key];
+      if (field.ref.by === "name") {
+        // Checked only when set or changed: an instance keeps working if its key pair is deleted later.
+        if (typeof value !== "string" || !value || (existing && existing.config[field.key] === value)) continue;
+        const targets = await ctx.list(field.ref.service, field.ref.type);
+        if (!targets.some((t) => t.name === value)) throw notFoundByNameError(getTypeDef(field.ref.service, field.ref.type), value);
+        continue;
+      }
       const ids = Array.isArray(value) ? (value as string[]) : typeof value === "string" ? [value] : [];
       for (const id of ids) {
         const target = await this.getTyped(ctx.accountId, id, field.ref.service, field.ref.type, region);
@@ -178,8 +195,15 @@ export class Engine {
 
   private systemApi(accountId: string, region: string): SystemApi {
     return {
+      get: (id) => this.get(accountId, id).catch(() => null),
+      list: (service, type) => this.list(accountId, { service, type, region }),
       create: (service, type, config, system) => this.create(accountId, { service, type, region, config }, { system, settled: true }),
       update: (id, patch) => this.update(accountId, id, patch),
+      setAttributes: async (id, patch) => {
+        const r = await this.store.get(accountId, id);
+        if (!r) return;
+        await this.store.update({ ...r, attributes: { ...r.attributes, ...patch }, updatedAt: this.now().toISOString() });
+      },
     };
   }
 
@@ -233,6 +257,12 @@ export class Engine {
     }
 
     const derived = def.derive ? await def.derive({ id, config, existing: null, ctx }) : {};
+    // Secrets such as a private key are handed back once and never stored.
+    const revealed: Record<string, unknown> = {};
+    for (const key of def.revealOnce ?? []) {
+      if (key in derived) revealed[key] = derived[key];
+      delete derived[key];
+    }
     const attributes = options.system ? { ...derived, system: options.system } : derived;
     const nowIso = this.now().toISOString();
     let resource: Resource = {
@@ -262,7 +292,7 @@ export class Engine {
 
     await this.store.insert(resource);
     if (def.afterCreate) await def.afterCreate({ resource, system: this.systemApi(accountId, input.region) });
-    return resource;
+    return Object.keys(revealed).length > 0 ? { ...resource, attributes: { ...resource.attributes, ...revealed } } : resource;
   }
 
   async update(accountId: string, id: string, patch: Record<string, unknown>): Promise<Resource> {
@@ -295,6 +325,7 @@ export class Engine {
       updatedAt: this.now().toISOString(),
     };
     await this.store.update(updated);
+    if (def.afterUpdate) await def.afterUpdate({ resource: updated, previous: existing, system: this.systemApi(accountId, existing.region) });
     return updated;
   }
 
@@ -373,6 +404,7 @@ export class Engine {
 
     await this.store.delete(accountId, id);
     for (const o of owned) await this.store.delete(accountId, o.id);
+    if (def.afterDelete) await def.afterDelete({ resource: existing, system: this.systemApi(accountId, existing.region) });
     for (const { resource, fields } of toPrune) {
       const config = { ...resource.config };
       for (const f of fields) {

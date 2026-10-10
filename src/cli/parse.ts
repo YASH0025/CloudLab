@@ -48,6 +48,10 @@ export interface ParsedCommand {
   /** Option name (without --) → values. A flag with no value has an empty list. */
   options: Map<string, string[]>;
   region?: string;
+  /** --query: a JMESPath expression applied to the output. */
+  query?: string;
+  /** --output: json (default), text, table or yaml. */
+  output?: string;
 }
 
 /** Global options the AWS CLI accepts anywhere on the line. */
@@ -58,6 +62,8 @@ export function parseAws(tokens: string[]): ParsedCommand {
   const positionals: string[] = [];
   const options = new Map<string, string[]>();
   let region: string | undefined;
+  let query: string | undefined;
+  let output: string | undefined;
 
   let i = 1;
   while (i < tokens.length) {
@@ -83,6 +89,12 @@ export function parseAws(tokens: string[]): ParsedCommand {
       if (name === "region") {
         if (!values[0]) throw new UsageError("argument --region: expected one argument");
         region = values[0];
+      } else if (name === "query" || name === "output") {
+        if (!values[0]) throw new UsageError(`argument --${name}: expected one argument`);
+        if (name === "query") query = values[0];
+        else if (!["json", "text", "table", "yaml", "yaml-stream"].includes(values[0])) {
+          throw new UsageError(`argument --output: Invalid choice, valid choices are:\n\njson | text | table | yaml | yaml-stream`);
+        } else output = values[0];
       } else if (!GLOBAL_WITH_VALUE.has(name)) {
         options.set(name, [...(options.get(name) ?? []), ...values]);
       }
@@ -95,7 +107,7 @@ export function parseAws(tokens: string[]): ParsedCommand {
   const [service, operation, ...rest] = positionals;
   if (!service) throw new UsageError("the following arguments are required: command");
   if (!operation) throw new UsageError(`the following arguments are required: operation (try 'aws ${service} help')`);
-  return { service, operation, positionals: rest, options, region };
+  return { service, operation, positionals: rest, options, region, query, output };
 }
 
 /**

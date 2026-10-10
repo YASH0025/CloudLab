@@ -91,6 +91,39 @@ describe("advisor", () => {
     expect(s.cli).toContain(`--group-id ${sg.id}`);
   });
 
+  it("suggests an Elastic IP when a server in a public setup has no public IP", async () => {
+    const vpc = await engine.create(ACCOUNT, { service: "networking", type: "vpc", region: REGION, config: { cidrBlock: "10.0.0.0/16" } });
+    clock = new Date(clock.getTime() + 2_000);
+    const subnet = await engine.create(ACCOUNT, {
+      service: "networking",
+      type: "subnet",
+      region: REGION,
+      config: { vpcId: vpc.id, cidrBlock: "10.0.1.0/24", availabilityZone: "us-east-1a" },
+    });
+    await engine.create(ACCOUNT, { service: "networking", type: "internet-gateway", region: REGION, config: { vpcId: vpc.id } });
+    const sg = await engine.create(ACCOUNT, {
+      service: "networking",
+      type: "security-group",
+      region: REGION,
+      config: { name: "web", description: "web", vpcId: vpc.id },
+    });
+    const instance = await engine.create(ACCOUNT, {
+      service: "compute",
+      type: "instance",
+      region: REGION,
+      config: { imageId: "ami-0lab2023linux0001", subnetId: subnet.id, securityGroupIds: [sg.id], associatePublicIp: "disable" },
+    });
+    clock = new Date(clock.getTime() + 10_000);
+    const s = await next();
+    expect(s.id).toBe("needs-public-ip");
+    expect(s.cli).toBe("aws ec2 allocate-address");
+    const eip = await follow();
+    expect(eip.type).toBe("elastic-ip");
+    const inst = await engine.get(ACCOUNT, instance.id);
+    expect(inst.attributes.publicIp).toBe(eip.attributes.publicIp);
+    expect((await next()).id).not.toBe("needs-public-ip");
+  });
+
   it("explains common error codes", () => {
     expect(explainError("DependencyViolation")?.fix).toMatch(/Used by/);
     expect(explainError("InvalidVpcID.NotFound")?.meaning).toMatch(/doesn't exist/);

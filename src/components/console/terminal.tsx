@@ -7,6 +7,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 import { commonPrefix, complete } from "@/cli/complete";
 import type { CliResult } from "@/cli/execute";
+import { downloadText } from "@/lib/utils";
 import { useConsoleStore } from "@/stores/console-store";
 import { useGuideStore } from "@/stores/guide-store";
 
@@ -165,7 +166,11 @@ export const Terminal = forwardRef<TerminalHandle>(function Terminal(_props, ref
           busy.current = true;
           try {
             const result = await execRef.current({ command, region: regionRef.current });
-            if (result.output) {
+            if (result.saveAs && result.exitCode === 0) {
+              // `> file`: there is no file system here, so the browser downloads the output instead.
+              downloadText(result.saveAs, result.output.endsWith("\n") ? result.output : `${result.output}\n`);
+              term.writeln(`${C.dim}Saved ${result.saveAs} to your downloads.${C.reset}`);
+            } else if (result.output) {
               const color = result.exitCode === 0 ? "" : C.red;
               term.writeln(`${color}${result.output}${color ? C.reset : ""}`);
             }

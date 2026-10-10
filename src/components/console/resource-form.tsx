@@ -251,6 +251,8 @@ function RefControl({
 }) {
   const { data = [], isLoading } = useResources(field.ref!.service, field.ref!.type);
   const options = data.filter((r) => r.state !== "terminated");
+  // Some references store the target's name rather than its ID (an instance's key pair).
+  const valueOf = (r: (typeof options)[number]) => (field.ref?.by === "name" ? r.name : r.id);
   const describe = (r: (typeof options)[number]) => {
     const extra = [r.config.cidrBlock, r.config.vpcId, r.config.availabilityZone].filter(Boolean).join(" · ");
     return { title: r.name || r.id, sub: `${r.id}${extra ? ` · ${extra}` : ""}` };
@@ -259,7 +261,7 @@ function RefControl({
   if (!isLoading && options.length === 0) {
     return (
       <p className="rounded-md border border-dashed px-3 py-2 text-sm text-muted-foreground">
-        No {inSentence(field.label)} in this region yet. Create one first.
+        No {inSentence(field.label)} in this region yet. {field.required ? "Create one first." : "You can create one first, or carry on without."}
       </p>
     );
   }
@@ -306,7 +308,7 @@ function RefControl({
         {options.map((r) => {
           const d = describe(r);
           return (
-            <SelectItem key={r.id} value={r.id}>
+            <SelectItem key={r.id} value={valueOf(r)}>
               {d.title} <span className="font-mono text-xs text-muted-foreground">{d.sub}</span>
             </SelectItem>
           );

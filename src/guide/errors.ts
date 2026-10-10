@@ -34,7 +34,8 @@ const EXPLANATIONS: Record<string, ErrorExplanation> = {
     fix: "Choose a range nobody else uses, e.g. move from 10.0.1.0/24 to 10.0.2.0/24.",
   },
   IncorrectInstanceState: {
-    meaning: "The instance is in the wrong state for this action, e.g. changing its type while it's running.",
+    meaning:
+      "The instance is in the wrong state for this action, e.g. changing its type while it's running, or attaching an Elastic IP while it's still starting.",
     fix: "Check the instance's state; stop it (or wait for it to finish starting) and try again.",
   },
   "InvalidVpc.Range": {
@@ -74,8 +75,9 @@ const EXPLANATIONS: Record<string, ErrorExplanation> = {
     fix: "Use 3–63 lowercase letters, numbers, dots or hyphens, starting and ending with a letter or number.",
   },
   "Resource.AlreadyAssociated": {
-    meaning: "The resource is already connected to something, and can only be connected to one (a VPC has one internet gateway; a subnet uses one route table).",
-    fix: "Disconnect it from the current one first.",
+    meaning:
+      "The resource is already connected to something, and can only be connected to one (a VPC has one internet gateway; a subnet uses one route table; an Elastic IP points at one instance).",
+    fix: "Disconnect it from the current one first. For an Elastic IP, disassociate it, or pass --allow-reassociation.",
   },
   "InvalidGroup.Duplicate": {
     meaning: "A security group with that name already exists in this VPC.",
@@ -90,8 +92,25 @@ const EXPLANATIONS: Record<string, ErrorExplanation> = {
     fix: "Describe the security group to see its rules, then match one exactly.",
   },
   "Gateway.NotAttached": {
-    meaning: "The internet gateway isn't attached to that VPC.",
-    fix: "Check which VPC it's attached to with describe-internet-gateways.",
+    meaning:
+      "The VPC has no internet gateway attached (or not the one you named). Public addresses, including Elastic IPs, only work through one.",
+    fix: "Attach an internet gateway to the VPC, or check which VPC it's on with describe-internet-gateways.",
+  },
+  "InvalidKeyPair.NotFound": {
+    meaning: "No key pair with that name exists in this region. Key pairs belong to one region.",
+    fix: "Create it first (create-key-pair), or check the name and the region selector.",
+  },
+  "InvalidKeyPair.Duplicate": {
+    meaning: "You already have a key pair with that name in this region.",
+    fix: "Use the existing one, or delete it first. The private key can't be downloaded again, so delete and recreate if you lost it.",
+  },
+  "InvalidIPAddress.InUse": {
+    meaning: "The Elastic IP is still attached to an instance, so it can't be released.",
+    fix: "Disassociate it first (disassociate-address), then release it.",
+  },
+  AddressLimitExceeded: {
+    meaning: "You've reached the limit of Elastic IPs in this region (5).",
+    fix: "Release addresses you don't use. Unused Elastic IPs cost money in a real account, so it's a good habit anyway.",
   },
   VPCIdNotSpecified: {
     meaning: "There's no default VPC, so you have to say which VPC or subnet to use.",

@@ -1,6 +1,7 @@
 import { isRegion } from "@/engine/catalog";
 import { EngineError } from "@/engine/errors";
 import { Args, COMMANDS, findCommand, servicesList, type CliContext } from "./commands";
+import { applyQuery, formatOutput, QueryError } from "./output";
 import { parseAws, tokenize, UsageError } from "./parse";
 
 export interface CliResult {
@@ -9,6 +10,20 @@ export interface CliResult {
   exitCode: number;
   /** True when the command changed resources, so the console should refresh. */
   changed: boolean;
+  /** Set when the line ended in `> file`: the terminal offers the output as a download with this name. */
+  saveAs?: string;
+}
+
+/** Splits off a trailing `> file` or `>> file` redirect. */
+function splitRedirect(tokens: string[]): { tokens: string[]; saveAs?: string } | { error: string } {
+  const i = tokens.findIndex((t) => t.startsWith(">"));
+  if (i === -1) return { tokens };
+  const inline = tokens[i].replace(/^>>?/, "");
+  const file = inline || tokens[i + 1];
+  const rest = tokens.slice(i + (inline ? 1 : 2));
+  if (!file || rest.length > 0) return { error: "syntax error near unexpected token `newline'" };
+  if (!/^[\w.@+-]+$/.test(file)) return { error: `${file}: CloudLab can only save to a plain file name, like my-key.pem` };
+  return { tokens: tokens.slice(0, i), saveAs: file };
 }
 
 // The real CLI prints this block before every usage error.
@@ -52,7 +67,7 @@ function helpText(service?: string): string {
     "Supported services:",
     ...servicesList().map((s) => `  aws ${s} help`),
     "",
-    "Global options: --region <region>",
+    "Global options: --region <region>, --query <jmespath>, --output json|text",
     "Terminal keys: ↑/↓ history, Ctrl+C cancel line, Ctrl+L or 'clear' to clear.",
     "",
     "Try:",
@@ -71,6 +86,16 @@ export async function executeCli(line: string, ctx: CliContext): Promise<CliResu
     return usageError((e as Error).message);
   }
   if (tokens.length === 0) return { output: "", exitCode: 0, changed: false };
+  const redirect = splitRedirect(tokens);
+  if ("error" in redirect) return { output: `bash: ${redirect.error}`, exitCode: 2, changed: false };
+  tokens = redirect.tokens;
+  if (tokens[0] === "chmod" || tokens[0] === "ssh") {
+    return {
+      output: `${tokens[0]}: this terminal has no files or network. Run it in a terminal on your own computer, using the key file you downloaded.`,
+      exitCode: 0,
+      changed: false,
+    };
+  }
   if (tokens[0] === "help" || (tokens[0] === "aws" && (tokens.length === 1 || tokens[1] === "help"))) {
     return { output: helpText(), exitCode: 0, changed: false };
   }
@@ -134,10 +159,12 @@ export async function executeCli(line: string, ctx: CliContext): Promise<CliResu
 
   try {
     const result = await command.run(new Args(parsed.options, parsed.positionals), { ...ctx, region });
-    const output = result === undefined ? "" : typeof result === "string" ? result : JSON.stringify(result, null, 4);
-    return { output, exitCode: 0, changed: command.mutates };
+    const output =
+      typeof result === "string" ? result : formatOutput(applyQuery(result, parsed.query), parsed.output);
+    return { output, exitCode: 0, changed: command.mutates, ...(redirect.saveAs ? { saveAs: redirect.saveAs } : {}) };
   } catch (e) {
     if (e instanceof UsageError) return usageError(e.message);
+    if (e instanceof QueryError) return { output: e.message, exitCode: 255, changed: command.mutates };
     if (e instanceof EngineError) {
       const prefix = command.service === "s3" ? `${command.operation === "mb" ? "make_bucket" : "remove_bucket"} failed: ${parsed.positionals[0]} ` : "\n";
       return {

@@ -15,12 +15,14 @@ export interface Snapshot {
   instances: Resource[];
   /** Buckets in every region (bucket names are global). */
   buckets: Resource[];
+  /** Elastic IPs. */
+  addresses: Resource[];
 }
 
 export async function takeSnapshot(engine: Engine, accountId: string, region: string): Promise<Snapshot> {
   const list = (service: string, type: string, allRegions = false) =>
     engine.list(accountId, { service, type, region: allRegions ? undefined : region });
-  const [vpcs, subnets, gateways, routeTables, groups, instances, buckets] = await Promise.all([
+  const [vpcs, subnets, gateways, routeTables, groups, instances, buckets, addresses] = await Promise.all([
     list("networking", "vpc"),
     list("networking", "subnet"),
     list("networking", "internet-gateway"),
@@ -28,6 +30,7 @@ export async function takeSnapshot(engine: Engine, accountId: string, region: st
     list("networking", "security-group"),
     list("compute", "instance"),
     list("storage", "bucket", true),
+    list("compute", "elastic-ip"),
   ]);
   return {
     region,
@@ -39,6 +42,7 @@ export async function takeSnapshot(engine: Engine, accountId: string, region: st
     groups,
     instances: instances.filter((i) => i.state !== "terminated"),
     buckets,
+    addresses,
   };
 }
 

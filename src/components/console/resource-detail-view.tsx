@@ -30,6 +30,9 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
 }
 
 function FieldValue({ field, value }: { field: FieldDef; value: unknown }) {
+  if (field.type === "ref" && field.ref?.by === "name") {
+    return <span className="font-mono text-xs">{value ? String(value) : "–"}</span>;
+  }
   if (field.type === "ref" && field.ref) {
     const ids = Array.isArray(value) ? (value as string[]) : value ? [String(value)] : [];
     if (ids.length === 0) return <>–</>;

@@ -9,7 +9,8 @@ import { useCreateResource, useTypeDef } from "@/hooks/use-cloud";
 import { routes } from "@/lib/routes";
 import { useConsoleStore } from "@/stores/console-store";
 import { ResourceForm } from "./resource-form";
-import { inSentence } from "@/lib/utils";
+import { downloadText, inSentence } from "@/lib/utils";
+import { toast } from "sonner";
 
 export function ResourceCreateView() {
   const { service, type } = useParams<{ service: string; type: string }>();
@@ -57,7 +58,17 @@ export function ResourceCreateView() {
             onCancel={() => router.push(routes.list(service, type))}
             onSubmit={(values) =>
               create.mutate(values, {
-                onSuccess: ({ item }) => router.push(routes.detail(item.service, item.type, item.id)),
+                onSuccess: ({ item }) => {
+                  // A new key pair's private key is returned once: save it straight away, like the real console.
+                  if (typeof item.attributes.keyMaterial === "string") {
+                    downloadText(`${item.name}.pem`, item.attributes.keyMaterial);
+                    toast.success(`Saved ${item.name}.pem to your downloads`, {
+                      description: "Keep it safe. This is the only time the private key is available.",
+                      duration: 10000,
+                    });
+                  }
+                  router.push(routes.detail(item.service, item.type, item.id));
+                },
               })
             }
           />

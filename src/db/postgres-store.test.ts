@@ -109,6 +109,29 @@ describe("PostgresStore on real Postgres", () => {
     expect(await engine.adoptLab(anon2, user)).toBe(0);
   });
 
+  it("keeps an Elastic IP on its instance through stop and start, and never stores private keys", async () => {
+    const ctx = { engine, accountId: account(), region: REGION };
+    const run = async (line: string) => {
+      const r = await executeCli(line, ctx);
+      if (r.exitCode !== 0) throw new Error(`'${line}' failed: ${r.output}`);
+      return r.output ? JSON.parse(r.output) : {};
+    };
+    const key = await run("aws ec2 create-key-pair --key-name pg-key");
+    expect(key.KeyMaterial).toContain("PRIVATE KEY");
+    expect((await store.get(ctx.accountId, key.KeyPairId))!.attributes).not.toHaveProperty("keyMaterial");
+
+    const id = (await run("aws ec2 run-instances --image-id ami-0lab2023linux0001 --key-name pg-key")).Instances[0].InstanceId;
+    advance(10_000);
+    const eip = await run("aws ec2 allocate-address");
+    await run(`aws ec2 associate-address --instance-id ${id} --allocation-id ${eip.AllocationId}`);
+    await run(`aws ec2 stop-instances --instance-ids ${id}`);
+    advance(10_000);
+    await run(`aws ec2 start-instances --instance-ids ${id}`);
+    advance(10_000);
+    const inst = (await run(`aws ec2 describe-instances --instance-ids ${id}`)).Reservations[0].Instances[0];
+    expect(inst).toMatchObject({ PublicIpAddress: eip.PublicIp, KeyName: "pg-key", State: { Name: "running" } });
+  });
+
   it("enforces global bucket names across accounts", async () => {
     const a = account();
     const b = account();

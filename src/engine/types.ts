@@ -63,8 +63,10 @@ export interface FieldDef {
    * ref: which resource type it points at, and whether several may be chosen.
    * A `weak` reference doesn't block deleting its target; it is removed instead
    * (like a route table's subnet association when the subnet is deleted).
+   * `by: "name"` stores the target's name instead of its ID (an instance's key pair).
+   * Such references are checked when set but never tracked as dependencies.
    */
-  ref?: { service: string; type: string; multiple?: boolean; weak?: boolean };
+  ref?: { service: string; type: string; multiple?: boolean; weak?: boolean; by?: "name" };
   /** list: shape of each item */
   item?: FieldDef[];
   maxItems?: number;
@@ -128,10 +130,15 @@ export function systemOf(r: { attributes: Record<string, unknown> }): SystemInfo
   return (r.attributes.system as SystemInfo | undefined) ?? {};
 }
 
-/** What `afterCreate` hooks can do: create and update resources as the platform. */
+/** What hooks can do: read, create and update resources as the platform. */
 export interface SystemApi {
+  get(id: string): Promise<Resource | null>;
+  /** The account's resources of a type in the hook's region. */
+  list(service: string, type: string): Promise<Resource[]>;
   create(service: string, type: string, config: Record<string, unknown>, system?: SystemInfo): Promise<Resource>;
   update(id: string, patch: Record<string, unknown>): Promise<Resource>;
+  /** Merges platform-assigned attributes (e.g. an instance's public IP) without re-validating. */
+  setAttributes(id: string, patch: Record<string, unknown>): Promise<void>;
 }
 
 /** What a resource looks like to the rest of the app (API, UI, engine hooks). */
@@ -201,6 +208,17 @@ export interface ResourceTypeDef {
   invalidValue?: (input: { field: FieldDef; value: unknown; region: string }) => EngineError | undefined;
   /** Runs after a resource is created, e.g. a VPC creating its main route table. */
   afterCreate?: (input: { resource: Resource; system: SystemApi }) => Promise<void>;
+  /** Runs after a resource is updated, e.g. an Elastic IP moving to another instance. */
+  afterUpdate?: (input: { resource: Resource; previous: Resource; system: SystemApi }) => Promise<void>;
+  /** Runs after a resource is deleted. */
+  afterDelete?: (input: { resource: Resource; system: SystemApi }) => Promise<void>;
+  /** Runs when a lifecycle transition completes, e.g. an instance reaching "stopped". */
+  onSettled?: (input: { resource: Resource; from: string | null; system: SystemApi }) => Promise<void>;
+  /**
+   * Attributes returned once by create and never stored, like a key pair's private key:
+   * the real API shows it a single time.
+   */
+  revealOnce?: string[];
   /** Compute platform-assigned attributes (IPs, ARNs, counts...). */
   derive?: (input: {
     id: string;
@@ -223,7 +241,15 @@ export interface ServiceDef {
 /** A resource type definition with region-dependent options filled in, safe to send to the browser. */
 export type ResolvedTypeDef = Omit<
   ResourceTypeDef,
-  "validate" | "derive" | "invalidValue" | "dependencyMessage" | "canDelete" | "afterCreate"
+  | "validate"
+  | "derive"
+  | "invalidValue"
+  | "dependencyMessage"
+  | "canDelete"
+  | "afterCreate"
+  | "afterUpdate"
+  | "afterDelete"
+  | "onSettled"
 >;
 
 export interface ResolvedServiceDef extends Omit<ServiceDef, "types"> {

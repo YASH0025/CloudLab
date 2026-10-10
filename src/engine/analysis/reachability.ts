@@ -128,7 +128,10 @@ export async function analyzeReachability(
           title: "Instance has a public IP",
           status: "fail",
           detail: "The instance only has a private address, so nothing outside the VPC can address it.",
-          fix: "Launch an instance with 'Auto-assign public IP' enabled, or in a subnet that assigns public IPs by default.",
+          fix:
+            instance.state === "stopped"
+              ? "Start the instance: it gets a new automatic public IP, or keeps its Elastic IP if it has one."
+              : "Associate an Elastic IP with the instance, or launch one with 'Auto-assign public IP' enabled.",
         },
   );
 

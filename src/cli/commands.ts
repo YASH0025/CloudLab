@@ -105,6 +105,15 @@ function applyFilters(args: Args, items: Resource[]): Resource[] {
       if (name === "association.main") return String(systemOf(r).main === true);
       if (name === "internet-gateway-id") return r.id;
       if (name === "attachment.vpc-id") return r.config.vpcId;
+      if (name === "key-name") return r.type === "key-pair" ? r.name : r.config.keyName;
+      if (name === "key-pair-id" || name === "allocation-id") return r.id;
+      if (name === "fingerprint") return r.attributes.fingerprint;
+      if (name === "key-type") return r.config.keyType;
+      if (name === "instance-id") return r.config.instanceId ?? (r.type === "instance" ? r.id : undefined);
+      if (name === "public-ip") return r.attributes.publicIp;
+      if (name === "association-id") return r.attributes.associationId;
+      if (name === "domain") return "vpc";
+      if (name === "ip-address") return r.attributes.publicIp;
       throw new EngineError("InvalidParameterValue", `The filter '${name}' is invalid`);
     };
     return acc.filter((r) => values.includes(String(pick(r))));
@@ -192,6 +201,13 @@ async function instanceAction(ctx: CliContext, args: Args, action: string) {
     });
   }
   return changes;
+}
+
+/** A key pair by name, failing like the real API. */
+async function keyPairByName(ctx: CliContext, name: string): Promise<Resource> {
+  const found = (await listOf(ctx, "compute", "key-pair")).find((k) => k.name === name);
+  if (!found) throw new EngineError("InvalidKeyPair.NotFound", `The key pair '${name}' does not exist`);
+  return found;
 }
 
 function bucketFromUri(uri: string | undefined): string {
@@ -760,6 +776,161 @@ export const COMMANDS: Command[] = [
       const raw = args.required("instance-type");
       const value = raw.startsWith("{") ? String(parseShorthand(raw).Value) : raw.replace(/^Value=/, "");
       await ctx.engine.update(ctx.accountId, r.id, { instanceType: value });
+    },
+  }),
+
+  // --- key pairs ---
+  cmd({
+    service: "ec2",
+    operation: "create-key-pair",
+    apiName: "CreateKeyPair",
+    summary: "Create a key pair and print its private key (shown only once)",
+    usage: "--key-name <name> [--key-type rsa|ed25519] [--key-format pem]",
+    mutates: true,
+    async run(args, ctx) {
+      const format = args.one("key-format") ?? "pem";
+      if (format !== "pem") {
+        throw new EngineError("InvalidParameterValue", `Value (${format}) for parameter keyFormat is invalid. CloudLab supports pem.`);
+      }
+      const r = await create(ctx, "compute", "key-pair", {
+        name: args.required("key-name"),
+        keyType: args.one("key-type") ?? "rsa",
+      });
+      return {
+        KeyFingerprint: r.attributes.fingerprint,
+        KeyMaterial: r.attributes.keyMaterial,
+        KeyName: r.name,
+        KeyPairId: r.id,
+      };
+    },
+  }),
+  cmd({
+    service: "ec2",
+    operation: "describe-key-pairs",
+    apiName: "DescribeKeyPairs",
+    summary: "List key pairs",
+    usage: "[--key-names <name> ...] [--key-pair-ids <id> ...] [--include-public-key]",
+    mutates: false,
+    async run(args, ctx) {
+      const names = args.list("key-names");
+      let items = names.length
+        ? await Promise.all(names.map((n) => keyPairByName(ctx, n)))
+        : await describe(ctx, args, { service: "compute", type: "key-pair", idsOption: "key-pair-ids" });
+      if (names.length) items = applyFilters(args, items);
+      return { KeyPairs: items.map((r) => present.keyPair(r, { includePublicKey: args.has("include-public-key") })) };
+    },
+  }),
+  cmd({
+    service: "ec2",
+    operation: "delete-key-pair",
+    apiName: "DeleteKeyPair",
+    summary: "Delete a key pair (instances using it keep working)",
+    usage: "--key-name <name> | --key-pair-id <id>",
+    mutates: true,
+    async run(args, ctx) {
+      const id = args.one("key-pair-id");
+      const name = args.one("key-name");
+      if (!id && !name) throw new EngineError("MissingParameter", "The request must contain the parameter KeyName or KeyPairId");
+      // Like the real API, deleting a key name that doesn't exist succeeds quietly.
+      const r = id
+        ? await load(ctx, "compute", "key-pair", id)
+        : (await listOf(ctx, "compute", "key-pair")).find((k) => k.name === name);
+      if (!r) return { Return: true };
+      await ctx.engine.remove(ctx.accountId, r.id);
+      return { Return: true, KeyPairId: r.id };
+    },
+  }),
+
+  // --- Elastic IPs ---
+  cmd({
+    service: "ec2",
+    operation: "allocate-address",
+    apiName: "AllocateAddress",
+    summary: "Allocate an Elastic IP address",
+    usage: "[--domain vpc]",
+    mutates: true,
+    async run(args, ctx) {
+      const domain = args.one("domain") ?? "vpc";
+      if (domain !== "vpc") {
+        throw new EngineError("InvalidParameterValue", `Value (${domain}) for parameter domain is invalid. Must be 'vpc'.`);
+      }
+      const r = await create(ctx, "compute", "elastic-ip", { name: nameTag(args) });
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      const { Tags, ...out } = present.address(r);
+      return out;
+    },
+  }),
+  cmd({
+    service: "ec2",
+    operation: "associate-address",
+    apiName: "AssociateAddress",
+    summary: "Attach an Elastic IP to an instance",
+    usage: "--allocation-id <eipalloc-id> --instance-id <id> [--allow-reassociation | --no-allow-reassociation]",
+    mutates: true,
+    async run(args, ctx) {
+      const instanceId = args.one("instance-id");
+      if (!instanceId) {
+        throw new EngineError("MissingParameter", "Either the instanceId or the networkInterfaceId parameter must be specified.");
+      }
+      const allocationId = args.one("allocation-id");
+      if (!allocationId) throw new EngineError("MissingParameter", "The request must contain the parameter AllocationId");
+      const eip = await load(ctx, "compute", "elastic-ip", allocationId);
+      const target = await load(ctx, "compute", "instance", instanceId);
+      const current = eip.config.instanceId as string | undefined;
+      if (current === target.id) return { AssociationId: eip.attributes.associationId };
+      // --allow-reassociation moves an address that is attached elsewhere.
+      if (current && args.bool("allow-reassociation")) {
+        await ctx.engine.update(ctx.accountId, eip.id, { instanceId: null });
+      }
+      const updated = await ctx.engine.update(ctx.accountId, eip.id, { instanceId: target.id });
+      return { AssociationId: updated.attributes.associationId };
+    },
+  }),
+  cmd({
+    service: "ec2",
+    operation: "disassociate-address",
+    apiName: "DisassociateAddress",
+    summary: "Detach an Elastic IP from its instance",
+    usage: "--association-id <eipassoc-id>",
+    mutates: true,
+    async run(args, ctx) {
+      const assoc = args.required("association-id");
+      if (!/^eipassoc-[0-9a-f]{8,17}$/.test(assoc)) {
+        throw new EngineError("InvalidAssociationID.Malformed", `Invalid id: "${assoc}" (expecting "eipassoc-...")`);
+      }
+      const eip = (await listOf(ctx, "compute", "elastic-ip")).find((a) => a.attributes.associationId === assoc);
+      if (!eip) throw new EngineError("InvalidAssociationID.NotFound", `The association ID '${assoc}' does not exist`);
+      await ctx.engine.update(ctx.accountId, eip.id, { instanceId: null });
+    },
+  }),
+  cmd({
+    service: "ec2",
+    operation: "describe-addresses",
+    apiName: "DescribeAddresses",
+    summary: "List Elastic IP addresses",
+    usage: "[--allocation-ids <id> ...] [--public-ips <ip> ...] [--filters Name=instance-id,Values=<id>]",
+    mutates: false,
+    async run(args, ctx) {
+      let items = await describe(ctx, args, { service: "compute", type: "elastic-ip", idsOption: "allocation-ids" });
+      for (const ip of args.list("public-ips")) {
+        if (!items.some((a) => a.attributes.publicIp === ip)) {
+          throw new EngineError("InvalidAddress.NotFound", `Address '${ip}' not found.`);
+        }
+      }
+      if (args.list("public-ips").length) items = items.filter((a) => args.list("public-ips").includes(String(a.attributes.publicIp)));
+      return { Addresses: items.map((r) => present.address(r)) };
+    },
+  }),
+  cmd({
+    service: "ec2",
+    operation: "release-address",
+    apiName: "ReleaseAddress",
+    summary: "Give an Elastic IP back",
+    usage: "--allocation-id <eipalloc-id>",
+    mutates: true,
+    async run(args, ctx) {
+      const eip = await load(ctx, "compute", "elastic-ip", args.required("allocation-id"));
+      await ctx.engine.remove(ctx.accountId, eip.id);
     },
   }),
 

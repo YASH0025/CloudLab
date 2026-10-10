@@ -188,3 +188,35 @@ export async function reservation(r: Resource, ctx: PresentContext) {
     Instances: [await instance(r, ctx)],
   };
 }
+
+export function keyPair(r: Resource, opts: { includePublicKey?: boolean } = {}) {
+  return {
+    KeyPairId: r.id,
+    KeyFingerprint: r.attributes.fingerprint,
+    KeyName: r.name,
+    KeyType: r.config.keyType,
+    Tags: [],
+    ...(opts.includePublicKey ? { PublicKey: r.attributes.publicKey } : {}),
+    CreateTime: r.createdAt,
+  };
+}
+
+export function address(r: Resource) {
+  const instanceId = (r.config.instanceId as string | undefined) || undefined;
+  return {
+    AllocationId: r.id,
+    ...(instanceId
+      ? {
+          AssociationId: r.attributes.associationId,
+          InstanceId: instanceId,
+          NetworkInterfaceId: `eni-${instanceId.replace(/^i-/, "")}`,
+          PrivateIpAddress: r.attributes.privateIp ?? undefined,
+        }
+      : {}),
+    Domain: "vpc",
+    NetworkBorderGroup: r.attributes.networkBorderGroup ?? r.region,
+    PublicIp: r.attributes.publicIp,
+    PublicIpv4Pool: "amazon",
+    Tags: tags(r),
+  };
+}

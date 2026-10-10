@@ -160,7 +160,7 @@ export function collectRefs(fields: FieldDef[], config: Record<string, unknown>)
     if (Array.isArray(value)) for (const v of value) if (typeof v === "string" && v) ids.add(v);
   };
   for (const field of fields) {
-    if (field.type === "ref") add(config[field.key]);
+    if (field.type === "ref" && field.ref?.by !== "name") add(config[field.key]);
     if (field.type === "list" && Array.isArray(config[field.key])) {
       const itemRefs = (field.item ?? []).filter((f) => f.type === "ref" && !f.ref?.weak);
       for (const item of config[field.key] as Record<string, unknown>[]) for (const f of itemRefs) add(item?.[f.key]);
