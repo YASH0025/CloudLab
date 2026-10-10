@@ -22,6 +22,11 @@ export interface ResourceStore {
   /** Claims a one-off key; true only for the first caller. Guards one-time setup such as default VPCs. */
   tryClaim(key: string): Promise<boolean>;
   releaseClaim(key: string): Promise<void>;
+  /**
+   * Moves every resource and claim from one account to another, but only if the
+   * target account has nothing yet. Returns how many resources moved.
+   */
+  transferAccount(from: string, to: string): Promise<number>;
 }
 
 export class MemoryStore implements ResourceStore {
@@ -47,6 +52,24 @@ export class MemoryStore implements ResourceStore {
 
   async releaseClaim(key: string) {
     this.claims.delete(key);
+  }
+
+  async transferAccount(from: string, to: string) {
+    if ([...this.items.values()].some((r) => r.accountId === to)) return 0;
+    let n = 0;
+    for (const r of this.items.values()) {
+      if (r.accountId === from) {
+        r.accountId = to;
+        n++;
+      }
+    }
+    for (const key of [...this.claims]) {
+      if (key.includes(`:${from}:`)) {
+        this.claims.delete(key);
+        this.claims.add(key.replace(`:${from}:`, `:${to}:`));
+      }
+    }
+    return n;
   }
 
   async get(accountId: string, id: string) {

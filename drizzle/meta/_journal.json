@@ -15,6 +15,13 @@
       "when": 1791629305413,
       "tag": "0001_default_vpc_claims",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1791631363851,
+      "tag": "0002_auth",
+      "breakpoints": true
     }
   ]
 }

@@ -367,3 +367,24 @@ describe("security group sources", () => {
     await expectCode(make({ protocol: "tcp", fromPort: 22, toPort: 22 }), "InvalidParameterValue");
   });
 });
+
+describe("moving an anonymous lab into an account", () => {
+  it("moves resources and the default-VPC claim when the account is empty", async () => {
+    await engine.ensureDefaults("anon-1", REGION);
+    await engine.create("anon-1", { service: "storage", type: "bucket", region: REGION, config: { name: "anon-bucket-1" } });
+    const before = (await engine.list("anon-1")).length;
+    expect(await engine.adoptLab("anon-1", "u_1")).toBe(before);
+    expect(await engine.list("anon-1")).toHaveLength(0);
+    expect(await engine.list("u_1")).toHaveLength(before);
+    // The claim moved too, so the user doesn't get a second default VPC.
+    await engine.ensureDefaults("u_1", REGION);
+    expect(await engine.list("u_1", { service: "networking", type: "vpc", region: REGION })).toHaveLength(1);
+  });
+
+  it("leaves a returning user's lab alone", async () => {
+    await engine.create("u_2", { service: "networking", type: "vpc", region: REGION, config: { cidrBlock: "10.0.0.0/16" } });
+    await engine.create("anon-2", { service: "networking", type: "vpc", region: REGION, config: { cidrBlock: "10.1.0.0/16" } });
+    expect(await engine.adoptLab("anon-2", "u_2")).toBe(0);
+    expect((await engine.list("u_2", { type: "vpc" })).map((v) => v.config.cidrBlock)).toEqual(["10.0.0.0/16"]);
+  });
+});

@@ -149,6 +149,11 @@ export function useReachability(id: string) {
   });
 }
 
+/** Who's signed in and which sign-in options exist. */
+export function useMe() {
+  return useQuery({ queryKey: ["me"], queryFn: api.me, staleTime: 60_000 });
+}
+
 /** Deletes everything in the current region. The default VPC is recreated, and tutorial progress starts over. */
 export function useResetLab() {
   const region = useConsoleStore((s) => s.region);

@@ -33,7 +33,14 @@ export interface ServicesResponse {
   services: ResolvedServiceDef[];
 }
 
+export interface MeResponse {
+  providers: ("github" | "google")[];
+  user: { name: string; email: string; image: string | null } | null;
+}
+
 export const api = {
+  me: () => request<MeResponse>(`/api/me`),
+
   services: (region: string) => request<ServicesResponse>(`/api/services?region=${encodeURIComponent(region)}`),
 
   listResources: (filter: { service?: string; type?: string; region?: string }) => {

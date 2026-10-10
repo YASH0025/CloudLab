@@ -1,4 +1,4 @@
-import { and, arrayContains, desc, eq, type SQL } from "drizzle-orm";
+import { and, arrayContains, desc, eq, like, type SQL } from "drizzle-orm";
 import type { PgDatabase } from "drizzle-orm/pg-core";
 import type { ListFilter, ResourceStore } from "@/engine/store";
 import type { Resource } from "@/engine/types";
@@ -117,6 +117,28 @@ export class PostgresStore implements ResourceStore {
 
   async releaseClaim(key: string) {
     await this.db.delete(claims).where(eq(claims.key, key));
+  }
+
+  async transferAccount(from: string, to: string) {
+    // Only move into an empty account, so a returning user's saved lab is never overwritten.
+    const existing = await this.db.select({ id: resources.id }).from(resources).where(eq(resources.accountId, to)).limit(1);
+    if (existing.length > 0) return 0;
+    const moved = await this.db
+      .update(resources)
+      .set({ accountId: to })
+      .where(eq(resources.accountId, from))
+      .returning({ id: resources.id });
+    // Claim keys look like "default-vpc:<account>:<region>".
+    const pattern = `%:${from}:%`;
+    const old = await this.db.select({ key: claims.key }).from(claims).where(like(claims.key, pattern));
+    if (old.length > 0) {
+      await this.db
+        .insert(claims)
+        .values(old.map((c) => ({ key: c.key.replace(`:${from}:`, `:${to}:`) })))
+        .onConflictDoNothing();
+      await this.db.delete(claims).where(like(claims.key, pattern));
+    }
+    return moved.length;
   }
 }
 

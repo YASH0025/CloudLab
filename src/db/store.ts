@@ -3,7 +3,18 @@ import { drizzle } from "drizzle-orm/neon-http";
 import { MemoryStore, type ResourceStore } from "@/engine/store";
 import { PostgresStore } from "./postgres-store";
 
-const globalForStore = globalThis as unknown as { __cloudlabStore?: ResourceStore };
+const globalForStore = globalThis as unknown as {
+  __cloudlabStore?: ResourceStore;
+  __cloudlabDb?: ReturnType<typeof drizzle>;
+};
+
+/** The Drizzle database on Neon, or null when DATABASE_URL isn't set. */
+export function getDb() {
+  const url = process.env.DATABASE_URL;
+  if (!url) return null;
+  globalForStore.__cloudlabDb ??= drizzle({ client: neon(url) });
+  return globalForStore.__cloudlabDb;
+}
 
 /**
  * Postgres (Neon) when DATABASE_URL is set. Without it, an in-memory store is used
@@ -23,7 +34,8 @@ export function getStore(): ResourceStore {
     }
     console.warn("[cloudlab] DATABASE_URL is not set; using an in-memory store (data resets on restart).");
   }
-  globalForStore.__cloudlabStore = url ? new PostgresStore(drizzle({ client: neon(url) })) : new MemoryStore();
+  const db = getDb();
+  globalForStore.__cloudlabStore = db ? new PostgresStore(db) : new MemoryStore();
   return globalForStore.__cloudlabStore;
 }
 

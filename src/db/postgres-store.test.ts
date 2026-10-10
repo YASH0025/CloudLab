@@ -94,6 +94,21 @@ describe("PostgresStore on real Postgres", () => {
     expect(await engine.defaultVpc(a, REGION)).toBeDefined();
   });
 
+  it("moves an anonymous lab into an empty account, claims included", async () => {
+    const anon = account();
+    const user = account();
+    await engine.ensureDefaults(anon, REGION);
+    const count = (await store.list(anon)).length;
+    expect(await engine.adoptLab(anon, user)).toBe(count);
+    expect(await store.list(anon)).toHaveLength(0);
+    await engine.ensureDefaults(user, REGION);
+    expect(await engine.list(user, { service: "networking", type: "vpc", region: REGION })).toHaveLength(1);
+    // A second anonymous lab doesn't overwrite the user's.
+    const anon2 = account();
+    await engine.ensureDefaults(anon2, REGION);
+    expect(await engine.adoptLab(anon2, user)).toBe(0);
+  });
+
   it("enforces global bucket names across accounts", async () => {
     const a = account();
     const b = account();

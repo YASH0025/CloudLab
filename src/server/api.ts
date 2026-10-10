@@ -5,6 +5,7 @@ import { nanoid } from "nanoid";
 import { z } from "zod";
 import { getStore } from "@/db/store";
 import { Engine, EngineError } from "@/engine";
+import { getSignedInUser } from "./auth";
 
 const ACCOUNT_COOKIE = "cl_account";
 
@@ -15,14 +16,30 @@ export function getEngine(): Engine {
   return engine;
 }
 
+/** Lab account ID for a signed-in user. */
+export const userAccountId = (userId: string) => `u_${userId}`;
+
 /**
- * Each browser gets an anonymous lab account, kept in a cookie, so people can
- * start practising without signing up. Real accounts can replace this later.
+ * The lab account for this request. Signed-in users have their own lab; everyone
+ * else gets an anonymous one kept in a cookie, so people can start practising
+ * without signing up. The first time someone signs in, the anonymous lab they
+ * were using moves into their account.
  */
 export async function getAccountId(): Promise<string> {
   const jar = await cookies();
-  const existing = jar.get(ACCOUNT_COOKIE)?.value;
-  if (existing) return existing;
+  const anonymous = jar.get(ACCOUNT_COOKIE)?.value;
+
+  const user = await getSignedInUser();
+  if (user) {
+    const accountId = userAccountId(user.id);
+    if (anonymous) {
+      await getEngine().adoptLab(anonymous, accountId);
+      jar.delete(ACCOUNT_COOKIE);
+    }
+    return accountId;
+  }
+
+  if (anonymous) return anonymous;
   const id = `acct_${nanoid(21)}`;
   jar.set(ACCOUNT_COOKIE, id, {
     httpOnly: true,

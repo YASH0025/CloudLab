@@ -87,7 +87,7 @@ The console form still shows a friendly message on the field that caused the err
 - **shadcn/ui-style components** on **Radix UI**, styled with **Tailwind CSS**
 - **Zustand** for console state (selected region), **React Context** for app-wide providers
 - **Sonner** toasts, **lucide-react** icons, **date-fns**, **next-themes** (light/dark)
-- **Drizzle ORM + Neon** (serverless Postgres)
+- **Drizzle ORM + Neon** (serverless Postgres), **better-auth** for GitHub/Google sign-in
 - **Vitest** for engine tests
 
 ## How it works
@@ -118,7 +118,7 @@ src/
 
 **State without background jobs.** Vercel has no long-running processes, so each resource stores the state it is heading towards and when it gets there (`pendingState`, `transitionAt`). Every read settles it if that moment has passed. While anything is mid-transition, the console polls every 1.5 seconds.
 
-**Accounts.** Each browser gets an anonymous lab account via an HTTP-only cookie, so people can start without signing up.
+**Accounts.** Visitors start with an anonymous lab (an HTTP-only cookie), so they can practise without signing up. With sign-in set up, users can sign in with **GitHub** or **Google** (better-auth): their lab is stored under their account and follows them across devices, and the first time they sign in, the anonymous lab they were using moves into their account (a returning user's existing lab is never overwritten).
 
 ## Getting started
 
@@ -144,6 +144,18 @@ Open http://localhost:3000. Without `DATABASE_URL`, an in-memory store is used a
 3. Deploy (or redeploy after adding the variable). The build runs the database migrations first; the build log shows `✓ Database migrations applied.`
 4. Open `https://<your-app>/api/health`. It should say `"store": "postgres", "database": "connected"`.
 
+### Turning on sign-in
+
+Sign-in is off until keys are added; each provider appears once both of its values are set. In Vercel → Settings → Environment Variables add:
+
+| Variable | Where it comes from |
+| --- | --- |
+| `BETTER_AUTH_SECRET` | Any random string of 32+ characters |
+| `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | GitHub → Settings → Developer settings → OAuth Apps → New OAuth App. Homepage URL: your site. Authorization callback URL: `https://<your-site>/api/auth/callback/github` |
+| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Google Cloud Console → APIs & Services → Credentials → Create OAuth client ID (Web application). Authorized redirect URI: `https://<your-site>/api/auth/callback/google` |
+
+Then redeploy. `BETTER_AUTH_URL` isn't needed on Vercel; the production address is detected automatically. Sign-in works on the production domain; preview deployments have different addresses that aren't registered with GitHub/Google.
+
 On Vercel, a missing `DATABASE_URL` fails the build with a clear message instead of silently using the in-memory store, which would lose data between requests.
 
 ## Scripts
@@ -164,6 +176,8 @@ On Vercel, a missing `DATABASE_URL` fails the build with a clear message instead
 
 | Method | Path | Body |
 | --- | --- | --- |
+| GET | `/api/me` | – → `{ providers, user }` |
+| * | `/api/auth/*` | better-auth (sign-in redirects, OAuth callbacks, sign-out) |
 | GET | `/api/health` | – → `{ ok, store, database }` |
 | GET | `/api/services?region=` | – |
 | GET | `/api/resources?service=&type=&region=` | – |

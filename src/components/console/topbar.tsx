@@ -8,6 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useServices } from "@/hooks/use-cloud";
 import { useConsoleStore } from "@/stores/console-store";
 import { useGuideStore } from "@/stores/guide-store";
+import { UserMenu } from "@/components/auth/user-menu";
 import { MobileNav } from "./sidebar";
 
 export function Topbar() {
@@ -56,6 +57,7 @@ export function Topbar() {
         <SunIcon className="hidden dark:block" />
         <MoonIcon className="dark:hidden" />
       </Button>
+      <UserMenu />
     </header>
   );
 }

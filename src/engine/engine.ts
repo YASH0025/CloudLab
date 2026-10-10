@@ -449,6 +449,15 @@ export class Engine {
     return removed;
   }
 
+  /**
+   * Moves an anonymous visitor's lab into their account when they first sign in.
+   * Does nothing if the account already has a lab (a returning user keeps theirs).
+   */
+  async adoptLab(fromAccountId: string, toAccountId: string): Promise<number> {
+    if (fromAccountId === toAccountId) return 0;
+    return this.store.transferAccount(fromAccountId, toAccountId);
+  }
+
   /** Resources that point at `id`, settled to their current state. */
   async dependents(accountId: string, id: string): Promise<Resource[]> {
     const items = await this.store.findReferencing(accountId, id);
