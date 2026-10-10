@@ -4,6 +4,7 @@ import { EngineError } from "../errors";
 import { generateId } from "../ids";
 import { generateKey, type KeyType } from "../keys";
 import type { Resource, ResourceTypeDef, ServiceDef, SystemApi } from "../types";
+import { launchTemplate } from "./autoscaling";
 import { freePublicIp, nextPrivateIp } from "./ips";
 
 /** Whether an instance gets an automatic public IP when it runs (launch setting or subnet default). */
@@ -395,5 +396,5 @@ export const computeService: ServiceDef = {
   modelledOn: "EC2",
   description: "Virtual servers you launch, stop, start and terminate, with their key pairs and Elastic IPs.",
   category: "Compute",
-  types: [instance, keyPair, elasticIp],
+  types: [instance, keyPair, elasticIp, launchTemplate],
 };

@@ -1,13 +1,22 @@
 import { resolveOptions } from "./catalog";
 import { errors } from "./errors";
 import { computeService } from "./services/compute";
+import { autoScalingService } from "./services/autoscaling";
 import { iamService } from "./services/iam";
+import { loadBalancingService } from "./services/loadbalancing";
 import { networkingService } from "./services/networking";
 import { objectType, storageService } from "./services/storage";
 import type { FieldDef, ResolvedServiceDef, ResolvedTypeDef, ResourceTypeDef, ServiceDef } from "./types";
 
 /** Every service the platform simulates. Add new service definitions here. */
-export const SERVICES: ServiceDef[] = [networkingService, computeService, storageService, iamService];
+export const SERVICES: ServiceDef[] = [
+  networkingService,
+  computeService,
+  loadBalancingService,
+  autoScalingService,
+  storageService,
+  iamService,
+];
 
 /** Types managed through their own screens rather than the generic console pages (bucket objects). */
 const HIDDEN_TYPES: ResourceTypeDef[] = [objectType];

@@ -128,6 +128,8 @@ export interface SystemInfo {
   main?: boolean;
   /** Deleted together with this resource (a VPC owns its main route table and default security group). */
   ownedBy?: string;
+  /** Launched and looked after by an Auto Scaling group (its ID). */
+  managedBy?: string;
 }
 
 export function systemOf(r: { attributes: Record<string, unknown> }): SystemInfo {
@@ -141,6 +143,8 @@ export interface SystemApi {
   list(service: string, type: string): Promise<Resource[]>;
   create(service: string, type: string, config: Record<string, unknown>, system?: SystemInfo): Promise<Resource>;
   update(id: string, patch: Record<string, unknown>): Promise<Resource>;
+  /** Runs a lifecycle action, e.g. terminate an instance. */
+  runAction(id: string, action: string): Promise<Resource>;
   /** Merges platform-assigned attributes (e.g. an instance's public IP) without re-validating. */
   setAttributes(id: string, patch: Record<string, unknown>): Promise<void>;
 }
@@ -189,6 +193,8 @@ export interface HookContext {
   list(service: string, type: string): Promise<Resource[]>;
   /** List the account's resources of a type in every region. */
   listAll(service: string, type: string): Promise<Resource[]>;
+  /** The engine's clock (tests control it). */
+  now(): Date;
   /** Check whether an ID exists in any account (for globally unique names). */
   existsGlobally(id: string): Promise<Resource | null>;
 }
@@ -224,12 +230,14 @@ export interface ResourceTypeDef {
   privateAttributes?: string[];
   /** Global service (IAM): not tied to a region. Stored under the region "global". */
   global?: boolean;
-  /** Builds the resource ID when the real API's format isn't "<prefix>-<hex>" (IAM's AIDA…, AKIA…). */
-  makeId?: () => string;
+  /** Builds the resource ID when the real API's format isn't "<prefix>-<hex>" (IAM's AIDA…, load balancer ARNs). */
+  makeId?: (input: { name: string; region: string; accountId: string }) => string;
+  /** What a well-formed ID looks like, when it isn't "<prefix>-<hex>". */
+  idPattern?: RegExp;
   /** IAM actions and ARNs for the console's operations, used to check permissions. */
   iam?: IamMapping;
   /** Async checks before deletion (e.g. IAM's DeleteConflict). Throw to refuse. */
-  beforeDelete?: (input: { resource: Resource; ctx: HookContext }) => Promise<void>;
+  beforeDelete?: (input: { resource: Resource; ctx: HookContext; force: boolean; system: SystemApi }) => Promise<void>;
   /** The error when dependents block deletion, if not DependencyViolation (e.g. S3's BucketNotEmpty). */
   dependencyError?: (id: string) => EngineError;
   /** Message when deletion is blocked by dependents. Defaults to "The <noun> '<id>' has dependencies and cannot be deleted." */
@@ -295,6 +303,7 @@ export type ResolvedTypeDef = Omit<
   | "iam"
   | "beforeDelete"
   | "privateAttributes"
+  | "idPattern"
 >;
 
 export interface ResolvedServiceDef extends Omit<ServiceDef, "types"> {

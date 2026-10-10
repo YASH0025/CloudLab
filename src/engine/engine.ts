@@ -5,6 +5,7 @@ import { buildSchema, collectRefs, type IssueKind } from "./fields";
 import { generateId } from "./ids";
 import { scheduleTransition, settle } from "./lifecycle";
 import { ObjectStorage } from "./objects";
+import { reconcileScaling } from "./scaling";
 import { allTypes, getTypeDef, resolveTypeDef } from "./registry";
 import type { ResourceStore } from "./store";
 import {
@@ -44,11 +45,12 @@ const ALL_TYPES = allTypes;
 
 /** The resource type an ID belongs to, judged by its prefix (vpc-, subnet-, i-...). */
 function typeForId(id: string): ResourceTypeDef | undefined {
-  return ALL_TYPES().find((t) => !t.idFromName && id.startsWith(`${t.idPrefix}-`));
+  return ALL_TYPES().find((t) => (t.idPattern ? t.idPattern.test(id) : !t.idFromName && id.startsWith(`${t.idPrefix}-`)));
 }
 
 /** Real IDs are the prefix plus 8 or 17 hex digits. */
 function isWellFormed(def: ResourceTypeDef, id: string): boolean {
+  if (def.idPattern) return def.idPattern.test(id);
   return def.idFromName || new RegExp(`^${def.idPrefix}-([0-9a-f]{8}|[0-9a-f]{17})$`).test(id);
 }
 
@@ -136,6 +138,7 @@ export class Engine {
       // Global types (IAM) live under "global" whatever region the caller is in.
       list: async (service, type) =>
         (await this.list(accountId, { service, type, region: getTypeDef(service, type).global ? "global" : region })).filter(isActive),
+      now: () => this.now(),
       listAll: async (service, type) => (await this.list(accountId, { service, type })).filter(isActive),
       existsGlobally: (id) => this.store.getAny(id),
     };
@@ -216,6 +219,7 @@ export class Engine {
       list: (service, type) => this.list(accountId, { service, type, region }),
       create: (service, type, config, system) => this.create(accountId, { service, type, region, config }, { system, settled: true }),
       update: (id, patch) => this.update(accountId, id, patch),
+      runAction: (id, action) => this.runAction(accountId, id, action),
       setAttributes: async (id, patch) => {
         const r = await this.store.get(accountId, id);
         if (!r) return;
@@ -272,7 +276,7 @@ export class Engine {
     const config = await this.validateConfig(def, input.region, input.config ?? {}, null, ctx);
 
     const name = typeof config.name === "string" ? config.name : "";
-    const id = options.id ?? (def.idFromName ? name : def.makeId ? def.makeId() : generateId(def.idPrefix));
+    const id = options.id ?? (def.idFromName ? name : def.makeId ? def.makeId({ name, region: input.region, accountId }) : generateId(def.idPrefix));
     if (def.idFromName && (await this.store.getAny(id))) {
       throw new EngineError("BucketAlreadyExists", "The requested bucket name is not available.", 409);
     }
@@ -370,7 +374,23 @@ export class Engine {
     return updated;
   }
 
-  async remove(accountId: string, id: string): Promise<void> {
+  /** Merges platform-assigned attributes without re-validating (scaling status, counters). */
+  async setAttributes(accountId: string, id: string, patch: Record<string, unknown>): Promise<void> {
+    const r = await this.store.get(accountId, id);
+    if (r) await this.store.update({ ...r, attributes: { ...r.attributes, ...patch }, updatedAt: this.now().toISOString() });
+  }
+
+  /** Short-lived locks (e.g. one Auto Scaling pass per group at a time). True if acquired. */
+  lock(key: string): Promise<boolean> {
+    return this.store.tryClaim(`lock:${key}`);
+  }
+
+  unlock(key: string): Promise<void> {
+    return this.store.releaseClaim(`lock:${key}`);
+  }
+
+  /** Deletes a resource. `force` lets types clean up first (deleting an Auto Scaling group terminates its instances). */
+  async remove(accountId: string, id: string, options: { force?: boolean } = {}): Promise<void> {
     const existing = await this.get(accountId, id);
     const def = getTypeDef(existing.service, existing.type);
     const deletable = def.lifecycle?.deletableStates;
@@ -380,7 +400,14 @@ export class Engine {
 
     const reason = def.canDelete?.(existing);
     if (reason) throw reason;
-    if (def.beforeDelete) await def.beforeDelete({ resource: existing, ctx: this.context(accountId, existing.region) });
+    if (def.beforeDelete) {
+      await def.beforeDelete({
+        resource: existing,
+        ctx: this.context(accountId, existing.region),
+        force: options.force === true,
+        system: this.systemApi(accountId, existing.region),
+      });
+    }
 
     // Resources the platform made for this one (a VPC's main route table and default
     // security group) go with it. A reference blocks deletion unless every field holding
@@ -493,6 +520,8 @@ export class Engine {
    */
   async ensureDefaults(accountId: string, region: string): Promise<void> {
     if (!isRegion(region)) return;
+    // Auto Scaling looks after its groups whenever the region is used (there are no background jobs).
+    await reconcileScaling(this, accountId, region, this.now());
     if (!(await this.store.tryClaim(`default-vpc:${accountId}:${region}`))) return;
     if (!(await this.defaultVpc(accountId, region))) await this.createDefaultVpc(accountId, region);
   }
