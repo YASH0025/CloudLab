@@ -218,6 +218,8 @@ export interface ResourceTypeDef {
   notFoundMessage?: (id: string) => string;
   /** Error code for a badly formed ID, when it isn't the not-found code with ".Malformed". */
   malformedCode?: string;
+  /** Message for a badly formed ID, when the default (expecting "prefix-...") doesn't fit, e.g. ARNs. */
+  malformedMessage?: (id: string) => string;
   /** How the real API names this type in messages, e.g. "vpc", "internetGateway", "routeTable". */
   apiNoun: string;
   /** Error code for state conflicts. Instances use "IncorrectInstanceState"; most others "IncorrectState". */

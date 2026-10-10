@@ -27,14 +27,22 @@ const EC2_ID_OPTIONS: [string, string][] = [
   ["allocation-id", "elastic-ip"],
   ["nat-gateway-id", "natgateway"],
   ["key-pair-id", "key-pair"],
+  ["launch-template-id", "launch-template"],
 ];
+
+const IAM_PREFIX: Record<string, string> = { elbv2: "elasticloadbalancing" };
+
+/** Options holding ARNs that are the resource the action acts on. */
+const ARN_OPTIONS = ["load-balancer-arn", "target-group-arn", "listener-arn"];
 
 /** Actions that create or list: checked against "any resource of the kind". */
 const COLLECTION = /^(Describe|Create|Allocate|Run|Get|List)/;
 
 export function cliChecks(command: Command, args: Args, ctx: CliContext): Check[] {
   if (command.permissions) return command.permissions(args, ctx);
-  const action = `${command.service}:${command.apiName}`;
+  // The CLI's command names and IAM's service prefixes differ for a few services.
+  const prefix = IAM_PREFIX[command.service] ?? command.service;
+  const action = `${prefix}:${command.apiName}`;
   if (FREE.has(action)) return [];
   const account = accountNumber(ctx.accountId);
 
@@ -63,6 +71,18 @@ export function cliChecks(command: Command, args: Args, ctx: CliContext): Check[
     }
     if (policyArn) return [{ action, resource: policyArn }];
     return [{ action, resource: "*" }];
+  }
+
+  if (command.service === "elbv2" && !COLLECTION.test(command.apiName)) {
+    for (const option of ARN_OPTIONS) {
+      const arn = args.one(option);
+      if (arn) return [{ action, resource: arn }];
+    }
+  }
+
+  if (command.service === "autoscaling" && !COLLECTION.test(command.apiName)) {
+    const name = args.one("auto-scaling-group-name");
+    if (name) return [{ action, resource: `arn:aws:autoscaling:${ctx.region}:${account}:autoScalingGroup:*:autoScalingGroupName/${name}` }];
   }
 
   return [{ action, resource: "*" }];

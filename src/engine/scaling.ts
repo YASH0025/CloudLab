@@ -26,8 +26,6 @@ export interface Activity {
 /** Scale-in waits this long after the last change, so the group doesn't flap. */
 export const SCALE_IN_COOLDOWN_MS = 20_000;
 
-const ALIVE = ["pending", "running", "rebooting"];
-
 export async function reconcileScaling(engine: Engine, accountId: string, region: string, now: Date): Promise<void> {
   const groups = await engine.list(accountId, { service: "autoscaling", type: "auto-scaling-group", region });
   for (const group of groups) {

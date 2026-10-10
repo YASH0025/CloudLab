@@ -7,6 +7,7 @@ import { parseShorthand, UsageError } from "./parse";
 import * as present from "./present";
 import { IAM_COMMANDS } from "./iam";
 import { S3_COMMANDS } from "./s3";
+import { ELB_COMMANDS } from "./elb";
 
 export interface CliContext {
   engine: Engine;
@@ -997,6 +998,9 @@ export const COMMANDS: Command[] = [
       await ctx.engine.remove(ctx.accountId, eip.id);
     },
   }),
+
+  // --- Load balancing, launch templates and Auto Scaling ---
+  ...ELB_COMMANDS,
 
   // --- S3 (buckets, objects, websites) ---
   ...S3_COMMANDS,

@@ -58,6 +58,7 @@ const targetGroup: ResourceTypeDef = {
   notFoundCode: "TargetGroupNotFound",
   notFoundMessage: (id) => `Target groups '${id}' not found`,
   malformedCode: "ValidationError",
+  malformedMessage: (id) => `'${id}' is not a valid target group ARN`,
   apiNoun: "target group",
   fields: [
     nameField("web-servers"),
@@ -130,6 +131,7 @@ const loadBalancer: ResourceTypeDef = {
   notFoundCode: "LoadBalancerNotFound",
   notFoundMessage: (id) => `Load balancers '[${id}]' not found`,
   malformedCode: "ValidationError",
+  malformedMessage: (id) => `'${id}' is not a valid load balancer ARN`,
   apiNoun: "load balancer",
   fields: [
     nameField("web-lb"),

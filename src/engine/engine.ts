@@ -70,6 +70,7 @@ function malformedError(def: ResourceTypeDef, id: string): EngineError {
   const code =
     def.malformedCode ??
     (def.notFoundCode === "InvalidGroup.NotFound" ? "InvalidGroupId.Malformed" : def.notFoundCode.replace(/\.NotFound$/, ".Malformed"));
+  if (def.malformedMessage) return new EngineError(code, def.malformedMessage(id));
   return errors.malformed(code, id, def.idPrefix);
 }
 
@@ -125,7 +126,7 @@ export class Engine {
 
   constructor(
     private store: ResourceStore,
-    private now: () => Date = () => new Date(),
+    readonly now: () => Date = () => new Date(),
   ) {
     this.objects = new ObjectStorage(this, store, now);
   }
