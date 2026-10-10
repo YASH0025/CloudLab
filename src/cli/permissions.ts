@@ -80,6 +80,20 @@ export function cliChecks(command: Command, args: Args, ctx: CliContext): Check[
     }
   }
 
+  if (command.service === "rds" && !/^Describe/.test(command.apiName)) {
+    const named: [string, string][] = [
+      ["db-instance-identifier", "db"],
+      ["db-snapshot-identifier", "snapshot"],
+      ["db-subnet-group-name", "subgrp"],
+    ];
+    // Snapshots and restores act on the snapshot; everything else on the database or group named first.
+    const order = /Snapshot/.test(command.apiName) ? [named[1], named[0], named[2]] : named;
+    for (const [option, kind] of order) {
+      const name = args.one(option);
+      if (name) return [{ action, resource: `arn:aws:rds:${ctx.region}:${account}:${kind}:${name.toLowerCase()}` }];
+    }
+  }
+
   if (command.service === "autoscaling" && !COLLECTION.test(command.apiName)) {
     const name = args.one("auto-scaling-group-name");
     if (name) return [{ action, resource: `arn:aws:autoscaling:${ctx.region}:${account}:autoScalingGroup:*:autoScalingGroupName/${name}` }];

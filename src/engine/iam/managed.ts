@@ -28,7 +28,7 @@ export const MANAGED_POLICIES: ManagedPolicy[] = [
     allow(["iam:CreateServiceLinkedRole", "iam:DeleteServiceLinkedRole", "iam:ListRoles", "organizations:DescribeOrganization", "account:ListRegions"]),
   ]),
   managed("ReadOnlyAccess", "Provides read-only access to AWS services and resources.", [
-    allow(["ec2:Describe*", "ec2:Get*", "s3:Get*", "s3:List*", "iam:Get*", "iam:List*", "iam:Simulate*", "elasticloadbalancing:Describe*", "autoscaling:Describe*", "cloudwatch:Describe*", "cloudwatch:Get*", "cloudwatch:List*"]),
+    allow(["ec2:Describe*", "ec2:Get*", "s3:Get*", "s3:List*", "iam:Get*", "iam:List*", "iam:Simulate*", "elasticloadbalancing:Describe*", "autoscaling:Describe*", "rds:Describe*", "cloudwatch:Describe*", "cloudwatch:Get*", "cloudwatch:List*"]),
   ]),
   managed("AmazonEC2FullAccess", "Provides full access to Amazon EC2.", [
     allow(["ec2:*", "elasticloadbalancing:*", "cloudwatch:*", "autoscaling:*"]),
@@ -58,6 +58,12 @@ export const MANAGED_POLICIES: ManagedPolicy[] = [
   ]),
   managed("AutoScalingFullAccess", "Provides full access to Auto Scaling.", [
     allow(["autoscaling:*", "cloudwatch:PutMetricAlarm", "ec2:Describe*", "ec2:CreateLaunchTemplate*", "ec2:RunInstances", "elasticloadbalancing:Describe*"]),
+  ]),
+  managed("AmazonRDSFullAccess", "Provides full access to Amazon RDS via the AWS Management Console.", [
+    allow(["rds:*", "ec2:DescribeVpcs", "ec2:DescribeSubnets", "ec2:DescribeSecurityGroups", "ec2:DescribeAvailabilityZones", "ec2:DescribeInstances", "cloudwatch:GetMetricStatistics"]),
+  ]),
+  managed("AmazonRDSReadOnlyAccess", "Provides read only access to Amazon RDS via the AWS Management Console.", [
+    allow(["rds:Describe*", "rds:ListTagsForResource", "ec2:DescribeAccountAttributes", "ec2:DescribeAvailabilityZones", "ec2:DescribeSecurityGroups", "ec2:DescribeVpcs"]),
   ]),
   managed("IAMFullAccess", "Provides full access to IAM.", [allow(["iam:*"])]),
   managed("IAMReadOnlyAccess", "Provides read only access to IAM.", [

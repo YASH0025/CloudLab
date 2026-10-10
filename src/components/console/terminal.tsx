@@ -180,8 +180,10 @@ export const Terminal = forwardRef<TerminalHandle>(function Terminal(_props, ref
         line.current = "";
         cursor.current = 0;
         if (command) {
-          if (history.current[history.current.length - 1] !== command) {
-            history.current.push(command);
+          // Passwords typed on the command line aren't kept in the saved history.
+          const remembered = command.replace(/(--master-user-password(?:=|\s+))('[^']*'|"[^"]*"|\S+)/g, "$1****");
+          if (history.current[history.current.length - 1] !== remembered) {
+            history.current.push(remembered);
             saveHistory(history.current);
           }
         }

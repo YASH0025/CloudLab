@@ -8,6 +8,7 @@ import * as present from "./present";
 import { IAM_COMMANDS } from "./iam";
 import { S3_COMMANDS } from "./s3";
 import { ELB_COMMANDS } from "./elb";
+import { RDS_COMMANDS } from "./rds";
 
 export interface CliContext {
   engine: Engine;
@@ -1001,6 +1002,9 @@ export const COMMANDS: Command[] = [
 
   // --- Load balancing, launch templates and Auto Scaling ---
   ...ELB_COMMANDS,
+
+  // --- RDS ---
+  ...RDS_COMMANDS,
 
   // --- S3 (buckets, objects, websites) ---
   ...S3_COMMANDS,
