@@ -18,6 +18,9 @@ function transitionInterval(items: ResourceDTO[] | undefined) {
   return items?.some((r) => r.pendingState) ? 1500 : false;
 }
 
+/** Load balancing and Auto Scaling change on their own (health checks, scaling), so their pages stay live. */
+const LIVE_TYPES = new Set(["auto-scaling-group", "target-group", "load-balancer"]);
+
 /**
  * The service catalogue is static data, so it's computed in place rather than fetched.
  * That way the server and the browser render exactly the same thing on first load.
@@ -40,13 +43,13 @@ export function useTypeDef(service: string, type: string) {
   return { ...services, service: svc, typeDef: svc?.types.find((t) => t.type === type) };
 }
 
-export function useResources(service?: string, type?: string) {
+export function useResources(service?: string, type?: string, options: { live?: boolean } = {}) {
   const region = useConsoleStore((s) => s.region);
   const filter = { service, type, region };
   return useQuery({
     queryKey: queryKeys.resources(filter),
     queryFn: async () => (await api.listResources(filter)).items,
-    refetchInterval: (query) => transitionInterval(query.state.data),
+    refetchInterval: (query) => (options.live ? 2500 : transitionInterval(query.state.data)),
   });
 }
 
@@ -54,7 +57,27 @@ export function useResource(id: string) {
   return useQuery({
     queryKey: queryKeys.resource(id),
     queryFn: () => api.getResource(id),
-    refetchInterval: (query) => transitionInterval(query.state.data ? [query.state.data.item] : undefined),
+    refetchInterval: (query) => {
+      const item = query.state.data?.item;
+      if (item && LIVE_TYPES.has(item.type)) return 2500;
+      return transitionInterval(item ? [item] : undefined);
+    },
+  });
+}
+
+/** A target group's health checks, kept live. */
+export function useTargetHealth(id: string) {
+  return useQuery({
+    queryKey: ["target-health", id],
+    queryFn: async () => (await api.targetHealth(id)).targets,
+    refetchInterval: 2500,
+  });
+}
+
+/** Sends simulated requests to a load balancer. Errors show inline in the panel. */
+export function useTestRequests(id: string) {
+  return useMutation({
+    mutationFn: (input: { port?: number; count?: number }) => api.testRequests(id, input).then((r) => r.result),
   });
 }
 

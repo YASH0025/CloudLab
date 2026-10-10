@@ -10,7 +10,12 @@ export async function GET(_request: NextRequest, ctx: RouteContext<"/api/resourc
     const caller = await getCaller();
     const { accountId } = caller;
     const engine = getEngine();
-    const item = await engine.get(accountId, id);
+    let item = await engine.get(accountId, id);
+    // Auto Scaling has no background jobs: viewing a group (or anything in a region) brings its groups up to date.
+    if (item.region !== "global") {
+      await engine.ensureDefaults(accountId, item.region);
+      item = await engine.get(accountId, id);
+    }
     authorizeConsole(caller, { kind: "read" }, item, item, item.region);
     // A default security group's rule points at itself; that isn't a dependency worth showing.
     // Objects in a bucket are shown in the bucket's own object browser instead.
@@ -41,7 +46,8 @@ export async function DELETE(_request: NextRequest, ctx: RouteContext<"/api/reso
     const caller = await getCaller();
     const existing = await getEngine().get(caller.accountId, id);
     authorizeConsole(caller, { kind: "delete" }, existing, existing, existing.region);
-    await getEngine().remove(caller.accountId, id);
+    // The console deletes an Auto Scaling group together with its instances, as AWS's console does.
+    await getEngine().remove(caller.accountId, id, { force: existing.type === "auto-scaling-group" });
     return Response.json({ deleted: id });
   });
 }

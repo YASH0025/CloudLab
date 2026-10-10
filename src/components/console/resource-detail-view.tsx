@@ -15,6 +15,7 @@ import { ApiError } from "@/lib/api-client";
 import { routes } from "@/lib/routes";
 import { formatValue } from "@/lib/utils";
 import { ConfirmDialog } from "./confirm-dialog";
+import { AutoScalingPanel, LoadBalancerPanel, TargetHealthPanel } from "./load-balancing-panels";
 import { ObjectsPanel, WebsiteCard } from "./objects-panel";
 import { PermissionChecker } from "./permission-checker";
 import { ReachabilityPanel } from "./reachability-panel";
@@ -143,7 +144,9 @@ export function ResourceDetailView() {
   const { item, referencedBy } = query.data!;
   const actions = Object.entries(typeDef.lifecycle?.actions ?? {});
   // The platform's own markers are shown as badges, not as rows.
-  const attributes = Object.entries(item.attributes).filter(([k, v]) => v !== undefined && k !== "system");
+  // Some attributes have a panel of their own (scaling activities, health check bookkeeping).
+  const inPanels = new Set(typeDef.panelAttributes ?? []);
+  const attributes = Object.entries(item.attributes).filter(([k, v]) => v !== undefined && k !== "system" && !inPanels.has(k));
   const system = (item.attributes.system ?? {}) as { isDefault?: boolean; main?: boolean; defaultForAz?: boolean };
   const systemBadge = system.main
     ? "Main route table"
@@ -262,6 +265,9 @@ export function ResourceDetailView() {
       </Card>
 
       {item.service === "compute" && item.type === "instance" && <ReachabilityPanel instanceId={item.id} />}
+      {item.type === "load-balancer" && <LoadBalancerPanel lb={item} />}
+      {item.type === "target-group" && <TargetHealthPanel targetGroup={item} />}
+      {item.type === "auto-scaling-group" && <AutoScalingPanel group={item} />}
       {item.service === "iam" && (item.type === "user" || item.type === "group" || item.type === "role") && (
         <PermissionChecker kind={item.type} name={item.name} />
       )}
@@ -280,7 +286,8 @@ export function ResourceDetailView() {
           </CardHeader>
           <CardContent className="py-6">
             <ResourceForm
-              key={item.updatedAt}
+              // Live pages refresh often; only reset the form when the settings themselves change.
+              key={JSON.stringify(item.config)}
               fields={typeDef.fields}
               mode="edit"
               currentState={item.state}

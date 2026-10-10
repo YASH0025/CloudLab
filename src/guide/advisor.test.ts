@@ -146,3 +146,37 @@ describe("advisor", () => {
     expect(explainError("SomethingElse")).toBeUndefined();
   });
 });
+
+describe("advisor: load balancing", () => {
+  it("puts a load balancer that can't reach its servers first, and explains ELB errors", async () => {
+    await engine.ensureDefaults(ACCOUNT, REGION);
+    const [vpc] = await engine.list(ACCOUNT, { service: "networking", type: "vpc", region: REGION });
+    const subnets = (await engine.list(ACCOUNT, { service: "networking", type: "subnet", region: REGION })).sort((a, b) =>
+      String(a.config.availabilityZone).localeCompare(String(b.config.availabilityZone)),
+    );
+    const create = (service: string, type: string, config: Record<string, unknown>) => engine.create(ACCOUNT, { service, type, region: REGION, config });
+    const lbSg = await create("networking", "security-group", {
+      name: "lb",
+      description: "lb",
+      vpcId: vpc.id,
+      inboundRules: [{ protocol: "tcp", fromPort: 80, toPort: 80, cidr: "0.0.0.0/0" }],
+    });
+    const shut = await create("networking", "security-group", { name: "shut", description: "x", vpcId: vpc.id, inboundRules: [] });
+    const tg = await create("loadbalancing", "target-group", { name: "web", port: 80, vpcId: vpc.id });
+    await create("loadbalancing", "load-balancer", {
+      name: "lb",
+      subnetIds: [subnets[0].id, subnets[1].id],
+      securityGroupIds: [lbSg.id],
+      listeners: [{ protocol: "HTTP", port: 80, targetGroupId: tg.id }],
+    });
+    const inst = await create("compute", "instance", { imageId: "ami-0lab2023linux0001", subnetId: subnets[0].id, securityGroupIds: [shut.id] });
+    await engine.update(ACCOUNT, tg.id, { targets: [inst.id] });
+    clock = new Date(clock.getTime() + 20_000);
+
+    const s = await next();
+    expect(s.id).toBe(`tg-timeout-${tg.id}`);
+    expect(s.steps.join(" ")).toContain(lbSg.id);
+    expect(explainError("ResourceInUse")?.fix).toContain("--force-delete");
+    expect(explainError("DuplicateListener")).toBeDefined();
+  });
+});

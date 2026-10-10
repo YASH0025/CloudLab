@@ -19,6 +19,8 @@ import {
   type Snapshot,
 } from "./snapshot";
 import type { GuideLink, Level, TutorialInfo, TutorialView } from "./types";
+import { activityCauses, healthySpread, loadHa, type HaState } from "./ha";
+import { listenersOf } from "@/engine/services/loadbalancing";
 
 /**
  * Guided tutorials: full journeys from the first step to the last. Each step
@@ -85,6 +87,10 @@ interface Ctx {
   iam(): Promise<{ users: Resource[]; groups: Resource[]; policies: Resource[] }>;
   /** Would this IAM user be allowed to do this? */
   can(user: string, action: string, resource: string): Promise<boolean>;
+  /** Load balancing and Auto Scaling in the focus VPC (loaded once, on demand). */
+  ha(): Promise<HaState>;
+  /** The same, preloaded for tutorials that declare `needsHa`, so links and text can use it. */
+  haState?: HaState;
   /** Runs a reachability check (memoised per instance and input). */
   check(instance: Resource | undefined, input: ReachabilityInput): Promise<ReachabilityResult | null>;
 }
@@ -108,6 +114,8 @@ interface TutorialDef {
   summary: string;
   minutes: number;
   nextId?: string;
+  /** Load the load balancing and Auto Scaling state before resolving links and text. */
+  needsHa?: boolean;
   steps: StepDef[];
 }
 
@@ -162,9 +170,14 @@ async function buildCtx(engine: Engine, accountId: string, region: string, ident
   const siteBucket = s.buckets.find((b) => b.config.websiteEnabled) ?? s.buckets[0];
   let keys: Promise<string[]> | null = null;
   let iamData: ReturnType<Ctx["iam"]> | null = null;
+  let haData: Promise<HaState> | null = null;
   const iamList = (type: string) => engine.list(accountId, { service: "iam", type, region: "global" });
   return {
     identity,
+    ha() {
+      haData ??= loadHa(engine, accountId, region, s, vpc);
+      return haData;
+    },
     iam() {
       iamData ??= Promise.all([iamList("user"), iamList("group"), iamList("policy")]).then(([users, groups, policies]) => ({ users, groups, policies }));
       return iamData;
@@ -1058,6 +1071,7 @@ const LEAST_PRIVILEGE: TutorialDef = {
   level: "intermediate",
   summary: "Give a teammate exactly the access they need: a user in a group, a read-only policy, a policy you write yourself, and AccessDenied when they go further.",
   minutes: 12,
+  nextId: "highly-available-website",
   steps: [
     {
       id: "group",
@@ -1158,6 +1172,265 @@ const LEAST_PRIVILEGE: TutorialDef = {
 
 TUTORIALS.push(LEAST_PRIVILEGE);
 
+// ---------- advanced: load balancing and Auto Scaling ----------
+
+const zoneOf = (r?: Resource) => String(r?.config.availabilityZone ?? "");
+
+const HIGHLY_AVAILABLE: TutorialDef = {
+  id: "highly-available-website",
+  title: "A website that never goes down",
+  level: "advanced",
+  summary:
+    "Put a load balancer in front of a group of servers in two zones. Stop a server and watch it get replaced while the site keeps answering, then turn up the traffic and watch it grow.",
+  minutes: 20,
+  needsHa: true,
+  steps: [
+    {
+      id: "two-zones",
+      title: "Public subnets in two zones",
+      why: "An availability zone is a separate data centre. A load balancer runs in at least two of them, so a fire or power cut in one doesn't take your site down. It needs a public subnet in each.",
+      instructions: (c) => {
+        if (!c.vpc) return ["You need your own VPC with a public subnet first. Do 'Launch your first web server', then come back."];
+        const zones = availabilityZones(c.region);
+        const have = c.subnets.filter((x) => isPublicSubnet(c.s, x));
+        const other = zones.find((z) => !have.some((x) => zoneOf(x) === z)) ?? zones[1];
+        const waiting = c.subnets.find((x) => zoneOf(x) === other && !isPublicSubnet(c.s, x));
+        if (waiting && c.table) {
+          return [
+            `${label(waiting)} is in ${other} but isn't public yet: its route table has no route to the internet gateway.`,
+            `Open ${label(c.table)}, tick ${waiting.name || waiting.id} under Associated subnets, and save.`,
+          ];
+        }
+        return [
+          `Click Take me there to create a second public subnet in ${other}.`,
+          `Then open ${c.table ? label(c.table) : "your public route table"} and tick the new subnet under Associated subnets, so it routes to the internet gateway.`,
+        ];
+      },
+      link: (c) => {
+        if (!c.vpc) return undefined;
+        const zones = availabilityZones(c.region);
+        const have = c.subnets.filter((x) => isPublicSubnet(c.s, x));
+        const other = zones.find((z) => !have.some((x) => zoneOf(x) === z)) ?? zones[1];
+        const waiting = c.subnets.find((x) => zoneOf(x) === other && !isPublicSubnet(c.s, x));
+        if (waiting && c.table) return { service: "networking", type: "route-table", mode: "detail", id: c.table.id };
+        return { service: "networking", type: "subnet", mode: "create", prefill: subnetPrefill(c, other, "public-b", true) };
+      },
+      check: async (c) => (await c.ha()).publicSubnets.length >= 2,
+    },
+    {
+      id: "lb-group",
+      title: "A security group for the load balancer",
+      why: "The load balancer is the only thing the internet talks to now, so it gets its own firewall: HTTP on port 80 from anyone.",
+      instructions: ["Click Take me there.", "Pre-filled: name lb, one inbound rule TCP 80 from 0.0.0.0/0.", "Click Create security group."],
+      link: (c) => ({
+        service: "networking",
+        type: "security-group",
+        mode: "create",
+        prefill: {
+          name: "lb",
+          description: "Load balancer: HTTP from the internet",
+          vpcId: c.vpc?.id,
+          inboundRules: [{ protocol: "tcp", fromPort: 80, toPort: 80, cidr: "0.0.0.0/0", description: "HTTP from anywhere" }],
+        },
+      }),
+      cli: (c) => (c.vpc ? `aws ec2 create-security-group --group-name lb --description "Load balancer" --vpc-id ${c.vpc.id}` : undefined),
+      check: async (c) => !!(await c.ha()).lbGroup,
+    },
+    {
+      id: "app-group",
+      title: "A security group for the servers: only the load balancer may call them",
+      why: "Your servers shouldn't take requests from the internet directly, only from the load balancer. A rule that names the lb security group as its source says exactly that, and keeps working as servers come and go.",
+      instructions: [
+        "Click Take me there.",
+        "Pre-filled: name app, one inbound rule TCP 80 whose source is the lb security group (not an IP range).",
+        "Click Create security group.",
+      ],
+      link: (c) => ({
+        service: "networking",
+        type: "security-group",
+        mode: "create",
+        prefill: {
+          name: "app",
+          description: "Web servers: HTTP from the load balancer only",
+          vpcId: c.vpc?.id,
+          inboundRules: [{ protocol: "tcp", fromPort: 80, toPort: 80, sourceGroupId: c.haState?.lbGroup?.id, description: "HTTP from the load balancer" }],
+        },
+      }),
+      check: async (c) => !!(await c.ha()).appGroup,
+    },
+    {
+      id: "target-group",
+      title: "Create a target group",
+      why: "A target group is the list of servers the load balancer sends requests to, plus how it checks they're healthy: it asks each one for / on port 80, and only those that answer get traffic.",
+      instructions: ["Click Take me there.", "Pre-filled: name web-servers, HTTP port 80, your VPC.", "Click Create target group. You'll leave it empty: Auto Scaling will fill it."],
+      link: (c) => ({
+        service: "loadbalancing",
+        type: "target-group",
+        mode: "create",
+        prefill: { name: "web-servers", protocol: "HTTP", port: 80, vpcId: c.vpc?.id, healthCheckPath: "/" },
+      }),
+      cli: (c) => (c.vpc ? `aws elbv2 create-target-group --name web-servers --protocol HTTP --port 80 --vpc-id ${c.vpc.id}` : undefined),
+      check: async (c) => !!(await c.ha()).targetGroup,
+    },
+    {
+      id: "load-balancer",
+      title: "Create the load balancer",
+      why: "The load balancer gives your site one address that never changes, and spreads requests across the healthy servers in both zones.",
+      instructions: [
+        "Click Take me there.",
+        "Pre-filled: internet-facing, your two public subnets, the lb security group, and a listener on HTTP 80 forwarding to web-servers.",
+        "Click Create load balancer. It's 'provisioning' for a few seconds, then 'active'.",
+      ],
+      link: (c) => {
+        const ha = c.haState;
+        if (ha?.loadBalancer) return { service: "loadbalancing", type: "load-balancer", mode: "detail", id: ha.loadBalancer.id };
+        return {
+          service: "loadbalancing",
+          type: "load-balancer",
+          mode: "create",
+          prefill: {
+            name: "web-lb",
+            scheme: "internet-facing",
+            subnetIds: (ha?.publicSubnets ?? []).slice(0, 2).map((x) => x.id),
+            securityGroupIds: ha?.lbGroup ? [ha.lbGroup.id] : [],
+            listeners: ha?.targetGroup ? [{ protocol: "HTTP", port: 80, targetGroupId: ha.targetGroup.id }] : [],
+          },
+        };
+      },
+      cli: () => "aws elbv2 create-load-balancer --name web-lb --subnets <subnet-a> <subnet-b> --security-groups <lb-sg>",
+      check: async (c) => {
+        const ha = await c.ha();
+        return ha.loadBalancer?.state === "active" && listenersOf(ha.loadBalancer).some((l) => Number(l.port) === 80 && l.targetGroupId === ha.targetGroup?.id);
+      },
+    },
+    {
+      id: "launch-template",
+      title: "Save a launch template",
+      why: "Auto Scaling launches servers by itself, so it needs a recipe: which image, which size, which security group, and a startup script that installs the web server.",
+      instructions: [
+        "Click Take me there.",
+        "Pre-filled: Amazon Linux, t3.micro, the app security group, and a startup script that installs nginx.",
+        "Click Create launch template.",
+      ],
+      link: (c) => {
+        const ha = c.haState;
+        if (ha?.template && ha.appGroup && ((ha.template.config.securityGroupIds as string[]) ?? []).includes(ha.appGroup.id)) {
+          return { service: "compute", type: "launch-template", mode: "detail", id: ha.template.id };
+        }
+        return {
+          service: "compute",
+          type: "launch-template",
+          mode: "create",
+          prefill: {
+            name: ha?.template ? "web-template-2" : "web-template",
+            imageId: LINUX,
+            instanceType: "t3.micro",
+            securityGroupIds: ha?.appGroup ? [ha.appGroup.id] : [],
+            associatePublicIp: "subnet-default",
+            userData: "#!/bin/bash\ndnf install -y nginx\nsystemctl enable --now nginx",
+          },
+        };
+      },
+      cli: (c) =>
+        `aws ec2 create-launch-template --launch-template-name web-template --launch-template-data '{"ImageId":"${LINUX}","InstanceType":"t3.micro","SecurityGroupIds":["${c.haState?.appGroup?.id ?? "<app-sg>"}"]}'`,
+      check: async (c) => {
+        const ha = await c.ha();
+        return !!ha.template && !!ha.appGroup && ((ha.template.config.securityGroupIds as string[]) ?? []).includes(ha.appGroup.id);
+      },
+    },
+    {
+      id: "auto-scaling-group",
+      title: "Create the Auto Scaling group",
+      why: "The group keeps two servers running, one in each zone, and registers them with the target group. If one fails it's replaced; if traffic grows it adds more, up to four.",
+      instructions: [
+        "Click Take me there.",
+        "Pre-filled: your launch template, both public subnets, min 2 / desired 2 / max 4, the web-servers target group, and ELB health checks.",
+        "Click Create Auto Scaling group, then watch it launch two instances.",
+      ],
+      link: (c) => {
+        const ha = c.haState;
+        if (ha?.group) return { service: "autoscaling", type: "auto-scaling-group", mode: "detail", id: ha.group.id };
+        return {
+          service: "autoscaling",
+          type: "auto-scaling-group",
+          mode: "create",
+          prefill: {
+            name: "web-asg",
+            launchTemplate: ha?.template?.name,
+            subnetIds: (ha?.publicSubnets ?? []).slice(0, 2).map((x) => x.id),
+            minSize: 2,
+            desiredCapacity: 2,
+            maxSize: 4,
+            targetGroupIds: ha?.targetGroup ? [ha.targetGroup.id] : [],
+            healthCheckType: "ELB",
+            healthCheckGracePeriod: 30,
+            simulatedTraffic: "normal",
+          },
+        };
+      },
+      cli: () =>
+        "aws autoscaling create-auto-scaling-group --auto-scaling-group-name web-asg --launch-template LaunchTemplateName=web-template --min-size 2 --max-size 4 --desired-capacity 2 --vpc-zone-identifier <subnet-a>,<subnet-b> --target-group-arns <tg-arn> --health-check-type ELB",
+      check: async (c) => {
+        const ha = await c.ha();
+        const g = ha.group;
+        if (!g || !ha.targetGroup) return false;
+        const zones = new Set(ha.publicSubnets.filter((x) => ((g.config.subnetIds as string[]) ?? []).includes(x.id)).map(zoneOf));
+        return ((g.config.targetGroupIds as string[]) ?? []).includes(ha.targetGroup.id) && zones.size >= 2;
+      },
+    },
+    {
+      id: "healthy",
+      title: "Watch it come alive",
+      why: "New servers start as 'initial' while the load balancer checks them. Once they pass, they're 'healthy' and get requests, taking turns.",
+      instructions: [
+        "Open the target group: two targets go from initial to healthy in about 20 seconds.",
+        "Then open the load balancer and click Send 6 requests: the answers alternate between two servers in two zones.",
+      ],
+      link: (c) => (c.haState?.targetGroup ? { service: "loadbalancing", type: "target-group", mode: "detail", id: c.haState.targetGroup.id } : undefined),
+      check: async (c) => {
+        const spread = healthySpread(await c.ha());
+        return spread.count >= 2 && spread.zones >= 2;
+      },
+    },
+    {
+      id: "self-heal",
+      title: "Break a server and watch it heal",
+      why: "This is the point of it all. When a server fails, the load balancer stops sending it requests and the Auto Scaling group replaces it. Nobody has to wake up.",
+      instructions: [
+        "Open one of the group's instances and click Stop.",
+        "Send requests to the load balancer: every answer still comes back 200, from the other server.",
+        "Open the Auto Scaling group: the activity history shows it terminating the stopped server and launching a replacement. Wait until two targets are healthy again.",
+      ],
+      link: (c) => {
+        const victim = c.haState?.members.find((i) => i.state === "running");
+        return victim ? { service: "compute", type: "instance", mode: "detail", id: victim.id } : undefined;
+      },
+      check: async (c) => {
+        const ha = await c.ha();
+        const healed = activityCauses(ha.group).some((x) => x.includes("status check failure") || x.includes("health check failure"));
+        const spread = healthySpread(ha);
+        return healed && spread.count >= 2;
+      },
+    },
+    {
+      id: "scale",
+      title: "Turn up the traffic",
+      why: "A target tracking policy keeps average CPU near a target by adding servers when it's busy and removing them when it's quiet. You pay for what the traffic needs, not for the peak all the time.",
+      instructions: [
+        "Open the Auto Scaling group. Under Edit settings, set Target tracking: average CPU % to 50 and save.",
+        "In Capacity and load, click Spike. Average CPU jumps far above 50%, and the group scales out to four servers.",
+        "Click Idle and wait about 20 seconds: it scales back in.",
+      ],
+      link: (c) => (c.haState?.group ? { service: "autoscaling", type: "auto-scaling-group", mode: "detail", id: c.haState.group.id } : undefined),
+      cli: () =>
+        `aws autoscaling put-scaling-policy --auto-scaling-group-name web-asg --policy-name cpu50 --policy-type TargetTrackingScaling --target-tracking-configuration '{"PredefinedMetricSpecification":{"PredefinedMetricType":"ASGAverageCPUUtilization"},"TargetValue":50}'`,
+      check: async (c) => activityCauses((await c.ha()).group).some((x) => x.includes("scaled out")),
+    },
+  ],
+};
+
+TUTORIALS.push(HIGHLY_AVAILABLE);
+
 const info = (t: TutorialDef): TutorialInfo => ({
   id: t.id,
   title: t.title,
@@ -1182,7 +1455,10 @@ export async function viewTutorial(
 ): Promise<TutorialView | null> {
   const t = TUTORIALS.find((x) => x.id === id);
   if (!t) return null;
+  // Auto Scaling groups catch up whenever the region is looked at.
+  await engine.ensureDefaults(accountId, region);
   const c = await buildCtx(engine, accountId, region, identity);
+  if (t.needsHa) c.haState = await c.ha();
   const steps = await Promise.all(
     t.steps.map(async (st) => ({
       id: st.id,

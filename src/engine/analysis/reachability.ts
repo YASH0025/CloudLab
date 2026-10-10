@@ -121,14 +121,14 @@ async function networkOf(engine: Engine, accountId: string, instance: Resource) 
 }
 
 /** A subnet uses the route table it's explicitly associated with, otherwise its VPC's main route table. */
-function tableFor(subnet: Resource | null, tables: Resource[]) {
+export function tableFor(subnet: Resource | null, tables: Resource[]) {
   const explicit = subnet ? tables.find((t) => ((t.config.subnetIds as string[]) ?? []).includes(subnet.id)) : undefined;
   const main = subnet ? tables.find((t) => systemOf(t).main && t.config.vpcId === subnet.config.vpcId) : undefined;
   return { explicit, table: explicit ?? main };
 }
 
 /** The most specific route in a table covering a destination. */
-function routeTo(table: Resource | undefined, destination: string) {
+export function routeTo(table: Resource | undefined, destination: string) {
   const dest = parseCidr(destination)!;
   return ((table?.config.routes as Route[]) ?? [])
     .map((r) => ({ ...r, block: parseCidr(r.destination) }))

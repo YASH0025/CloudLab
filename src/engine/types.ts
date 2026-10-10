@@ -228,6 +228,8 @@ export interface ResourceTypeDef {
   canDelete?: (resource: Resource) => EngineError | undefined;
   /** Not shown in the console's navigation; managed through its own screens (bucket objects). */
   hidden?: boolean;
+  /** Attributes the console shows in a panel of their own, not in the summary (scaling activities). */
+  panelAttributes?: string[];
   /** Attributes kept on the server and never sent to the browser (e.g. an encrypted secret). */
   privateAttributes?: string[];
   /** Global service (IAM): not tied to a region. Stored under the region "global". */
@@ -306,6 +308,7 @@ export type ResolvedTypeDef = Omit<
   | "beforeDelete"
   | "privateAttributes"
   | "idPattern"
+  | "malformedMessage"
 >;
 
 export interface ResolvedServiceDef extends Omit<ServiceDef, "types"> {

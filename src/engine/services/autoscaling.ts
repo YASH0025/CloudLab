@@ -124,6 +124,7 @@ const autoScalingGroup: ResourceTypeDef = {
   makeId: ({ name, region, accountId }) =>
     `arn:aws:autoscaling:${region}:${accountNumber(accountId)}:autoScalingGroup:${randomUUID()}:autoScalingGroupName/${name}`,
   idPattern: ASG_ARN,
+  panelAttributes: ["activities", "lastScaledAt", "policyName"],
   notFoundCode: "ValidationError",
   notFoundMessage: (id) => `AutoScalingGroup name not found - AutoScalingGroup ${id.split("/").pop()} not found`,
   malformedCode: "ValidationError",

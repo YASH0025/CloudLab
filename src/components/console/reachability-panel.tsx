@@ -58,7 +58,7 @@ const statusIcon: Record<StepStatus, React.ReactNode> = {
   info: <InfoIcon className="size-5 text-primary" />,
 };
 
-function Step({ step }: { step: ReachabilityStep }) {
+export function Step({ step }: { step: ReachabilityStep }) {
   return (
     <li className="flex gap-3 py-3">
       <span className="mt-0.5 shrink-0">{statusIcon[step.status]}</span>

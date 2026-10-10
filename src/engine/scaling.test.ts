@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { targetHealth } from "./analysis/health";
+import { testLoadBalancer } from "./analysis/loadtest";
 import { Engine } from "./engine";
 import { MemoryStore } from "./store";
 import type { Resource } from "./types";
@@ -154,5 +155,45 @@ describe("auto scaling", () => {
     await engine.remove(A, asg.id, { force: true });
     const left = (await engine.list(A, { service: "compute", type: "instance", region: R })) as Resource[];
     expect(left.every((i) => i.state === "shutting-down" || i.state === "terminated")).toBe(true);
+  });
+});
+
+describe("sending requests to a load balancer", () => {
+  it("fails like a real ALB, then round-robins across healthy targets", async () => {
+    const n = await network();
+    const tg = await create("loadbalancing", "target-group", { name: "web", port: 80, vpcId: n.vpc.id });
+    const closedLbSg = await create("networking", "security-group", { name: "closed", description: "x", vpcId: n.vpc.id, inboundRules: [] });
+    const lb = await create("loadbalancing", "load-balancer", {
+      name: "lb",
+      subnetIds: [n.a.id, n.b.id],
+      securityGroupIds: [closedLbSg.id],
+      listeners: [{ protocol: "HTTP", port: 80, targetGroupId: tg.id }],
+    });
+    const send = async () => testLoadBalancer(engine, A, await engine.get(A, lb.id), { count: 4 });
+
+    expect((await send()).responses[0].statusText).toMatch(/Could not resolve host/);
+    clock = new Date(clock.getTime() + 7_000);
+    expect((await send()).steps.at(-1)).toMatchObject({ id: "sg", status: "fail" });
+
+    await engine.update(A, lb.id, { securityGroupIds: [n.lbSg.id] });
+    let r = await send();
+    expect(r.responses.map((x) => x.status)).toEqual([503, 503, 503, 503]);
+
+    // Targets that never answer: the load balancer fails open and times out.
+    const shut = await create("networking", "security-group", { name: "shut", description: "x", vpcId: n.vpc.id, inboundRules: [] });
+    const bad = await create("compute", "instance", { imageId: "ami-0lab2023linux0001", subnetId: n.a.id, securityGroupIds: [shut.id] });
+    await engine.update(A, tg.id, { targets: [bad.id] });
+    clock = new Date(clock.getTime() + 15_000);
+    r = await send();
+    expect(r.responses.map((x) => x.status)).toEqual([504, 504, 504, 504]);
+
+    const a = await create("compute", "instance", { imageId: "ami-0lab2023linux0001", subnetId: n.a.id, securityGroupIds: [n.webSg.id] });
+    const b = await create("compute", "instance", { imageId: "ami-0lab2023linux0001", subnetId: n.b.id, securityGroupIds: [n.webSg.id] });
+    await engine.update(A, tg.id, { targets: [bad.id, a.id, b.id] });
+    clock = new Date(clock.getTime() + 15_000);
+    r = await send();
+    expect(r.ok).toBe(true);
+    expect(r.responses.map((x) => x.targetId)).toEqual([a.id, b.id, a.id, b.id]);
+    expect(r.steps.at(-1)?.detail).toContain("2 of 3");
   });
 });

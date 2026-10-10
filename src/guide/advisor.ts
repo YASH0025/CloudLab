@@ -18,6 +18,7 @@ import {
   type Snapshot,
 } from "./snapshot";
 import type { Advice, Level, Milestone, Suggestion } from "./types";
+import { loadBalancingProblems } from "./advisor-elb";
 
 /**
  * The "What's next?" advisor. It looks at what the learner has built in a
@@ -500,7 +501,21 @@ export async function advise(engine: Engine, accountId: string, region: string):
     }
   }
 
+  // ---------- load balancing and Auto Scaling: broken things come first ----------
+  const elb = await loadBalancingProblems(engine, accountId, region);
+  out.unshift(...elb.problems);
+
   // ---------- advanced ----------
+  if (reachable && vpc && instance && !elb.hasLoadBalancer) {
+    push({
+      id: "load-balancer",
+      level: "advanced",
+      title: "Keep your site up when a server fails",
+      why: "Right now your site is one server: if it stops, the site is down. A load balancer in front of an Auto Scaling group spreads traffic over several servers in two zones and replaces any that fail.",
+      steps: ["Open Guide me → Tutorials and start 'A website that never goes down'.", "It walks you through every step, from a second zone to scaling with traffic."],
+      link: { service: "loadbalancing", type: "load-balancer", mode: "list" },
+    });
+  }
   if (reachable && vpc && instance) {
     const azs = new Set(vpcInstances.map((i) => i.attributes.availabilityZone));
     if (azs.size < 2) {

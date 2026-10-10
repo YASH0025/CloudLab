@@ -59,6 +59,7 @@ describe("tutorials", () => {
       "bastion-host",
       "web-and-database",
       "least-privilege",
+      "highly-available-website",
     ]);
     expect(listTutorials().filter((t) => t.level === "intermediate")).toHaveLength(4);
     expect(listTutorials().find((t) => t.id === "troubleshoot-reachability")?.nextId).toBe("static-website");
@@ -72,6 +73,39 @@ describe("tutorials", () => {
       },
     });
     expect(done).toBe(4);
+  });
+
+  it("completes 'A website that never goes down': two zones, a load balancer, self-healing and scaling", async () => {
+    await play("first-web-server");
+    let stopped = false;
+    const steps = await play("highly-available-website", {
+      // Pre-filled: a subnet in the second zone. By hand: associate it with the public route table.
+      "two-zones": async () => {
+        const t = await view("highly-available-website");
+        const link = t.steps[0].link!;
+        if (link.mode === "create") {
+          await engine.create(ACCOUNT, { service: link.service, type: link.type, region: REGION, config: link.prefill ?? {} });
+        } else {
+          const table = await engine.get(ACCOUNT, link.id!);
+          const subnets = await engine.list(ACCOUNT, { service: "networking", type: "subnet", region: REGION });
+          const extra = subnets.filter((x) => x.name === "public-b").map((x) => x.id);
+          await engine.update(ACCOUNT, table.id, { subnetIds: [...((table.config.subnetIds as string[]) ?? []), ...extra] });
+        }
+      },
+      "self-heal": async () => {
+        if (stopped) return; // then just wait for the replacement
+        stopped = true;
+        const t = await view("highly-available-website");
+        const id = t.steps.find((x) => x.id === "self-heal")!.link!.id!;
+        await engine.runAction(ACCOUNT, id, "stop");
+      },
+      scale: async () => {
+        const t = await view("highly-available-website");
+        const id = t.steps.find((x) => x.id === "scale")!.link!.id!;
+        await engine.update(ACCOUNT, id, { targetCpu: 50, simulatedTraffic: "spike" });
+      },
+    });
+    expect(steps).toBe(10);
   });
 
   it("completes 'Launch your first web server' using only pre-filled forms", async () => {

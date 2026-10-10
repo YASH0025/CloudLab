@@ -31,7 +31,10 @@ export function useResourceCommands(typeDef: ResolvedTypeDef | undefined, onDele
     (r: ResourceDTO) => {
       setConfirm({
         title: `Delete ${r.name || r.id}?`,
-        description: `${r.id} will be permanently removed. Resources that still depend on it will block the delete.`,
+        description:
+          r.type === "auto-scaling-group"
+            ? `${r.name} will be deleted and all of its instances terminated. (In the CLI this needs --force-delete.)`
+            : `${r.id} will be permanently removed. Resources that still depend on it will block the delete.`,
         confirmLabel: "Delete",
         onConfirm: () => del.mutate(r.id, { onSuccess: () => onDeleted?.() }),
       });

@@ -168,6 +168,63 @@ const EXPLANATIONS: Record<string, ErrorExplanation> = {
     meaning: "Versioning can't go back to Disabled once it has been enabled.",
     fix: "Suspend it instead.",
   },
+  ResourceInUse: {
+    meaning:
+      "Something still depends on this. A target group used by a load balancer's listener can't be deleted, and an Auto Scaling group with instances can't be deleted without --force-delete.",
+    fix: "Remove the listener (or delete the load balancer) first. For an Auto Scaling group, set desired capacity to 0 and wait, or delete it with --force-delete to terminate its instances too.",
+  },
+  DuplicateListener: {
+    meaning: "The load balancer already has a listener on that port. Each port can have only one.",
+    fix: "Use a different port, or change the existing listener instead of adding another.",
+  },
+  DuplicateTargetGroupName: {
+    meaning: "Target group names are unique in a region, and that one is taken.",
+    fix: "Pick another name, or use the existing target group.",
+  },
+  DuplicateLoadBalancerName: {
+    meaning: "Load balancer names are unique in a region, and that one is taken.",
+    fix: "Pick another name, or use the existing load balancer.",
+  },
+  InvalidTarget: {
+    meaning: "The instance can't be a target here: it doesn't exist, is terminated, or is in a different VPC from the target group.",
+    fix: "Register running instances from the target group's VPC. To use another VPC, create a target group there.",
+  },
+  InvalidSubnet: {
+    meaning: "An internet-facing load balancer has to be reachable from the internet, so its VPC needs an internet gateway.",
+    fix: "Attach an internet gateway to the VPC and put the load balancer in public subnets (0.0.0.0/0 → the gateway).",
+  },
+  InvalidConfigurationRequest: {
+    meaning: "The load balancer's settings don't fit together, e.g. subnets from different VPCs, two subnets in one zone, or a target group from another VPC.",
+    fix: "Use one subnet per zone, all in the same VPC as the target groups and security groups.",
+  },
+  InvalidSecurityGroup: {
+    meaning: "A security group from a different VPC was given to the load balancer.",
+    fix: "Choose security groups from the load balancer's own VPC.",
+  },
+  TargetGroupNotFound: {
+    meaning: "No target group with that ARN (or name) exists in this region.",
+    fix: "List them with aws elbv2 describe-target-groups and copy the TargetGroupArn exactly.",
+  },
+  LoadBalancerNotFound: {
+    meaning: "No load balancer with that ARN (or name) exists in this region.",
+    fix: "List them with aws elbv2 describe-load-balancers and copy the LoadBalancerArn exactly.",
+  },
+  ListenerNotFound: {
+    meaning: "No listener with that ARN exists.",
+    fix: "List the load balancer's listeners with aws elbv2 describe-listeners --load-balancer-arn <arn>.",
+  },
+  AlreadyExists: {
+    meaning: "An Auto Scaling group with that name already exists in this region.",
+    fix: "Pick another name, or change the existing group with update-auto-scaling-group.",
+  },
+  "InvalidLaunchTemplateName.AlreadyExistsException": {
+    meaning: "Launch template names are unique in a region, and that one is taken.",
+    fix: "Pick another name, or create a new version of the existing template.",
+  },
+  "InvalidLaunchTemplateName.NotFoundException": {
+    meaning: "No launch template with that name exists in this region.",
+    fix: "List them with aws ec2 describe-launch-templates.",
+  },
   ValidationError: {
     meaning: "One of the values you entered isn't valid.",
     fix: "Check the highlighted field's message.",

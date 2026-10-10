@@ -208,7 +208,10 @@ function FieldControl({ field, name, control, errors, disabled, lockReason, comp
             return (
               <Select value={(f.value as string) || undefined} onValueChange={f.onChange} disabled={disabled}>
                 <SelectTrigger id={id} aria-invalid={!!message} aria-label={field.label}>
-                  <SelectValue placeholder={`Choose ${inSentence(field.label)}`} />
+                  {/* Show just the label in the box; the hint is for the open list. */}
+                  <SelectValue placeholder={`Choose ${inSentence(field.label)}`}>
+                    {field.options?.find((o) => o.value === f.value)?.label}
+                  </SelectValue>
                 </SelectTrigger>
                 <SelectContent>
                   {(field.options ?? []).map((o) => (

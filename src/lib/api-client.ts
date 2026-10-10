@@ -17,6 +17,8 @@ export interface SimulateResponse {
   policies: { name: string; arn: string; via: string }[];
 }
 import type { ObjectInfo } from "@/engine/objects";
+import type { TargetHealth } from "@/engine/analysis/health";
+import type { LoadTestResult } from "@/engine/analysis/loadtest";
 
 export type { ObjectInfo };
 
@@ -103,6 +105,14 @@ export const api = {
 
   checkReachability: (id: string, input: ReachabilityInput) =>
     request<{ result: ReachabilityResult }>(`/api/resources/${encodeURIComponent(id)}/reachability`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+
+  targetHealth: (id: string) => request<{ targets: TargetHealth[] }>(`/api/resources/${encodeURIComponent(id)}/health`),
+
+  testRequests: (id: string, input: { port?: number; count?: number }) =>
+    request<{ result: LoadTestResult }>(`/api/resources/${encodeURIComponent(id)}/test-requests`, {
       method: "POST",
       body: JSON.stringify(input),
     }),

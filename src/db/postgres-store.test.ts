@@ -195,4 +195,44 @@ describe("PostgresStore on real Postgres", () => {
     const reach = await analyzeReachability(engine, ctx.accountId, inst.InstanceId, reachabilityInput.parse({ protocol: "tcp", port: 80 }));
     expect(reach.reachable).toBe(true);
   });
+
+  it("runs load balancing and Auto Scaling: ARN ids, locks, launches and self-healing", async () => {
+    const ctx = { engine, accountId: account(), region: REGION };
+    const run = async (line: string) => {
+      const r = await executeCli(line, ctx);
+      if (r.exitCode !== 0) throw new Error(`'${line}' failed: ${r.output}`);
+      return r.output ? JSON.parse(r.output) : {};
+    };
+    const vpc = (await run("aws ec2 describe-vpcs")).Vpcs[0].VpcId;
+    const subnets = (await run(`aws ec2 describe-subnets --filters Name=vpc-id,Values=${vpc}`)).Subnets.sort(
+      (a: { AvailabilityZone: string }, b: { AvailabilityZone: string }) => a.AvailabilityZone.localeCompare(b.AvailabilityZone),
+    );
+    const sg = (await run(`aws ec2 describe-security-groups --filters Name=vpc-id,Values=${vpc} Name=group-name,Values=default`)).SecurityGroups[0].GroupId;
+    const tg = (await run(`aws elbv2 create-target-group --name web --protocol HTTP --port 80 --vpc-id ${vpc}`)).TargetGroups[0].TargetGroupArn;
+    const lb = (await run(`aws elbv2 create-load-balancer --name web-lb --subnets ${subnets[0].SubnetId} ${subnets[1].SubnetId} --security-groups ${sg}`))
+      .LoadBalancers[0].LoadBalancerArn;
+    await run(`aws elbv2 create-listener --load-balancer-arn ${lb} --protocol HTTP --port 80 --default-actions Type=forward,TargetGroupArn=${tg}`);
+    await run(`aws ec2 create-launch-template --launch-template-name web --launch-template-data '{"ImageId":"ami-0lab2023linux0001","SecurityGroupIds":["${sg}"]}'`);
+    await run(
+      `aws autoscaling create-auto-scaling-group --auto-scaling-group-name web-asg --launch-template LaunchTemplateName=web --min-size 2 --max-size 4 --vpc-zone-identifier ${subnets[0].SubnetId},${subnets[1].SubnetId} --target-group-arns ${tg}`,
+    );
+    advance(15_000);
+    await run("aws autoscaling describe-auto-scaling-groups");
+    advance(15_000);
+    const health = (await run(`aws elbv2 describe-target-health --target-group-arn ${tg}`)).TargetHealthDescriptions;
+    expect(health.map((h: { TargetHealth: { State: string } }) => h.TargetHealth.State)).toEqual(["healthy", "healthy"]);
+
+    const victim = health[0].Target.Id;
+    await run(`aws ec2 stop-instances --instance-ids ${victim}`);
+    advance(10_000);
+    await run("aws autoscaling describe-auto-scaling-groups");
+    advance(11_000);
+    const group = (await run("aws autoscaling describe-auto-scaling-groups")).AutoScalingGroups[0];
+    expect(group.Instances).toHaveLength(2);
+    expect(group.Instances.map((i: { InstanceId: string }) => i.InstanceId)).not.toContain(victim);
+
+    await run("aws autoscaling delete-auto-scaling-group --auto-scaling-group-name web-asg --force-delete");
+    await run(`aws elbv2 delete-load-balancer --load-balancer-arn ${lb}`);
+    await run(`aws elbv2 delete-target-group --target-group-arn ${tg}`);
+  });
 });
