@@ -49,7 +49,7 @@ export function TerminalView() {
             <CardTitle>Try these</CardTitle>
             <CardDescription>Click to put a command on the prompt. Replace the &lt;ids&gt; with your own.</CardDescription>
           </CardHeader>
-          <CardContent className="space-y-1 overflow-y-auto py-2">
+          <CardContent className="relative space-y-1 overflow-y-auto py-2">
             {examples.map((e) => (
               <button
                 key={e.label}

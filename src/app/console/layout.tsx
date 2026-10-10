@@ -14,7 +14,9 @@ export default function ConsoleLayout({ children }: LayoutProps<"/console">) {
       </Suspense>
       <div className="flex min-w-0 flex-1 flex-col">
         <Topbar />
-        <main className="flex-1 overflow-y-auto">
+        {/* relative + min-h-0: hidden form controls (Radix checkboxes, selects) are positioned inside the
+            scroll area instead of stretching the whole page and adding a second scrollbar. */}
+        <main className="relative min-h-0 flex-1 overflow-y-auto">
           <div className="mx-auto max-w-6xl px-4 py-5 sm:px-6 sm:py-6">
             <Suspense fallback={<Skeleton className="h-64" />}>{children}</Suspense>
           </div>

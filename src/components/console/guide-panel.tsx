@@ -465,7 +465,7 @@ export function GuidePanel() {
             </TabsTrigger>
           </TabsList>
         </div>
-        <div className="flex-1 space-y-5 overflow-y-auto p-4">
+        <div className="relative min-h-0 flex-1 space-y-5 overflow-y-auto p-4">
           <LastErrorCard />
           <TabsContent value="tutorials">
             <TutorialsTab />

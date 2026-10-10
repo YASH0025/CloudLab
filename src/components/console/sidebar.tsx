@@ -44,7 +44,7 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
         </span>
         {site.name}
       </Link>
-      <nav className="flex-1 overflow-y-auto px-2 py-3 text-sm" onClick={(e) => (e.target as HTMLElement).closest("a") && onNavigate?.()}>
+      <nav className="relative min-h-0 flex-1 overflow-y-auto px-2 py-3 text-sm" onClick={(e) => (e.target as HTMLElement).closest("a") && onNavigate?.()}>
         <Link
           href={routes.console()}
           className={cn(
