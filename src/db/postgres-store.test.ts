@@ -132,6 +132,30 @@ describe("PostgresStore on real Postgres", () => {
     expect(inst).toMatchObject({ PublicIpAddress: eip.PublicIp, KeyName: "pg-key", State: { Name: "running" } });
   });
 
+  it("stores objects' bytes apart, replaces on put, and cleans up on reset and sign-in", async () => {
+    const a = account();
+    const name = `pg-objects-${n}`;
+    await engine.create(a, { service: "storage", type: "bucket", region: REGION, config: { name } });
+    await engine.objects.put(a, name, "index.html", Buffer.from("<h1>v1</h1>"));
+    await engine.objects.put(a, name, "index.html", Buffer.from("<h1>v2</h1>"));
+    await engine.objects.put(a, name, "img/logo.png", Buffer.from([0, 1, 2, 255]));
+    expect((await engine.objects.get(a, name, "index.html")).data.toString()).toBe("<h1>v2</h1>");
+    expect([...(await engine.objects.get(a, name, "img/logo.png")).data]).toEqual([0, 1, 2, 255]);
+    expect(await engine.objects.list(a, name, { delimiter: "/" })).toMatchObject({ prefixes: ["img/"], objects: [{ key: "index.html", size: 11 }] });
+    await expect(engine.remove(a, name)).rejects.toMatchObject({ code: "BucketNotEmpty" });
+
+    // Signing in moves the files with the lab.
+    const user = account();
+    await engine.adoptLab(a, user);
+    expect((await engine.objects.get(user, name, "index.html")).data.toString()).toBe("<h1>v2</h1>");
+    await expect(engine.objects.get(a, name, "index.html")).rejects.toMatchObject({ code: "NoSuchBucket" });
+
+    // Resetting the region removes objects and their bytes.
+    const id = (await store.list(user, { service: "storage", type: "object" }))[0].id;
+    await engine.resetRegion(user, REGION);
+    expect(await store.getBlob(user, id)).toBeNull();
+  });
+
   it("enforces global bucket names across accounts", async () => {
     const a = account();
     const b = account();

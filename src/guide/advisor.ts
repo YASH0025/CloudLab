@@ -442,7 +442,8 @@ export async function advise(engine: Engine, accountId: string, region: string):
   }
 
   for (const b of s.buckets) {
-    if (!b.config.blockPublicAccess) {
+    // A public website bucket is meant to be public.
+    if (!b.config.blockPublicAccess && !(b.config.websiteEnabled && b.config.publicRead)) {
       push({
         id: `block-public-${b.id}`,
         level: "intermediate",

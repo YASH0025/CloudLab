@@ -1,8 +1,8 @@
 import { isRegion } from "@/engine/catalog";
 import { EngineError } from "@/engine/errors";
-import { Args, COMMANDS, findCommand, servicesList, type CliContext } from "./commands";
+import { Args, COMMANDS, findCommand, servicesList, type CliContext, type CliEffects } from "./commands";
 import { applyQuery, formatOutput, QueryError } from "./output";
-import { parseAws, tokenize, UsageError } from "./parse";
+import { LocalPathError, parseAws, tokenize, UsageError } from "./parse";
 
 export interface CliResult {
   output: string;
@@ -12,6 +12,8 @@ export interface CliResult {
   changed: boolean;
   /** Set when the line ended in `> file`: the terminal offers the output as a download with this name. */
   saveAs?: string;
+  /** A file for the browser to save (base64), e.g. from `aws s3 cp s3://bucket/key .`. */
+  download?: { filename: string; data: string; contentType: string };
 }
 
 /** Splits off a trailing `> file` or `>> file` redirect. */
@@ -47,6 +49,11 @@ const COMMON_OPTIONS = ["tag-specifications", "filters", "dry-run", "cli-input-j
 function allowedOptions(usage: string | undefined): Set<string> {
   const fromUsage = [...(usage ?? "").matchAll(/--(?:no-)?([a-z0-9-]+)/g)].flatMap((m) => [m[1], `no-${m[1]}`]);
   return new Set([...fromUsage, ...COMMON_OPTIONS]);
+}
+
+/** Options the usage line shows with a single value (`--key <key>`), not a list (`--ids <id> ...`). */
+function singleValueOptions(usage: string | undefined): Set<string> {
+  return new Set([...(usage ?? "").matchAll(/--([a-z0-9-]+) <[^>]+>(?! \.\.\.)/g)].map((m) => m[1]));
 }
 
 function helpText(service?: string): string {
@@ -157,19 +164,37 @@ export async function executeCli(line: string, ctx: CliContext): Promise<CliResu
   // A region's default VPC appears the first time it's used, as in a new AWS account.
   await ctx.engine.ensureDefaults(ctx.accountId, region);
 
+  // Like the real CLI, a single-value option takes one word; anything after it is positional
+  // (`get-object --bucket b --key k out.json` → outfile "out.json").
+  for (const name of singleValueOptions(command.usage)) {
+    const values = parsed.options.get(name);
+    if (values && values.length > 1) {
+      parsed.options.set(name, values.slice(0, 1));
+      parsed.positionals.push(...values.slice(1));
+    }
+  }
+
+  const effects: CliEffects = {};
   try {
-    const result = await command.run(new Args(parsed.options, parsed.positionals), { ...ctx, region });
+    const result = await command.run(new Args(parsed.options, parsed.positionals), { ...ctx, region, effects });
     const output =
       typeof result === "string" ? result : formatOutput(applyQuery(result, parsed.query), parsed.output);
-    return { output, exitCode: 0, changed: command.mutates, ...(redirect.saveAs ? { saveAs: redirect.saveAs } : {}) };
+    return {
+      output,
+      exitCode: 0,
+      changed: command.mutates,
+      ...(redirect.saveAs ? { saveAs: redirect.saveAs } : {}),
+      ...(effects.download ? { download: effects.download } : {}),
+    };
   } catch (e) {
     if (e instanceof UsageError) return usageError(e.message);
     if (e instanceof QueryError) return { output: e.message, exitCode: 255, changed: command.mutates };
+    if (e instanceof LocalPathError) return { output: e.message, exitCode: 255, changed: false };
     if (e instanceof EngineError) {
-      const prefix = command.service === "s3" ? `${command.operation === "mb" ? "make_bucket" : "remove_bucket"} failed: ${parsed.positionals[0]} ` : "\n";
+      const prefix = effects.failurePrefix ?? "\n";
       return {
-        output: `${prefix}An error occurred (${e.code}) when calling the ${command.apiName} operation: ${e.message}`,
-        exitCode: command.service === "s3" ? 1 : 254,
+        output: `${prefix}An error occurred (${e.code}) when calling the ${effects.apiName ?? command.apiName} operation: ${e.message}`,
+        exitCode: effects.failureExitCode ?? (effects.failurePrefix ? 1 : 254),
         // A failed command may still have changed something earlier (e.g. run-instances --count).
         changed: command.mutates,
       };

@@ -1,6 +1,7 @@
 import type { NextRequest } from "next/server";
 import { z } from "zod";
 import { toDTO } from "@/engine";
+import { getTypeDef } from "@/engine/registry";
 import { getAccountId, getEngine, handle } from "@/server/api";
 
 export async function GET(_request: NextRequest, ctx: RouteContext<"/api/resources/[id]">) {
@@ -10,7 +11,8 @@ export async function GET(_request: NextRequest, ctx: RouteContext<"/api/resourc
     const engine = getEngine();
     const item = await engine.get(accountId, id);
     // A default security group's rule points at itself; that isn't a dependency worth showing.
-    const referencedBy = (await engine.dependents(accountId, id)).filter((r) => r.id !== id);
+    // Objects in a bucket are shown in the bucket's own object browser instead.
+    const referencedBy = (await engine.dependents(accountId, id)).filter((r) => r.id !== id && !getTypeDef(r.service, r.type).hidden);
     return Response.json({ item: toDTO(item), referencedBy: referencedBy.map(toDTO) });
   });
 }

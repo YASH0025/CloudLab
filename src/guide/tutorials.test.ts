@@ -54,11 +54,13 @@ describe("tutorials", () => {
       "first-network",
       "first-web-server",
       "troubleshoot-reachability",
+      "static-website",
       "private-network",
       "bastion-host",
       "web-and-database",
     ]);
     expect(listTutorials().filter((t) => t.level === "intermediate")).toHaveLength(3);
+    expect(listTutorials().find((t) => t.id === "troubleshoot-reachability")?.nextId).toBe("static-website");
   });
 
   it("completes 'Your first private network' by following its links", async () => {
@@ -145,5 +147,25 @@ describe("tutorials", () => {
         throw new Error("stop");
       },
     }).catch((e) => expect((e as Error).message).toBe("stop"));
+  });
+
+  it("publishes a static website step by step", async () => {
+    const t0 = await view("static-website");
+    expect(t0.steps.map((x) => x.passes)).toEqual([false, false, false, false, false]);
+    const done = await play("static-website", {
+      upload: async () => {
+        const bucket = (await engine.list(ACCOUNT, { service: "storage", type: "bucket" }))[0];
+        await engine.objects.put(ACCOUNT, bucket.id, "index.html", Buffer.from("<h1>Hi</h1>"));
+      },
+      hosting: async () => {
+        const bucket = (await engine.list(ACCOUNT, { service: "storage", type: "bucket" }))[0];
+        await engine.update(ACCOUNT, bucket.id, { websiteEnabled: true, indexDocument: "index.html" });
+      },
+      public: async () => {
+        const bucket = (await engine.list(ACCOUNT, { service: "storage", type: "bucket" }))[0];
+        await engine.update(ACCOUNT, bucket.id, { blockPublicAccess: false, publicRead: true });
+      },
+    });
+    expect(done).toBe(5);
   });
 });

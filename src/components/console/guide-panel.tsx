@@ -59,10 +59,30 @@ function NumberedSteps({ steps }: { steps: string[] }) {
           <span className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-semibold text-primary">
             {i + 1}
           </span>
-          <span>{step}</span>
+          <span>
+            <WithFileLinks text={step} />
+          </span>
         </li>
       ))}
     </ol>
+  );
+}
+
+/** Turns sample-file paths in an instruction (e.g. /samples/website/index.html) into download links. */
+function WithFileLinks({ text }: { text: string }) {
+  const parts = text.split(/(\/samples\/[\w./-]+\.\w+)/);
+  return (
+    <>
+      {parts.map((part, i) =>
+        i % 2 === 1 ? (
+          <a key={i} href={part} download className="font-mono text-xs text-primary hover:underline">
+            {part.split("/").pop()}
+          </a>
+        ) : (
+          part
+        ),
+      )}
+    </>
   );
 }
 

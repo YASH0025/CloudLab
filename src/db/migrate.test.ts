@@ -26,7 +26,7 @@ describe("runMigrations", { timeout: 30_000 }, () => {
   it("applies everything on a fresh database and is a no-op the second time", async () => {
     const pg = new PGlite();
     expect(await runMigrations(adapter(pg))).toBe(migrations.length);
-    expect(await tables(pg)).toEqual(["account", "claims", "resources", "session", "user", "verification"]);
+    expect(await tables(pg)).toEqual(["account", "blobs", "claims", "resources", "session", "user", "verification"]);
     expect(await runMigrations(adapter(pg))).toBe(0);
     expect(await recorded(pg)).toBe(migrations.length);
   });
@@ -45,8 +45,9 @@ describe("runMigrations", { timeout: 30_000 }, () => {
     const signIn = migrations[2].sql.map((s) => s.trim()).filter(Boolean);
     for (const stmt of signIn.slice(0, 5)) await pg.exec(stmt);
 
-    expect(await runMigrations(db)).toBe(1);
-    expect(await tables(pg)).toEqual(["account", "claims", "resources", "session", "user", "verification"]);
+    // The sign-in migration and every one after it.
+    expect(await runMigrations(db)).toBe(migrations.length - 2);
+    expect(await tables(pg)).toEqual(["account", "blobs", "claims", "resources", "session", "user", "verification"]);
     expect(await recorded(pg)).toBe(migrations.length);
     // Foreign keys exist exactly once.
     const fks = await pg.query(`SELECT conname FROM pg_constraint WHERE contype = 'f' ORDER BY 1`);
@@ -57,7 +58,7 @@ describe("runMigrations", { timeout: 30_000 }, () => {
     const pg = new PGlite();
     await Promise.all([runMigrations(adapter(pg)), runMigrations(adapter(pg))]);
     expect(await recorded(pg)).toBe(migrations.length);
-    expect(await tables(pg)).toEqual(["account", "claims", "resources", "session", "user", "verification"]);
+    expect(await tables(pg)).toEqual(["account", "blobs", "claims", "resources", "session", "user", "verification"]);
     expect(await runMigrations(adapter(pg))).toBe(0);
   });
 

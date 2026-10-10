@@ -3,6 +3,7 @@ import { availabilityZones } from "@/engine/catalog";
 import type { Engine } from "@/engine/engine";
 import { systemOf, type Resource } from "@/engine/types";
 import {
+  bucketName,
   coversPort,
   effectiveRouteTable,
   focusVpc,
@@ -71,6 +72,12 @@ interface Ctx {
   webServer?: Resource;
   /** Instance in a private subnet using the database group. */
   dbServer?: Resource;
+  /** The bucket for the website tutorial: one with website hosting on, else the newest. */
+  siteBucket?: Resource;
+  /** Keys at the top of `siteBucket`. */
+  siteKeys(): Promise<string[]>;
+  /** HTTP status the site's home page returns. */
+  siteStatus(): Promise<number | null>;
   /** Runs a reachability check (memoised per instance and input). */
   check(instance: Resource | undefined, input: ReachabilityInput): Promise<ReachabilityResult | null>;
 }
@@ -145,7 +152,19 @@ async function buildCtx(engine: Engine, accountId: string, region: string): Prom
 
   let reach: Promise<ReachabilityResult | null> | null = null;
   const checks = new Map<string, Promise<ReachabilityResult | null>>();
+  const siteBucket = s.buckets.find((b) => b.config.websiteEnabled) ?? s.buckets[0];
+  let keys: Promise<string[]> | null = null;
   return {
+    siteBucket,
+    siteKeys() {
+      keys ??= siteBucket
+        ? engine.objects.list(accountId, siteBucket.id, { delimiter: "/" }).then((r) => r.objects.map((o) => o.key))
+        : Promise.resolve([]);
+      return keys;
+    },
+    async siteStatus() {
+      return siteBucket ? (await engine.objects.website(siteBucket.id, "")).status : null;
+    },
     pubSub,
     privateSubnet,
     nat,
@@ -446,7 +465,7 @@ const TUTORIALS: TutorialDef[] = [
     level: "beginner",
     summary: "Break a working web server on purpose, twice, and learn to find and fix the problem like an engineer on call.",
     minutes: 8,
-    nextId: "private-network",
+    nextId: "static-website",
     steps: [
       {
         id: "working",
@@ -524,6 +543,88 @@ const TUTORIALS: TutorialDef[] = [
     ],
   },
 ];
+
+// ---------- static website ----------
+
+const SAMPLES = "/samples/website";
+const siteName = (c: Ctx) => `${bucketName(c.s.accountId)}-site`;
+const siteLink = (c: Ctx): GuideLink | undefined =>
+  c.siteBucket ? { service: "storage", type: "bucket", mode: "detail", id: c.siteBucket.id } : undefined;
+
+const STATIC_WEBSITE: TutorialDef = {
+  id: "static-website",
+  title: "Host a static website",
+  level: "beginner",
+  summary: "Put a web page in a storage bucket and publish it to the world: no servers, no networks, just files.",
+  minutes: 8,
+  nextId: "private-network",
+  steps: [
+    {
+      id: "bucket",
+      title: "Create a bucket for the site",
+      why: "A bucket holds files (objects). Static website hosting serves those files straight to browsers, so there's no server to run or patch.",
+      instructions: (c) => ["Click Take me there.", `The name is pre-filled (${siteName(c)}). Bucket names are shared by everyone, so it has to be unique.`, "Click Create bucket."],
+      link: (c) => ({ service: "storage", type: "bucket", mode: "create", prefill: { name: siteName(c), versioning: "Disabled", blockPublicAccess: true } }),
+      cli: (c) => `aws s3 mb s3://${siteName(c)}`,
+      check: (c) => !!c.siteBucket,
+    },
+    {
+      id: "upload",
+      title: "Upload the pages",
+      why: "Each file you upload becomes an object, named by its key: index.html, error.html, images/logo.png and so on.",
+      instructions: (c) => [
+        `Download the two sample pages: ${SAMPLES}/index.html and ${SAMPLES}/error.html (or use your own).`,
+        `Open ${c.siteBucket ? c.siteBucket.id : "your bucket"} and, under Objects, click Upload and pick both files. You can also drag them onto the list.`,
+      ],
+      link: siteLink,
+      cli: (c) => (c.siteBucket ? `aws s3 cp index.html s3://${c.siteBucket.id}/` : undefined),
+      check: async (c) => {
+        const keys = await c.siteKeys();
+        return keys.includes(String(c.siteBucket?.config.indexDocument || "index.html")) || keys.includes("index.html");
+      },
+    },
+    {
+      id: "hosting",
+      title: "Turn on static website hosting",
+      why: "Hosting tells the bucket to answer web requests: the index document is served for the home page, and the error document for pages that don't exist.",
+      instructions: [
+        "On the bucket page, scroll to Edit settings.",
+        "Tick Static website hosting. Index document: index.html. Error document: error.html.",
+        "Click Save changes.",
+      ],
+      link: siteLink,
+      cli: (c) => (c.siteBucket ? `aws s3 website s3://${c.siteBucket.id}/ --index-document index.html --error-document error.html` : undefined),
+      check: (c) => c.siteBucket?.config.websiteEnabled === true,
+    },
+    {
+      id: "public",
+      title: "Let visitors read the files",
+      why: "Buckets are private by default, and the website returns 403 Access Denied until you allow public reads. That takes two switches: turn off Block all public access, then add a public-read bucket policy.",
+      instructions: [
+        "Try Open website first: you'll see the 403 that real S3 shows.",
+        "In Edit settings, untick Block all public access and tick Bucket policy: public read. Save.",
+        "Only do this for buckets meant to be public, like a website. Leaking a private bucket is the most common cloud data breach.",
+      ],
+      link: siteLink,
+      cli: (c) => (c.siteBucket ? `aws s3api delete-public-access-block --bucket ${c.siteBucket.id}` : undefined),
+      check: (c) => !!c.siteBucket && !c.siteBucket.config.blockPublicAccess && c.siteBucket.config.publicRead === true,
+    },
+    {
+      id: "live",
+      title: "Visit your website",
+      why: "All three pieces are in place: files, hosting and public read. Anyone with the link can see the page now.",
+      instructions: [
+        "On the bucket page, under Static website hosting, click Open website.",
+        "Click the link on the page to see your error document.",
+        "Change index.html on your computer, upload it again and refresh: the site updates instantly.",
+      ],
+      link: siteLink,
+      check: async (c) => (await c.siteStatus()) === 200,
+    },
+  ],
+};
+
+TUTORIALS.push(STATIC_WEBSITE);
 
 // ---------- intermediate tutorials ----------
 

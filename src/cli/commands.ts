@@ -4,12 +4,28 @@ import { EngineError } from "@/engine/errors";
 import { systemOf, type Resource } from "@/engine/types";
 import { parseShorthand, UsageError } from "./parse";
 import * as present from "./present";
+import { S3_COMMANDS } from "./s3";
 
 export interface CliContext {
   engine: Engine;
   accountId: string;
   region: string;
+  /** Local files the terminal sent along with the command (name as typed → base64 contents). */
+  files?: Record<string, string>;
+  /** Side channel for what a command wants to happen besides printing output. */
+  effects?: CliEffects;
 }
+
+export interface CliEffects {
+  /** A file for the browser to save, e.g. from `aws s3 cp s3://bucket/key .`. */
+  download?: { filename: string; data: string; contentType: string };
+  /** The API operation actually called, when it depends on the arguments (cp: PutObject or GetObject). */
+  apiName?: string;
+  /** Text the real CLI prints before an error, e.g. "upload failed: index.html to s3://b/index.html ". */
+  failurePrefix?: string;
+  failureExitCode?: number;
+}
+
 
 /** Typed access to a command's --options. */
 export class Args {
@@ -212,17 +228,6 @@ async function keyPairByName(ctx: CliContext, name: string): Promise<Resource> {
   const found = (await listOf(ctx, "compute", "key-pair")).find((k) => k.name === name);
   if (!found) throw new EngineError("InvalidKeyPair.NotFound", `The key pair '${name}' does not exist`);
   return found;
-}
-
-function bucketFromUri(uri: string | undefined): string {
-  if (!uri) throw new UsageError("the following arguments are required: path");
-  const m = /^s3:\/\/([^/]+)\/?$/.exec(uri);
-  if (!m) throw new UsageError(`invalid S3 URI '${uri}'; expected s3://bucket-name`);
-  return m[1];
-}
-
-function loadBucket(ctx: CliContext, name: string) {
-  return ctx.engine.getTyped(ctx.accountId, name, "storage", "bucket");
 }
 
 // ---------- commands ----------
@@ -988,119 +993,8 @@ export const COMMANDS: Command[] = [
     },
   }),
 
-  // --- S3 (high-level) ---
-  cmd({
-    service: "s3",
-    operation: "mb",
-    apiName: "CreateBucket",
-    summary: "Make a bucket",
-    usage: "s3://<bucket>",
-    mutates: true,
-    async run(args, ctx) {
-      const name = bucketFromUri(args.positionals[0]);
-      await create(ctx, "storage", "bucket", { name });
-      return `make_bucket: ${name}`;
-    },
-  }),
-  cmd({
-    service: "s3",
-    operation: "rb",
-    apiName: "DeleteBucket",
-    summary: "Remove a bucket",
-    usage: "s3://<bucket>",
-    mutates: true,
-    async run(args, ctx) {
-      const name = bucketFromUri(args.positionals[0]);
-      await loadBucket(ctx, name);
-      await ctx.engine.remove(ctx.accountId, name);
-      return `remove_bucket: ${name}`;
-    },
-  }),
-  cmd({
-    service: "s3",
-    operation: "ls",
-    apiName: "ListBuckets",
-    summary: "List buckets",
-    mutates: false,
-    async run(_args, ctx) {
-      const buckets = await ctx.engine.list(ctx.accountId, { service: "storage", type: "bucket" });
-      return buckets
-        .map((b) => `${b.createdAt.slice(0, 19).replace("T", " ")} ${b.id}`)
-        .join("\n");
-    },
-  }),
-
-  // --- S3 API ---
-  cmd({
-    service: "s3api",
-    operation: "create-bucket",
-    apiName: "CreateBucket",
-    summary: "Create a bucket",
-    usage: "--bucket <name>",
-    mutates: true,
-    async run(args, ctx) {
-      const name = args.required("bucket");
-      await create(ctx, "storage", "bucket", { name });
-      return { Location: `/${name}` };
-    },
-  }),
-  cmd({
-    service: "s3api",
-    operation: "list-buckets",
-    apiName: "ListBuckets",
-    summary: "List buckets",
-    mutates: false,
-    async run(_args, ctx) {
-      const buckets = await ctx.engine.list(ctx.accountId, { service: "storage", type: "bucket" });
-      return {
-        Buckets: buckets.map((b) => ({ Name: b.id, CreationDate: b.createdAt })),
-        Owner: { ID: present.ownerId(ctx.accountId) },
-      };
-    },
-  }),
-  cmd({
-    service: "s3api",
-    operation: "delete-bucket",
-    apiName: "DeleteBucket",
-    summary: "Delete a bucket",
-    usage: "--bucket <name>",
-    mutates: true,
-    async run(args, ctx) {
-      const b = await loadBucket(ctx, args.required("bucket"));
-      await ctx.engine.remove(ctx.accountId, b.id);
-    },
-  }),
-  cmd({
-    service: "s3api",
-    operation: "put-bucket-versioning",
-    apiName: "PutBucketVersioning",
-    summary: "Enable or suspend versioning",
-    usage: "--bucket <name> --versioning-configuration Status=Enabled|Suspended",
-    mutates: true,
-    async run(args, ctx) {
-      const b = await loadBucket(ctx, args.required("bucket"));
-      const status = String(parseShorthand(args.required("versioning-configuration")).Status ?? "");
-      if (status !== "Enabled" && status !== "Suspended") {
-        throw new EngineError(
-          "MalformedXML",
-          "The XML you provided was not well-formed or did not validate against our published schema",
-        );
-      }
-      await ctx.engine.update(ctx.accountId, b.id, { versioning: status });
-    },
-  }),
-  cmd({
-    service: "s3api",
-    operation: "get-bucket-versioning",
-    apiName: "GetBucketVersioning",
-    summary: "Show a bucket's versioning status",
-    usage: "--bucket <name>",
-    mutates: false,
-    async run(args, ctx) {
-      const b = await loadBucket(ctx, args.required("bucket"));
-      return b.config.versioning === "Disabled" ? {} : { Status: b.config.versioning };
-    },
-  }),
+  // --- S3 (buckets, objects, websites) ---
+  ...S3_COMMANDS,
 ];
 
 export function findCommand(service: string, operation: string) {

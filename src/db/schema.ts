@@ -47,6 +47,21 @@ export const claims = pgTable("claims", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+/**
+ * File contents for storage objects, kept apart from `resources` so listing a
+ * bucket never loads the bytes. `id` is the object's resource ID; data is base64.
+ */
+export const blobs = pgTable(
+  "blobs",
+  {
+    id: text("id").primaryKey(),
+    accountId: text("account_id").notNull(),
+    data: text("data").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("blobs_account_idx").on(t.accountId)],
+);
+
 // ---------- sign-in (better-auth) ----------
 // Standard better-auth tables. A signed-in user's lab lives under the account ID "u_<user.id>".
 

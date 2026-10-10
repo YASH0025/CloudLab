@@ -2,6 +2,12 @@ import type { ResolvedServiceDef, ResourceDTO } from "@/engine/types";
 import type { Region } from "@/engine/catalog";
 import type { ReachabilityInput, ReachabilityResult } from "@/engine/analysis/reachability";
 import type { Advice, TutorialInfo, TutorialView } from "@/guide/types";
+import type { ObjectInfo } from "@/engine/objects";
+
+export type { ObjectInfo };
+
+const objectUrl = (bucket: string, key: string) =>
+  `/api/buckets/${encodeURIComponent(bucket)}/object?key=${encodeURIComponent(key)}`;
 
 export class ApiError extends Error {
   constructor(
@@ -81,6 +87,28 @@ export const api = {
       method: "POST",
       body: JSON.stringify(input),
     }),
+
+  listObjects: (bucket: string, prefix: string) =>
+    request<{ objects: ObjectInfo[]; prefixes: string[] }>(
+      `/api/buckets/${encodeURIComponent(bucket)}/objects?prefix=${encodeURIComponent(prefix)}`,
+    ),
+
+  /** Uploads raw bytes; the file's own type becomes the object's Content-Type. */
+  putObject: (bucket: string, key: string, body: Blob, contentType?: string) =>
+    request<{ object: ObjectInfo }>(objectUrl(bucket, key), {
+      method: "PUT",
+      body,
+      headers: { "Content-Type": contentType || body.type || "" },
+    }),
+
+  deleteObject: (bucket: string, key: string) => request<{ deleted: boolean }>(objectUrl(bucket, key), { method: "DELETE" }),
+
+  deletePrefix: (bucket: string, prefix: string) =>
+    request<{ deleted: string[] }>(`/api/buckets/${encodeURIComponent(bucket)}/objects?prefix=${encodeURIComponent(prefix)}`, {
+      method: "DELETE",
+    }),
+
+  objectDownloadUrl: objectUrl,
 
   runAction: (id: string, action: string) =>
     request<{ item: ResourceDTO }>(`/api/resources/${encodeURIComponent(id)}/actions`, {

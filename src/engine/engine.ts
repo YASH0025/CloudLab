@@ -4,7 +4,8 @@ import { EngineError, errors } from "./errors";
 import { buildSchema, collectRefs, type IssueKind } from "./fields";
 import { generateId } from "./ids";
 import { scheduleTransition, settle } from "./lifecycle";
-import { getTypeDef, resolveTypeDef, SERVICES } from "./registry";
+import { ObjectStorage } from "./objects";
+import { allTypes, getTypeDef, resolveTypeDef } from "./registry";
 import type { ResourceStore } from "./store";
 import {
   systemOf,
@@ -37,7 +38,7 @@ function isActive(r: Resource): boolean {
 
 // ---------- IDs and the errors the real API gives for them ----------
 
-const ALL_TYPES = () => SERVICES.flatMap((s) => s.types);
+const ALL_TYPES = allTypes;
 
 /** The resource type an ID belongs to, judged by its prefix (vpc-, subnet-, i-...). */
 function typeForId(id: string): ResourceTypeDef | undefined {
@@ -115,10 +116,15 @@ function issueToError(
  * behaviour comes from the type definitions in the registry.
  */
 export class Engine {
+  /** Objects in buckets, and static websites. */
+  readonly objects: ObjectStorage;
+
   constructor(
     private store: ResourceStore,
     private now: () => Date = () => new Date(),
-  ) {}
+  ) {
+    this.objects = new ObjectStorage(this, store, now);
+  }
 
   private context(accountId: string, region: string): HookContext {
     return {
@@ -245,7 +251,7 @@ export class Engine {
   async create(
     accountId: string,
     input: { service: string; type: string; region: string; config: Record<string, unknown> },
-    options: { system?: SystemInfo; settled?: boolean } = {},
+    options: { system?: SystemInfo; settled?: boolean; id?: string } = {},
   ): Promise<Resource> {
     const def = getTypeDef(input.service, input.type);
     if (!isRegion(input.region)) throw errors.invalidParameter(`Invalid region: '${input.region}'`);
@@ -253,7 +259,7 @@ export class Engine {
     const config = await this.validateConfig(def, input.region, input.config ?? {}, null, ctx);
 
     const name = typeof config.name === "string" ? config.name : "";
-    const id = def.idFromName ? name : generateId(def.idPrefix);
+    const id = options.id ?? (def.idFromName ? name : generateId(def.idPrefix));
     if (def.idFromName && (await this.store.getAny(id))) {
       throw new EngineError("BucketAlreadyExists", "The requested bucket name is not available.", 409);
     }
@@ -384,6 +390,7 @@ export class Engine {
       else blocking.push(d);
     }
     if (blocking.length > 0) {
+      if (def.dependencyError) throw def.dependencyError(id);
       throw errors.dependency(
         def.dependencyMessage?.(id) ?? `The ${def.apiNoun} '${id}' has dependencies and cannot be deleted.`,
         blocking.map((b) => b.id),

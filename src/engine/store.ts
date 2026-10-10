@@ -27,17 +27,37 @@ export interface ResourceStore {
    * target account has nothing yet. Returns how many resources moved.
    */
   transferAccount(from: string, to: string): Promise<number>;
+
+  /** File contents for storage objects (base64), keyed by the object's resource ID. */
+  putBlob(accountId: string, id: string, data: string): Promise<void>;
+  getBlob(accountId: string, id: string): Promise<string | null>;
+  deleteBlob(accountId: string, id: string): Promise<void>;
 }
 
 export class MemoryStore implements ResourceStore {
   private items = new Map<string, Resource>();
   private claims = new Set<string>();
+  private blobs = new Map<string, { accountId: string; data: string }>();
+
+  async putBlob(accountId: string, id: string, data: string) {
+    this.blobs.set(id, { accountId, data });
+  }
+
+  async getBlob(accountId: string, id: string) {
+    const b = this.blobs.get(id);
+    return b && b.accountId === accountId ? b.data : null;
+  }
+
+  async deleteBlob(accountId: string, id: string) {
+    if (this.blobs.get(id)?.accountId === accountId) this.blobs.delete(id);
+  }
 
   async deleteRegion(accountId: string, region: string) {
     let n = 0;
     for (const [id, r] of this.items) {
       if (r.accountId === accountId && r.region === region) {
         this.items.delete(id);
+        this.blobs.delete(id);
         n++;
       }
     }
@@ -63,6 +83,7 @@ export class MemoryStore implements ResourceStore {
         n++;
       }
     }
+    for (const b of this.blobs.values()) if (b.accountId === from) b.accountId = to;
     for (const key of [...this.claims]) {
       if (key.includes(`:${from}:`)) {
         this.claims.delete(key);

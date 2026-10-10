@@ -1,8 +1,8 @@
-import { and, arrayContains, desc, eq, like, type SQL } from "drizzle-orm";
+import { and, arrayContains, desc, eq, like, sql, type SQL } from "drizzle-orm";
 import type { PgDatabase } from "drizzle-orm/pg-core";
 import type { ListFilter, ResourceStore } from "@/engine/store";
 import type { Resource } from "@/engine/types";
-import { claims, resources, type ResourceRow } from "./schema";
+import { blobs, claims, resources, type ResourceRow } from "./schema";
 
 function toResource(row: ResourceRow): Resource {
   return {
@@ -107,7 +107,33 @@ export class PostgresStore implements ResourceStore {
       .delete(resources)
       .where(and(eq(resources.accountId, accountId), eq(resources.region, region)))
       .returning({ id: resources.id });
+    // File contents of objects that no longer exist.
+    await this.db
+      .delete(blobs)
+      .where(
+        and(eq(blobs.accountId, accountId), sql`${blobs.id} not in (select ${resources.id} from ${resources} where ${resources.accountId} = ${accountId})`),
+      );
     return rows.length;
+  }
+
+  async putBlob(accountId: string, id: string, data: string) {
+    await this.db
+      .insert(blobs)
+      .values({ id, accountId, data })
+      .onConflictDoUpdate({ target: blobs.id, set: { data, accountId }, setWhere: eq(blobs.accountId, accountId) });
+  }
+
+  async getBlob(accountId: string, id: string) {
+    const rows = await this.db
+      .select({ data: blobs.data })
+      .from(blobs)
+      .where(and(eq(blobs.accountId, accountId), eq(blobs.id, id)))
+      .limit(1);
+    return rows[0]?.data ?? null;
+  }
+
+  async deleteBlob(accountId: string, id: string) {
+    await this.db.delete(blobs).where(and(eq(blobs.accountId, accountId), eq(blobs.id, id)));
   }
 
   async tryClaim(key: string) {
@@ -128,6 +154,7 @@ export class PostgresStore implements ResourceStore {
       .set({ accountId: to })
       .where(eq(resources.accountId, from))
       .returning({ id: resources.id });
+    await this.db.update(blobs).set({ accountId: to }).where(eq(blobs.accountId, from));
     // Claim keys look like "default-vpc:<account>:<region>".
     const pattern = `%:${from}:%`;
     const old = await this.db.select({ key: claims.key }).from(claims).where(like(claims.key, pattern));

@@ -197,6 +197,10 @@ export interface ResourceTypeDef {
   stateErrorCode?: string;
   /** Extra reason a resource can't be deleted yet (e.g. a gateway still attached). Throw-free: return the error. */
   canDelete?: (resource: Resource) => EngineError | undefined;
+  /** Not shown in the console's navigation; managed through its own screens (bucket objects). */
+  hidden?: boolean;
+  /** The error when dependents block deletion, if not DependencyViolation (e.g. S3's BucketNotEmpty). */
+  dependencyError?: (id: string) => EngineError;
   /** Message when deletion is blocked by dependents. Defaults to "The <noun> '<id>' has dependencies and cannot be deleted." */
   dependencyMessage?: (id: string) => string;
   /** Extra checks beyond field validation. Throw EngineError to reject. */
@@ -254,6 +258,8 @@ export type ResolvedTypeDef = Omit<
   | "afterUpdate"
   | "afterDelete"
   | "onSettled"
+  | "dependencyError"
+  | "notFoundMessage"
 >;
 
 export interface ResolvedServiceDef extends Omit<ServiceDef, "types"> {

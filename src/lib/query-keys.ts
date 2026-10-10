@@ -5,4 +5,5 @@ export const queryKeys = {
   resource: (id: string) => ["resource", id] as const,
   guide: (region: string) => ["guide", region] as const,
   tutorial: (id: string, region: string) => ["guide", "tutorial", id, region] as const,
+  objects: (bucket: string, prefix: string) => ["objects", bucket, prefix] as const,
 };

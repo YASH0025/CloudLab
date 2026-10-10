@@ -1,6 +1,7 @@
 import type { NextRequest } from "next/server";
 import { z } from "zod";
 import { toDTO } from "@/engine";
+import { getTypeDef } from "@/engine/registry";
 import { getAccountId, getEngine, handle } from "@/server/api";
 
 export async function GET(request: NextRequest) {
@@ -14,7 +15,8 @@ export async function GET(request: NextRequest) {
       type: params.get("type") ?? undefined,
       region: params.get("region") ?? undefined,
     });
-    return Response.json({ items: items.map(toDTO) });
+    // Hidden types (bucket objects) have their own endpoints.
+    return Response.json({ items: items.filter((r) => !getTypeDef(r.service, r.type).hidden).map(toDTO) });
   });
 }
 

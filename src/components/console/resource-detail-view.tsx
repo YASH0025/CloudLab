@@ -15,6 +15,7 @@ import { ApiError } from "@/lib/api-client";
 import { routes } from "@/lib/routes";
 import { formatValue } from "@/lib/utils";
 import { ConfirmDialog } from "./confirm-dialog";
+import { ObjectsPanel, WebsiteCard } from "./objects-panel";
 import { ReachabilityPanel } from "./reachability-panel";
 import { ResourceForm } from "./resource-form";
 import { StateBadge } from "./state-badge";
@@ -238,6 +239,12 @@ export function ResourceDetailView() {
       </Card>
 
       {item.service === "compute" && item.type === "instance" && <ReachabilityPanel instanceId={item.id} />}
+      {item.service === "storage" && item.type === "bucket" && (
+        <>
+          <ObjectsPanel bucket={item.id} />
+          <WebsiteCard bucket={item} />
+        </>
+      )}
 
       {hasEditableFields(typeDef) && (
         <Card>

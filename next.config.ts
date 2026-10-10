@@ -1,8 +1,9 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  /* config options here */
   cacheComponents: true,
+  // Static websites (/website/<bucket>/docs/) need the trailing slash: on S3 it means "folder".
+  skipTrailingSlashRedirect: true,
   partialPrefetching: true,
   turbopack: {
     rules: {

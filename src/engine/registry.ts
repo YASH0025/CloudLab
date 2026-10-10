@@ -2,14 +2,20 @@ import { resolveOptions } from "./catalog";
 import { errors } from "./errors";
 import { computeService } from "./services/compute";
 import { networkingService } from "./services/networking";
-import { storageService } from "./services/storage";
+import { objectType, storageService } from "./services/storage";
 import type { FieldDef, ResolvedServiceDef, ResolvedTypeDef, ResourceTypeDef, ServiceDef } from "./types";
 
 /** Every service the platform simulates. Add new service definitions here. */
 export const SERVICES: ServiceDef[] = [networkingService, computeService, storageService];
 
+/** Types managed through their own screens rather than the generic console pages (bucket objects). */
+const HIDDEN_TYPES: ResourceTypeDef[] = [objectType];
+
+/** Every resource type, including hidden ones. */
+export const allTypes = (): ResourceTypeDef[] => [...SERVICES.flatMap((s) => s.types), ...HIDDEN_TYPES];
+
 export function getTypeDef(service: string, type: string): ResourceTypeDef {
-  const def = SERVICES.find((s) => s.id === service)?.types.find((t) => t.type === type);
+  const def = allTypes().find((t) => t.service === service && t.type === type);
   if (!def) throw errors.unknownType(service, type);
   return def;
 }

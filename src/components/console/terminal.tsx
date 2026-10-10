@@ -7,7 +7,8 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 import { commonPrefix, complete } from "@/cli/complete";
 import type { CliResult } from "@/cli/execute";
-import { downloadText } from "@/lib/utils";
+import { localUploads } from "@/cli/uploads";
+import { downloadBase64, downloadText } from "@/lib/utils";
 import { useConsoleStore } from "@/stores/console-store";
 import { useGuideStore } from "@/stores/guide-store";
 
@@ -35,15 +36,37 @@ function saveHistory(history: string[]) {
   }
 }
 
-async function runCommand(command: string, region: string): Promise<CliResult> {
+async function runCommand(command: string, region: string, files?: Record<string, string>): Promise<CliResult> {
   const res = await fetch("/api/cli", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ command, region }),
+    body: JSON.stringify({ command, region, files }),
   });
   const body = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(body?.error?.message ?? res.statusText);
   return body as CliResult;
+}
+
+const MAX_UPLOAD_BYTES = 1024 * 1024;
+
+/** Opens the browser's file picker; resolves with the chosen file, or null if cancelled. */
+function pickFile(): Promise<File | null> {
+  return new Promise((resolve) => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.onchange = () => resolve(input.files?.[0] ?? null);
+    input.oncancel = () => resolve(null);
+    input.click();
+  });
+}
+
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).replace(/^data:[^,]*,/, ""));
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
 }
 
 /** An in-browser terminal running the simulated CLI. */
@@ -53,7 +76,10 @@ export const Terminal = forwardRef<TerminalHandle>(function Terminal(_props, ref
   const region = useConsoleStore((s) => s.region);
   const regionRef = useRef(region);
   const queryClient = useQueryClient();
-  const exec = useMutation({ mutationFn: ({ command, region }: { command: string; region: string }) => runCommand(command, region) });
+  const exec = useMutation({
+    mutationFn: ({ command, region, files }: { command: string; region: string; files?: Record<string, string> }) =>
+      runCommand(command, region, files),
+  });
   const execRef = useRef(exec.mutateAsync);
 
   // Line-editor state lives in refs: xterm's event handlers outlive renders.
@@ -160,12 +186,38 @@ export const Terminal = forwardRef<TerminalHandle>(function Terminal(_props, ref
         }
         historyIndex.current = history.current.length;
 
+        // The terminal has no file system: a command that reads a local file asks for it first.
+        // The picker must open right away, while the Enter key press still counts as a user action.
+        const uploads = command === "clear" ? [] : localUploads(command);
+        let files: Record<string, string> | undefined;
+        if (uploads.length > 0) {
+          busy.current = true;
+          term.writeln(`${C.dim}Choose ${uploads[0]} from your computer…${C.reset}`);
+          const picked = await pickFile();
+          if (!picked) {
+            term.writeln(`${C.dim}No file chosen; nothing was uploaded.${C.reset}`);
+            busy.current = false;
+            term.write(prompt());
+            return;
+          }
+          if (picked.size > MAX_UPLOAD_BYTES) {
+            term.writeln(`${C.red}${picked.name} is ${(picked.size / 1024 / 1024).toFixed(1)} MB; CloudLab accepts files up to 1 MB.${C.reset}`);
+            busy.current = false;
+            term.write(prompt());
+            return;
+          }
+          files = { [uploads[0]]: await fileToBase64(picked) };
+        }
+
         if (command === "clear") {
           term.clear();
         } else if (command) {
           busy.current = true;
           try {
-            const result = await execRef.current({ command, region: regionRef.current });
+            const result = await execRef.current({ command, region: regionRef.current, files });
+            if (result.download && result.exitCode === 0) {
+              downloadBase64(result.download.filename, result.download.data, result.download.contentType);
+            }
             if (result.saveAs && result.exitCode === 0) {
               // `> file`: there is no file system here, so the browser downloads the output instead.
               downloadText(result.saveAs, result.output.endsWith("\n") ? result.output : `${result.output}\n`);

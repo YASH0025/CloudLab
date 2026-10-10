@@ -180,3 +180,65 @@ export function useDeleteResource() {
     onError,
   });
 }
+
+// ---------- bucket objects ----------
+
+export function useObjects(bucket: string, prefix: string) {
+  return useQuery({ queryKey: queryKeys.objects(bucket, prefix), queryFn: () => api.listObjects(bucket, prefix) });
+}
+
+/** Refreshes everything that shows a bucket's objects: the listing, the bucket's counts and the guide. */
+function useObjectsChanged() {
+  const qc = useQueryClient();
+  return () => {
+    qc.invalidateQueries({ queryKey: ["objects"] });
+    qc.invalidateQueries({ queryKey: ["resource"] });
+    qc.invalidateQueries({ queryKey: ["resources"] });
+    qc.invalidateQueries({ queryKey: ["guide"] });
+  };
+}
+
+/** Uploads files into a "folder" (key prefix), one after another. */
+export function useUploadObjects(bucket: string) {
+  const changed = useObjectsChanged();
+  return useMutation({
+    mutationFn: async ({ files, prefix }: { files: File[]; prefix: string }) => {
+      const done: string[] = [];
+      for (const file of files) {
+        // Folders dropped or picked keep their structure (webkitRelativePath is "folder/file.txt").
+        const rel = (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name;
+        await api.putObject(bucket, prefix + rel, file);
+        done.push(rel);
+      }
+      return done;
+    },
+    onSuccess: (done) => toast.success(done.length === 1 ? `Uploaded ${done[0]}` : `Uploaded ${done.length} files`),
+    onError,
+    onSettled: changed,
+  });
+}
+
+export function useCreateFolder(bucket: string) {
+  const changed = useObjectsChanged();
+  return useMutation({
+    // The console makes a folder the way S3's does: an empty object whose key ends in "/".
+    mutationFn: (key: string) => api.putObject(bucket, key.endsWith("/") ? key : `${key}/`, new Blob([]), "application/x-directory"),
+    onSuccess: (r) => toast.success(`Created folder ${r.object.key}`),
+    onError,
+    onSettled: changed,
+  });
+}
+
+export function useDeleteObjects(bucket: string) {
+  const changed = useObjectsChanged();
+  return useMutation({
+    mutationFn: async ({ keys, prefixes }: { keys: string[]; prefixes: string[] }) => {
+      for (const key of keys) await api.deleteObject(bucket, key);
+      for (const p of prefixes) await api.deletePrefix(bucket, p);
+      return keys.length + prefixes.length;
+    },
+    onSuccess: (n) => toast.success(n === 1 ? "Deleted" : `Deleted ${n} items`),
+    onError,
+    onSettled: changed,
+  });
+}

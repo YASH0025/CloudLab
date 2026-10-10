@@ -5,6 +5,13 @@
 
 export class UsageError extends Error {}
 
+/** A local path the terminal didn't send. The real CLI says the path doesn't exist. */
+export class LocalPathError extends Error {
+  constructor(readonly path: string) {
+    super(`The user-provided path ${path} does not exist.`);
+  }
+}
+
 /** Splits a command line like a shell would: whitespace separates, quotes group, backslash escapes. */
 export function tokenize(line: string): string[] {
   const tokens: string[] = [];
