@@ -108,6 +108,18 @@ const EXPLANATIONS: Record<string, ErrorExplanation> = {
     meaning: "The Elastic IP is still attached to an instance, so it can't be released.",
     fix: "Disassociate it first (disassociate-address), then release it.",
   },
+  NatGatewayNotFound: {
+    meaning: "No NAT gateway with that ID exists in this region (or it has been deleted).",
+    fix: "List them with describe-nat-gateways, and check the region selector.",
+  },
+  NatGatewayMalformed: {
+    meaning: "That isn't a valid NAT gateway ID.",
+    fix: "NAT gateway IDs look like nat-0a1b2c3d4e5f67890. Copy it rather than typing it.",
+  },
+  InvalidParameterCombination: {
+    meaning: "You gave two options that can't be used together, e.g. a route with both an internet gateway and a NAT gateway.",
+    fix: "Keep one of them.",
+  },
   AddressLimitExceeded: {
     meaning: "You've reached the limit of Elastic IPs in this region (5).",
     fix: "Release addresses you don't use. Unused Elastic IPs cost money in a real account, so it's a good habit anyway.",

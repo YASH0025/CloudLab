@@ -50,7 +50,15 @@ describe("progress", () => {
 
 describe("tutorials", () => {
   it("lists the catalogue", () => {
-    expect(listTutorials().map((t) => t.id)).toEqual(["first-network", "first-web-server", "troubleshoot-reachability"]);
+    expect(listTutorials().map((t) => t.id)).toEqual([
+      "first-network",
+      "first-web-server",
+      "troubleshoot-reachability",
+      "private-network",
+      "bastion-host",
+      "web-and-database",
+    ]);
+    expect(listTutorials().filter((t) => t.level === "intermediate")).toHaveLength(3);
   });
 
   it("completes 'Your first private network' by following its links", async () => {
@@ -98,5 +106,44 @@ describe("tutorials", () => {
     await engine.update(ACCOUNT, group.id, { inboundRules: savedRules });
     progress = advanceProgress(progress, (await view(id)).steps.map((s) => s.passes));
     expect(progress).toBe(5);
+  });
+
+  it("completes the intermediate track in order, using pre-filled forms", async () => {
+    expect(await play("private-network")).toBe(10);
+
+    const bastionSteps = await play("bastion-host", {
+      // The one hand edit: add a rule naming the bastion's group to the private server's group.
+      "allow-from-bastion": async () => {
+        const t = await view("bastion-host");
+        const cli = t.steps.find((x) => x.id === "allow-from-bastion")!.cli!;
+        const [, groupId, sourceId] = /--group-id (\S+) .* --source-group (\S+)/.exec(cli)!;
+        const g = await engine.get(ACCOUNT, groupId);
+        await engine.update(ACCOUNT, groupId, {
+          inboundRules: [...((g.config.inboundRules as unknown[]) ?? []), { protocol: "tcp", fromPort: 22, toPort: 22, sourceGroupId: sourceId }],
+        });
+      },
+    });
+    expect(bastionSteps).toBe(6);
+
+    expect(await play("web-and-database")).toBe(6);
+    // The database is not reachable from the internet, but is from the web tier.
+    const t = await view("web-and-database");
+    expect(t.steps.every((x) => x.passes)).toBe(true);
+  });
+
+  it("doesn't pass the NAT step while the gateway sits in the private subnet", async () => {
+    await play("private-network", {
+      nat: async () => {
+        const t = await view("private-network");
+        const prefill = t.steps.find((x) => x.id === "nat")!.link!.prefill!;
+        const subnets = await engine.list(ACCOUNT, { service: "networking", type: "subnet", region: REGION });
+        const priv = subnets.find((x) => x.name === "private-a")!;
+        await engine.create(ACCOUNT, { service: "networking", type: "nat-gateway", region: REGION, config: { ...prefill, subnetId: priv.id } });
+        tick();
+        const after = await view("private-network");
+        expect(after.steps.find((x) => x.id === "nat")!.passes).toBe(false);
+        throw new Error("stop");
+      },
+    }).catch((e) => expect((e as Error).message).toBe("stop"));
   });
 });

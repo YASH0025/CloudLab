@@ -187,6 +187,10 @@ export interface ResourceTypeDef {
   lifecycle?: LifecycleDef;
   /** Error code used when a resource of this type is not found, e.g. "InvalidVpcID.NotFound". */
   notFoundCode: string;
+  /** Message for a missing ID when the real API doesn't use "The <noun> ID '<id>' does not exist". */
+  notFoundMessage?: (id: string) => string;
+  /** Error code for a badly formed ID, when it isn't the not-found code with ".Malformed". */
+  malformedCode?: string;
   /** How the real API names this type in messages, e.g. "vpc", "internetGateway", "routeTable". */
   apiNoun: string;
   /** Error code for state conflicts. Instances use "IncorrectInstanceState"; most others "IncorrectState". */

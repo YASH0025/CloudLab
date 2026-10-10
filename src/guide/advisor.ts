@@ -4,7 +4,11 @@ import type { Engine } from "@/engine/engine";
 import type { Resource } from "@/engine/types";
 import {
   bucketName,
+  coversPort,
   effectiveRouteTable,
+  inboundRules,
+  isPublicSubnet,
+  routesToNat,
   focusVpc,
   freeSubnetCidr,
   isOwn,
@@ -23,6 +27,14 @@ import type { Advice, Level, Milestone, Suggestion } from "./types";
  */
 
 const TRANSITIONAL = ["pending", "stopping", "shutting-down", "rebooting"];
+
+const DATABASE_PORTS = [
+  { port: 5432, name: "PostgreSQL" },
+  { port: 3306, name: "MySQL" },
+  { port: 1433, name: "SQL Server" },
+  { port: 27017, name: "MongoDB" },
+  { port: 6379, name: "Redis" },
+];
 
 export async function advise(engine: Engine, accountId: string, region: string): Promise<Advice> {
   const s = await takeSnapshot(engine, accountId, region);
@@ -297,6 +309,60 @@ export async function advise(engine: Engine, accountId: string, region: string):
   }
 
   const reachable = reach?.reachable === true;
+
+  // ---------- mistakes worth flagging, whatever the level ----------
+  for (const g of s.groups.filter(isOwn)) {
+    const open = DATABASE_PORTS.find((db) => inboundRules(g).some((r) => r.cidr === "0.0.0.0/0" && coversPort(r, db.port)));
+    if (!open) continue;
+    push({
+      id: `db-open-${g.id}`,
+      level: "intermediate",
+      title: `${label(g)} lets the whole internet reach ${open.name}`,
+      why: `A rule allows port ${open.port} from 0.0.0.0/0. Databases exposed like this are found by scanners within hours. Only your app servers should reach the database.`,
+      steps: [
+        `Open ${g.id} and delete the ${open.name} rule from 0.0.0.0/0.`,
+        `Add it back with your web servers' security group as the source instead of an address range.`,
+      ],
+      link: { service: "networking", type: "security-group", mode: "detail", id: g.id },
+      cli: `aws ec2 revoke-security-group-ingress --group-id ${g.id} --protocol tcp --port ${open.port} --cidr 0.0.0.0/0`,
+    });
+  }
+  for (const nat of s.natGateways) {
+    const subnet = s.subnets.find((x) => x.id === nat.config.subnetId);
+    if (!subnet || isPublicSubnet(s, subnet)) continue;
+    push({
+      id: `nat-private-${nat.id}`,
+      level: "intermediate",
+      title: `${label(nat)} can't reach the internet`,
+      why: `It's in ${label(subnet)}, which has no route to an internet gateway. A NAT gateway forwards traffic to the internet gateway, so it has to sit in a public subnet; otherwise private servers behind it get nowhere.`,
+      steps: ["Create a new NAT gateway in a public subnet.", "Point the private route table's 0.0.0.0/0 route at the new one.", `Delete ${nat.id}.`],
+      link: { service: "networking", type: "nat-gateway", mode: "create" },
+    });
+  }
+  for (const i of s.instances) {
+    const subnet = s.subnets.find((x) => x.id === i.config.subnetId);
+    if (!i.attributes.publicIp || !subnet || !routesToNat(s, subnet)) continue;
+    push({
+      id: `private-public-ip-${i.id}`,
+      level: "intermediate",
+      title: `${label(i)} has a public IP in a private subnet`,
+      why: "Its subnet sends traffic through a NAT gateway, so the public IP is useless today. Worse, if someone later routes that subnet to an internet gateway, this server is suddenly exposed. Private servers shouldn't have one.",
+      steps: ["Launch a replacement with Auto-assign public IP set to Disable.", `Then terminate ${i.id}.`],
+      link: { service: "compute", type: "instance", mode: "detail", id: i.id },
+    });
+  }
+  for (const eip of s.addresses) {
+    if (eip.config.instanceId || eip.attributes.natGatewayId) continue;
+    push({
+      id: `unused-eip-${eip.id}`,
+      level: "intermediate",
+      title: `Use or release ${eip.attributes.publicIp}`,
+      why: "This Elastic IP isn't attached to anything. In a real account an idle Elastic IP is billed every hour, so teams release the ones they don't need.",
+      steps: ["Associate it with an instance or a NAT gateway, or delete it to release it."],
+      link: { service: "compute", type: "elastic-ip", mode: "detail", id: eip.id },
+      cli: `aws ec2 release-address --allocation-id ${eip.id}`,
+    });
+  }
 
   // ---------- storage ----------
   if (s.buckets.length === 0) {

@@ -57,12 +57,14 @@ export function notFoundByNameError(def: ResourceTypeDef, name: string): EngineE
 export function notFoundError(def: ResourceTypeDef, id: string): EngineError {
   if (def.idFromName) return errors.notFound(def.notFoundCode, "The specified bucket does not exist");
   if (def.type === "security-group") return errors.notFound(def.notFoundCode, `The security group '${id}' does not exist`);
+  if (def.notFoundMessage) return errors.notFound(def.notFoundCode, def.notFoundMessage(id));
   return errors.notFound(def.notFoundCode, `The ${def.apiNoun} ID '${id}' does not exist`);
 }
 
 function malformedError(def: ResourceTypeDef, id: string): EngineError {
   const code =
-    def.notFoundCode === "InvalidGroup.NotFound" ? "InvalidGroupId.Malformed" : def.notFoundCode.replace(/\.NotFound$/, ".Malformed");
+    def.malformedCode ??
+    (def.notFoundCode === "InvalidGroup.NotFound" ? "InvalidGroupId.Malformed" : def.notFoundCode.replace(/\.NotFound$/, ".Malformed"));
   return errors.malformed(code, id, def.idPrefix);
 }
 

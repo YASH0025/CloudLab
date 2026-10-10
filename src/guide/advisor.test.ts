@@ -124,6 +124,22 @@ describe("advisor", () => {
     expect((await next()).id).not.toBe("needs-public-ip");
   });
 
+  it("flags a database port open to the internet and an idle Elastic IP", async () => {
+    const vpc = await engine.create(ACCOUNT, { service: "networking", type: "vpc", region: REGION, config: { cidrBlock: "10.0.0.0/16" } });
+    clock = new Date(clock.getTime() + 2_000);
+    const g = await engine.create(ACCOUNT, {
+      service: "networking",
+      type: "security-group",
+      region: REGION,
+      config: { name: "db", description: "db", vpcId: vpc.id, inboundRules: [{ protocol: "tcp", fromPort: 5432, toPort: 5432, cidr: "0.0.0.0/0" }] },
+    });
+    const eip = await engine.create(ACCOUNT, { service: "compute", type: "elastic-ip", region: REGION, config: {} });
+    const advice = await advise(engine, ACCOUNT, REGION);
+    const ids = [advice.next, ...advice.more].map((x) => x.id);
+    expect(ids).toContain(`db-open-${g.id}`);
+    expect(ids).toContain(`unused-eip-${eip.id}`);
+  });
+
   it("explains common error codes", () => {
     expect(explainError("DependencyViolation")?.fix).toMatch(/Used by/);
     expect(explainError("InvalidVpcID.NotFound")?.meaning).toMatch(/doesn't exist/);

@@ -2,7 +2,7 @@ import { cidrContains, cidrOverlaps, parseCidr, usableHosts } from "../cidr";
 import { availabilityZones } from "../catalog";
 import { EngineError } from "../errors";
 import { systemOf, type FieldDef, type ResourceTypeDef, type ServiceDef } from "../types";
-import { internetGateway, routeTable } from "./routing";
+import { internetGateway, natGateway, routeTable } from "./routing";
 
 const nameField = (label: string, required = false): FieldDef => ({
   key: "name",
@@ -326,7 +326,7 @@ export const networkingService: ServiceDef = {
   id: "networking",
   label: "Virtual Network",
   modelledOn: "VPC",
-  description: "Private networks, subnets, routing, gateways and firewalls.",
+  description: "Private networks, subnets, routing, internet and NAT gateways, and firewalls.",
   category: "Networking",
-  types: [vpc, subnet, internetGateway, routeTable, securityGroup],
+  types: [vpc, subnet, internetGateway, natGateway, routeTable, securityGroup],
 };

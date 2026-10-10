@@ -17,12 +17,14 @@ export interface Snapshot {
   buckets: Resource[];
   /** Elastic IPs. */
   addresses: Resource[];
+  natGateways: Resource[];
+  keyPairs: Resource[];
 }
 
 export async function takeSnapshot(engine: Engine, accountId: string, region: string): Promise<Snapshot> {
   const list = (service: string, type: string, allRegions = false) =>
     engine.list(accountId, { service, type, region: allRegions ? undefined : region });
-  const [vpcs, subnets, gateways, routeTables, groups, instances, buckets, addresses] = await Promise.all([
+  const [vpcs, subnets, gateways, routeTables, groups, instances, buckets, addresses, natGateways, keyPairs] = await Promise.all([
     list("networking", "vpc"),
     list("networking", "subnet"),
     list("networking", "internet-gateway"),
@@ -31,6 +33,8 @@ export async function takeSnapshot(engine: Engine, accountId: string, region: st
     list("compute", "instance"),
     list("storage", "bucket", true),
     list("compute", "elastic-ip"),
+    list("networking", "nat-gateway"),
+    list("compute", "key-pair"),
   ]);
   return {
     region,
@@ -43,6 +47,8 @@ export async function takeSnapshot(engine: Engine, accountId: string, region: st
     instances: instances.filter((i) => i.state !== "terminated"),
     buckets,
     addresses,
+    natGateways,
+    keyPairs,
   };
 }
 
@@ -104,3 +110,35 @@ export function bucketName(accountId: string) {
   for (const ch of accountId) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
   return `lab-assets-${h.toString(36).slice(0, 6)}`;
 }
+
+interface RouteEntry {
+  destination: string;
+  gatewayId?: string;
+  natGatewayId?: string;
+}
+
+/** The 0.0.0.0/0 route of the table a subnet uses, if any. */
+export function defaultRoute(s: Snapshot, subnet: Resource): RouteEntry | undefined {
+  const t = effectiveRouteTable(s, subnet);
+  return ((t?.config.routes as RouteEntry[]) ?? []).find((r) => r.destination === "0.0.0.0/0");
+}
+
+/** A public subnet: its route table sends 0.0.0.0/0 to an internet gateway attached to its VPC. */
+export function isPublicSubnet(s: Snapshot, subnet: Resource): boolean {
+  const r = defaultRoute(s, subnet);
+  return !!r?.gatewayId && s.gateways.some((g) => g.id === r.gatewayId && g.config.vpcId === subnet.config.vpcId);
+}
+
+/** A private subnet with a way out: 0.0.0.0/0 goes to a NAT gateway. */
+export function routesToNat(s: Snapshot, subnet: Resource): Resource | undefined {
+  const r = defaultRoute(s, subnet);
+  return r?.natGatewayId ? s.natGateways.find((n) => n.id === r.natGatewayId) : undefined;
+}
+
+/** Inbound rules of a group. */
+export const inboundRules = (g: Resource) =>
+  (g.config.inboundRules as (SgRule & { sourceGroupId?: string })[] | undefined) ?? [];
+
+/** Whether a rule covers a TCP port. */
+export const coversPort = (r: { protocol: string; fromPort?: number; toPort?: number }, port: number) =>
+  r.protocol === "all" || (r.protocol === "tcp" && (r.fromPort ?? -1) <= port && (r.toPort ?? -1) >= port);

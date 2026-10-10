@@ -80,10 +80,19 @@ export function internetGateway(r: Resource, ctx: PresentContext) {
 
 export async function routeTable(r: Resource, ctx: PresentContext) {
   const vpcRes = await ctx.engine.get(ctx.accountId, r.config.vpcId as string).catch(() => null);
-  const routes = (r.config.routes as { destination: string; gatewayId: string }[]) ?? [];
+  const routes = (r.config.routes as { destination: string; gatewayId?: string; natGatewayId?: string }[]) ?? [];
   const routeEntries = await Promise.all(
     routes.map(async (route) => {
-      const gw = await ctx.engine.get(ctx.accountId, route.gatewayId).catch(() => null);
+      if (route.natGatewayId) {
+        const nat = await ctx.engine.get(ctx.accountId, route.natGatewayId).catch(() => null);
+        return {
+          DestinationCidrBlock: route.destination,
+          NatGatewayId: route.natGatewayId,
+          Origin: "CreateRoute",
+          State: nat ? "active" : "blackhole",
+        };
+      }
+      const gw = route.gatewayId ? await ctx.engine.get(ctx.accountId, route.gatewayId).catch(() => null) : null;
       const attached = gw && gw.config.vpcId === r.config.vpcId;
       return {
         DestinationCidrBlock: route.destination,
@@ -203,8 +212,17 @@ export function keyPair(r: Resource, opts: { includePublicKey?: boolean } = {}) 
 
 export function address(r: Resource) {
   const instanceId = (r.config.instanceId as string | undefined) || undefined;
+  const natId = r.attributes.natGatewayId as string | undefined;
   return {
     AllocationId: r.id,
+    ...(natId
+      ? {
+          AssociationId: r.attributes.associationId,
+          NetworkInterfaceId: `eni-${natId.replace(/^nat-/, "")}`,
+          NetworkInterfaceOwnerId: "amazon-elb",
+          PrivateIpAddress: r.attributes.privateIp ?? undefined,
+        }
+      : {}),
     ...(instanceId
       ? {
           AssociationId: r.attributes.associationId,
@@ -218,5 +236,29 @@ export function address(r: Resource) {
     PublicIp: r.attributes.publicIp,
     PublicIpv4Pool: "amazon",
     Tags: tags(r),
+  };
+}
+
+export function natGateway(r: Resource) {
+  // While it's being created the address is still "associating".
+  const status = r.state === "available" ? "succeeded" : "associating";
+  return {
+    CreateTime: r.createdAt,
+    NatGatewayAddresses: [
+      {
+        AllocationId: r.config.allocationId,
+        NetworkInterfaceId: r.attributes.networkInterfaceId,
+        PrivateIp: r.attributes.privateIp,
+        PublicIp: r.attributes.publicIp,
+        IsPrimary: true,
+        Status: status,
+      },
+    ],
+    NatGatewayId: r.id,
+    State: r.state,
+    SubnetId: r.config.subnetId,
+    VpcId: r.attributes.vpcId,
+    Tags: tags(r),
+    ConnectivityType: "public",
   };
 }

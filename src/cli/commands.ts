@@ -89,12 +89,16 @@ function nameTag(args: Args): string | undefined {
 
 /** Applies --filters Name=x,Values=a,b to resources. */
 function applyFilters(args: Args, items: Resource[]): Resource[] {
-  return args.raw("filters").reduce((acc, raw) => {
+  // Most commands take --filters; a few (describe-nat-gateways) take --filter.
+  return [...args.raw("filters"), ...args.raw("filter")].reduce((acc, raw) => {
     const f = parseShorthand(raw);
     const name = String(f.Name ?? "");
     const values = ([] as string[]).concat(f.Values ?? []);
     const pick = (r: Resource): unknown => {
       if (name === "vpc-id") return r.config.vpcId ?? r.attributes.vpcId;
+      if (name === "route.nat-gateway-id") {
+        return ((r.config.routes as { natGatewayId?: string }[]) ?? []).map((x) => x.natGatewayId).find((id) => values.includes(String(id)));
+      }
       if (name === "subnet-id") return r.config.subnetId;
       if (name === "instance-state-name" || name === "state") return r.state;
       if (name === "availability-zone") return r.config.availabilityZone ?? r.attributes.availabilityZone;
@@ -103,7 +107,7 @@ function applyFilters(args: Args, items: Resource[]): Resource[] {
       if (name === "isDefault" || name === "is-default") return String(systemOf(r).isDefault === true);
       if (name === "default-for-az" || name === "defaultForAz") return String(systemOf(r).defaultForAz === true);
       if (name === "association.main") return String(systemOf(r).main === true);
-      if (name === "internet-gateway-id") return r.id;
+      if (name === "internet-gateway-id" || name === "nat-gateway-id") return r.id;
       if (name === "attachment.vpc-id") return r.config.vpcId;
       if (name === "key-name") return r.type === "key-pair" ? r.name : r.config.keyName;
       if (name === "key-pair-id" || name === "allocation-id") return r.id;
@@ -452,6 +456,54 @@ export const COMMANDS: Command[] = [
     },
   }),
 
+  // --- NAT gateways ---
+  cmd({
+    service: "ec2",
+    operation: "create-nat-gateway",
+    apiName: "CreateNatGateway",
+    summary: "Create a NAT gateway in a public subnet",
+    usage: "--subnet-id <id> --allocation-id <eipalloc-id> [--connectivity-type public]",
+    mutates: true,
+    async run(args, ctx) {
+      const type = args.one("connectivity-type") ?? "public";
+      if (type !== "public") {
+        throw new EngineError("InvalidParameterValue", `Value (${type}) for parameter connectivityType is invalid. CloudLab supports public.`);
+      }
+      const subnet = await load(ctx, "networking", "subnet", args.required("subnet-id"));
+      const allocationId = args.one("allocation-id");
+      if (!allocationId) {
+        throw new EngineError("MissingParameter", "AllocationId is required for a public NAT gateway.");
+      }
+      const r = await create(ctx, "networking", "nat-gateway", { subnetId: subnet.id, allocationId, name: nameTag(args) });
+      return { NatGateway: present.natGateway(r) };
+    },
+  }),
+  cmd({
+    service: "ec2",
+    operation: "describe-nat-gateways",
+    apiName: "DescribeNatGateways",
+    summary: "List NAT gateways",
+    usage: "[--nat-gateway-ids <id> ...] [--filter Name=vpc-id,Values=<id>]",
+    mutates: false,
+    async run(args, ctx) {
+      const items = await describe(ctx, args, { service: "networking", type: "nat-gateway", idsOption: "nat-gateway-ids" });
+      return { NatGateways: items.map((r) => present.natGateway(r)) };
+    },
+  }),
+  cmd({
+    service: "ec2",
+    operation: "delete-nat-gateway",
+    apiName: "DeleteNatGateway",
+    summary: "Delete a NAT gateway (its Elastic IP is kept)",
+    usage: "--nat-gateway-id <id>",
+    mutates: true,
+    async run(args, ctx) {
+      const nat = await load(ctx, "networking", "nat-gateway", args.required("nat-gateway-id"));
+      await ctx.engine.remove(ctx.accountId, nat.id);
+      return { NatGatewayId: nat.id };
+    },
+  }),
+
   // --- route tables ---
   cmd({
     service: "ec2",
@@ -471,14 +523,16 @@ export const COMMANDS: Command[] = [
     operation: "create-route",
     apiName: "CreateRoute",
     summary: "Add a route to a route table",
-    usage: "--route-table-id <id> --destination-cidr-block <cidr> --gateway-id <igw-id>",
+    usage: "--route-table-id <id> --destination-cidr-block <cidr> (--gateway-id <igw-id> | --nat-gateway-id <nat-id>)",
     mutates: true,
     async run(args, ctx) {
       const rt = await load(ctx, "networking", "route-table", args.required("route-table-id"));
       const destination = args.required("destination-cidr-block");
-      const gatewayId = args.required("gateway-id");
-      const routes = (rt.config.routes as { destination: string; gatewayId: string }[]) ?? [];
-      await ctx.engine.update(ctx.accountId, rt.id, { routes: [...routes, { destination, gatewayId }] });
+      const gatewayId = args.one("gateway-id");
+      const natGatewayId = args.one("nat-gateway-id");
+      const routes = (rt.config.routes as Record<string, unknown>[]) ?? [];
+      const route = { destination, ...(gatewayId ? { gatewayId } : {}), ...(natGatewayId ? { natGatewayId } : {}) };
+      await ctx.engine.update(ctx.accountId, rt.id, { routes: [...routes, route] });
       return { Return: true };
     },
   }),
@@ -492,7 +546,7 @@ export const COMMANDS: Command[] = [
     async run(args, ctx) {
       const rt = await load(ctx, "networking", "route-table", args.required("route-table-id"));
       const destination = args.required("destination-cidr-block");
-      const routes = (rt.config.routes as { destination: string; gatewayId: string }[]) ?? [];
+      const routes = (rt.config.routes as { destination: string }[]) ?? [];
       if (!routes.some((r) => r.destination === destination)) {
         throw new EngineError("InvalidRoute.NotFound", `no route with destination-cidr-block ${destination} in route table ${rt.id}`);
       }

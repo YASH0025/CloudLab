@@ -1,29 +1,9 @@
 import { IMAGES } from "../catalog";
-import { intToIp, ipToInt, parseCidr, usableHosts } from "../cidr";
 import { EngineError } from "../errors";
 import { generateId } from "../ids";
 import { generateKey, type KeyType } from "../keys";
 import type { Resource, ResourceTypeDef, ServiceDef, SystemApi } from "../types";
-
-type Lister = (service: string, type: string) => Promise<Resource[]>;
-
-/**
- * A public IP the account isn't already using. Addresses come from 203.0.113.0/24,
- * a range reserved for documentation, so they are clearly not real.
- */
-async function freePublicIp(list: Lister): Promise<string> {
-  const used = new Set(
-    [...(await list("compute", "instance")), ...(await list("compute", "elastic-ip"))]
-      .map((r) => r.attributes.publicIp)
-      .filter(Boolean),
-  );
-  const start = Math.floor(Math.random() * 254);
-  for (let i = 0; i < 254; i++) {
-    const ip = `203.0.113.${1 + ((start + i) % 254)}`;
-    if (!used.has(ip)) return ip;
-  }
-  throw new EngineError("AddressLimitExceeded", "The maximum number of addresses has been reached.");
-}
+import { freePublicIp, nextPrivateIp } from "./ips";
 
 /** Whether an instance gets an automatic public IP when it runs (launch setting or subnet default). */
 async function autoPublicIp(instance: Resource, get: (id: string) => Promise<Resource | null>): Promise<boolean> {
@@ -234,29 +214,7 @@ const instance: ResourceTypeDef = {
     // Network identity is fixed at launch; later edits keep it.
     if (existing) return existing.attributes;
 
-    const block = parseCidr(subnet.config.cidrBlock as string);
-    let privateIp: string | null = null;
-    if (block) {
-      const used = new Set(
-        (await ctx.list("compute", "instance"))
-          .filter((i) => i.config.subnetId === subnet.id)
-          .map((i) => ipToInt(String(i.attributes.privateIp ?? "")))
-          .filter((n): n is number => n !== null),
-      );
-      const hosts = usableHosts(block);
-      for (let ip = hosts.first; ip <= hosts.last; ip++) {
-        if (!used.has(ip)) {
-          privateIp = intToIp(ip);
-          break;
-        }
-      }
-      if (!privateIp) {
-        throw new EngineError(
-          "InsufficientFreeAddressesInSubnet",
-          `There are not enough free addresses in subnet '${subnet.id}' to satisfy the requested number of instances.`,
-        );
-      }
-    }
+    const privateIp = await nextPrivateIp(ctx.list, subnet);
 
     const wantsPublic =
       config.associatePublicIp === "enable" ||
@@ -313,7 +271,7 @@ const elasticIp: ResourceTypeDef = {
   notFoundCode: "InvalidAllocationID.NotFound",
   apiNoun: "allocation",
   canDelete: (eip) =>
-    eip.config.instanceId && !eip.attributes.inDefaultVpc
+    eip.attributes.natGatewayId || (eip.config.instanceId && !eip.attributes.inDefaultVpc)
       ? new EngineError("InvalidIPAddress.InUse", `Address ${eip.attributes.publicIp} is in use.`)
       : undefined,
   fields: [
@@ -331,6 +289,7 @@ const elasticIp: ResourceTypeDef = {
   columns: [
     { label: "Public IP", path: "attributes.publicIp", mono: true },
     { label: "Instance", path: "config.instanceId", mono: true },
+    { label: "NAT gateway", path: "attributes.natGatewayId", mono: true },
     { label: "Private IP", path: "attributes.privateIp", mono: true },
   ],
   async validate({ config, existing, ctx }) {
@@ -340,7 +299,7 @@ const elasticIp: ResourceTypeDef = {
     const before = (existing?.config.instanceId as string | undefined) || undefined;
     const after = (config.instanceId as string | undefined) || undefined;
     if (!after || before === after) return;
-    if (before) {
+    if (before || existing?.attributes.natGatewayId) {
       throw new EngineError(
         "Resource.AlreadyAssociated",
         `resource ${existing!.id} is already associated with associate-id ${existing!.attributes.associationId}`,
@@ -360,6 +319,11 @@ const elasticIp: ResourceTypeDef = {
   async derive({ config, existing, ctx }) {
     const publicIp = (existing?.attributes.publicIp as string | undefined) ?? (await freePublicIp(ctx.list));
     const base = { publicIp, domain: "vpc", networkBorderGroup: ctx.region };
+    // A NAT gateway's address stays with it until the gateway is deleted.
+    if (existing?.attributes.natGatewayId) {
+      const { natGatewayId, associationId, privateIp } = existing.attributes;
+      return { ...base, natGatewayId, associationId, privateIp, inDefaultVpc: false };
+    }
     const instanceId = (config.instanceId as string | undefined) || undefined;
     if (!instanceId) return { ...base, associationId: null, privateIp: null, inDefaultVpc: false };
     const target = await ctx.get(instanceId);

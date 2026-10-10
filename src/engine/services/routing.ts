@@ -1,6 +1,17 @@
 import { cidrContains, parseCidr } from "../cidr";
 import { EngineError } from "../errors";
+import { generateId } from "../ids";
 import { systemOf, type ResourceTypeDef } from "../types";
+import { nextPrivateIp } from "./ips";
+
+/** A route's target: an internet gateway or a NAT gateway. */
+export interface Route {
+  destination: string;
+  gatewayId?: string;
+  natGatewayId?: string;
+}
+
+export const routeTarget = (r: Route) => r.gatewayId || r.natGatewayId || "";
 
 /**
  * Internet gateways and route tables. Together with subnets and security
@@ -46,9 +57,10 @@ export const internetGateway: ResourceTypeDef = {
 
     if (before && !after) {
       // Detaching would strand instances that rely on the gateway for their public IPs.
-      const exposed = (await ctx.list("compute", "instance")).filter(
-        (i) => i.attributes.vpcId === before && i.attributes.publicIp,
-      );
+      const exposed = [
+        ...(await ctx.list("compute", "instance")).filter((i) => i.attributes.vpcId === before && i.attributes.publicIp),
+        ...(await ctx.list("networking", "nat-gateway")).filter((n) => n.attributes.vpcId === before),
+      ];
       if (exposed.length > 0) {
         throw new EngineError(
           "DependencyViolation",
@@ -102,7 +114,8 @@ export const routeTable: ResourceTypeDef = {
       label: "Routes",
       type: "list",
       maxItems: 50,
-      description: "Add 0.0.0.0/0 → internet gateway to make associated subnets public.",
+      description:
+        "Each route needs one target. 0.0.0.0/0 → internet gateway makes subnets public; 0.0.0.0/0 → NAT gateway lets private subnets reach out.",
       item: [
         {
           key: "destination",
@@ -114,11 +127,16 @@ export const routeTable: ResourceTypeDef = {
         },
         {
           key: "gatewayId",
-          label: "Target (internet gateway)",
+          label: "Internet gateway",
           type: "ref",
-          required: true,
           // Not tracked as a dependency: a detached or deleted gateway leaves a "blackhole" route, as in AWS.
           ref: { service: "networking", type: "internet-gateway", weak: true },
+        },
+        {
+          key: "natGatewayId",
+          label: "or NAT gateway",
+          type: "ref",
+          ref: { service: "networking", type: "nat-gateway", weak: true },
         },
       ],
     },
@@ -143,7 +161,7 @@ export const routeTable: ResourceTypeDef = {
     const vpc = await ctx.get(vpcId);
     const vpcBlock = vpc ? parseCidr(vpc.config.cidrBlock as string) : null;
 
-    const routes = (config.routes as { destination: string; gatewayId: string }[]) ?? [];
+    const routes = (config.routes as Route[]) ?? [];
     const seen = new Set<string>();
     for (const route of routes) {
       if (seen.has(route.destination)) {
@@ -159,7 +177,36 @@ export const routeTable: ResourceTypeDef = {
         );
       }
 
-      const gateway = await ctx.get(route.gatewayId);
+      if (route.gatewayId && route.natGatewayId) {
+        throw new EngineError("InvalidParameterCombination", "Only one of gatewayId and natGatewayId can be specified for a route.");
+      }
+      if (!route.gatewayId && !route.natGatewayId) {
+        throw new EngineError(
+          "MissingParameter",
+          "The request must contain exactly one of gatewayId, natGatewayId, networkInterfaceId, vpcPeeringConnectionId or instanceId",
+          400,
+          [{ field: "routes", message: `Choose a target for ${route.destination}: an internet gateway or a NAT gateway.` }],
+        );
+      }
+      if (route.natGatewayId) {
+        // Existing routes may point at a deleted NAT gateway (a blackhole); only new targets are checked.
+        const known = ((existing?.config.routes as Route[] | undefined) ?? []).some(
+          (r) => r.destination === route.destination && r.natGatewayId === route.natGatewayId,
+        );
+        if (known) continue;
+        const nat = await ctx.get(route.natGatewayId);
+        if (!nat || nat.type !== "nat-gateway") {
+          throw new EngineError("NatGatewayNotFound", `The Nat Gateway ${route.natGatewayId} was not found`);
+        }
+        if (nat.attributes.vpcId !== vpcId) {
+          throw new EngineError(
+            "InvalidParameterValue",
+            `route table ${existing?.id ?? "in " + vpcId} and NAT gateway ${nat.id} belong to different networks`,
+          );
+        }
+        continue;
+      }
+      const gateway = await ctx.get(route.gatewayId!);
       if (!gateway || gateway.type !== "internet-gateway") {
         throw new EngineError("InvalidGatewayID.NotFound", `The gateway ID '${route.gatewayId}' does not exist`);
       }
@@ -199,5 +246,82 @@ export const routeTable: ResourceTypeDef = {
       routeCount: routes.length + 1,
       associationCount: ((config.subnetIds as string[]) ?? []).length,
     };
+  },
+};
+
+export const natGateway: ResourceTypeDef = {
+  service: "networking",
+  type: "nat-gateway",
+  label: "NAT gateway",
+  pluralLabel: "NAT gateways",
+  description:
+    "Lets servers in private subnets start connections to the internet (for updates and APIs) while nobody on the internet can connect to them. It lives in a public subnet and uses an Elastic IP.",
+  idPrefix: "nat",
+  notFoundCode: "NatGatewayNotFound",
+  notFoundMessage: (id) => `The Nat Gateway ${id} was not found`,
+  malformedCode: "NatGatewayMalformed",
+  apiNoun: "natGateway",
+  fields: [
+    { key: "name", label: "Name tag", type: "string", maxLength: 255, placeholder: "main-nat" },
+    {
+      key: "subnetId",
+      label: "Subnet",
+      type: "ref",
+      required: true,
+      immutable: true,
+      ref: { service: "networking", type: "subnet" },
+      description: "Put it in a public subnet: one whose route table sends 0.0.0.0/0 to an internet gateway.",
+    },
+    {
+      key: "allocationId",
+      label: "Elastic IP",
+      type: "ref",
+      required: true,
+      immutable: true,
+      ref: { service: "compute", type: "elastic-ip" },
+      description: "An unassociated Elastic IP. Private servers' traffic leaves the VPC from this address.",
+    },
+  ],
+  columns: [
+    { label: "Subnet", path: "config.subnetId", mono: true },
+    { label: "Public IP", path: "attributes.publicIp", mono: true },
+    { label: "Private IP", path: "attributes.privateIp", mono: true },
+  ],
+  lifecycle: { create: { state: "pending", settlesTo: "available", afterMs: 5000 } },
+  async validate({ config, existing, ctx }) {
+    if (existing) return;
+    const subnet = await ctx.get(config.subnetId as string);
+    const eip = await ctx.get(config.allocationId as string);
+    if (!subnet || !eip) return;
+    const vpcId = subnet.config.vpcId as string;
+    if (!(await ctx.list("networking", "internet-gateway")).some((g) => g.config.vpcId === vpcId)) {
+      throw new EngineError("Gateway.NotAttached", `Network ${vpcId} has no Internet gateway attached`);
+    }
+    if (eip.config.instanceId || eip.attributes.natGatewayId) {
+      throw new EngineError("Resource.AlreadyAssociated", `Elastic IP address [${eip.id}] is already associated`);
+    }
+  },
+  async derive({ config, existing, ctx }) {
+    if (existing) return existing.attributes;
+    const subnet = await ctx.get(config.subnetId as string);
+    const eip = await ctx.get(config.allocationId as string);
+    return {
+      vpcId: subnet?.config.vpcId ?? null,
+      availabilityZone: subnet?.config.availabilityZone ?? null,
+      privateIp: subnet ? await nextPrivateIp(ctx.list, subnet) : null,
+      publicIp: eip?.attributes.publicIp ?? null,
+      networkInterfaceId: generateId("eni"),
+    };
+  },
+  async afterCreate({ resource, system }) {
+    await system.setAttributes(resource.config.allocationId as string, {
+      natGatewayId: resource.id,
+      associationId: generateId("eipassoc"),
+      privateIp: resource.attributes.privateIp,
+    });
+  },
+  async afterDelete({ resource, system }) {
+    // The Elastic IP is freed and can be released or reused.
+    await system.setAttributes(resource.config.allocationId as string, { natGatewayId: null, associationId: null, privateIp: null });
   },
 };
