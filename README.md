@@ -129,38 +129,42 @@ npm run dev
 
 Open http://localhost:3000. Without `DATABASE_URL`, an in-memory store is used and data resets when the server restarts.
 
-### Using Neon
+### Using Neon locally
 
 1. Create a free project at neon.tech and copy its connection string.
 2. `cp .env.example .env` and paste it as `DATABASE_URL`.
-3. Create the tables: `npm run db:push`
-4. `npm run dev`
+3. `npm run db:migrate` to create the tables, then `npm run dev`.
 
 ### Deploying to Vercel
 
-1. Import the repo in Vercel.
-2. Add `DATABASE_URL` under Project → Settings → Environment Variables.
-3. Run `npm run db:push` once against that database (locally with the same `DATABASE_URL`).
+1. In Vercel, **Add New → Project** and import this GitHub repository. Keep the defaults (framework: Next.js).
+2. Give it a database, either:
+   - **Storage → Neon** in the Vercel project (creates a Neon database and adds `DATABASE_URL` for you), or
+   - a Neon project you created yourself: add its connection string as `DATABASE_URL` under **Settings → Environment Variables** (all environments).
+3. Deploy (or redeploy after adding the variable). The build runs the database migrations first; the build log shows `✓ Database migrations applied.`
+4. Open `https://<your-app>/api/health`. It should say `"store": "postgres", "database": "connected"`.
 
-An in-memory store is not shared between serverless instances, so a database is required in deployment.
+On Vercel, a missing `DATABASE_URL` fails the build with a clear message instead of silently using the in-memory store, which would lose data between requests.
 
 ## Scripts
 
 | Command | What it does |
 | --- | --- |
 | `npm run dev` | Start the dev server |
-| `npm run build` | Production build |
+| `npm run build` | Apply database migrations (if `DATABASE_URL` is set), then build |
 | `npm run lint` | ESLint |
 | `npm run typecheck` | Generate route types and run TypeScript |
 | `npm test` | Engine tests |
-| `npm run db:push` | Sync the Drizzle schema to the database |
-| `npm run db:generate` / `db:migrate` | Generate and apply SQL migrations |
+| `npm run db:migrate` | Apply SQL migrations from `drizzle/` |
+| `npm run db:generate` | Generate a migration after changing `src/db/schema.ts` |
+| `npm run db:push` | Sync the schema directly (development only) |
 | `npm run db:studio` | Browse the database |
 
 ## API
 
 | Method | Path | Body |
 | --- | --- | --- |
+| GET | `/api/health` | – → `{ ok, store, database }` |
 | GET | `/api/services?region=` | – |
 | GET | `/api/resources?service=&type=&region=` | – |
 | POST | `/api/resources` | `{ service, type, region, config }` |
