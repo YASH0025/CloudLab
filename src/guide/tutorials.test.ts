@@ -59,9 +59,10 @@ describe("tutorials", () => {
       "bastion-host",
       "web-and-database",
       "least-privilege",
+      "managed-database",
       "highly-available-website",
     ]);
-    expect(listTutorials().filter((t) => t.level === "intermediate")).toHaveLength(4);
+    expect(listTutorials().filter((t) => t.level === "intermediate")).toHaveLength(5);
     expect(listTutorials().find((t) => t.id === "troubleshoot-reachability")?.nextId).toBe("static-website");
   });
 
@@ -73,6 +74,26 @@ describe("tutorials", () => {
       },
     });
     expect(done).toBe(4);
+  });
+
+  it("completes 'A managed database for your web app': private, chained, backed up, Multi-AZ", async () => {
+    await play("first-web-server");
+    const steps = await play("managed-database", {
+      // The learner types the password; everything else is pre-filled.
+      database: async () => {
+        const link = (await view("managed-database")).steps.find((x) => x.id === "database")!.link!;
+        if (link.mode !== "create") return;
+        await engine.create(ACCOUNT, { service: "rds", type: "db-instance", region: REGION, config: { ...link.prefill, masterUserPassword: "a-good-password" } });
+      },
+      connect: async () => undefined,
+      "multi-az": async () => {
+        const link = (await view("managed-database")).steps.find((x) => x.id === "multi-az")!.link!;
+        const db = await engine.get(ACCOUNT, link.id!);
+        if (!db.config.multiAZ) await engine.update(ACCOUNT, db.id, { multiAZ: true });
+        else if (db.state === "available") await engine.runAction(ACCOUNT, db.id, "failover");
+      },
+    });
+    expect(steps).toBe(8);
   });
 
   it("completes 'A website that never goes down': two zones, a load balancer, self-healing and scaling", async () => {

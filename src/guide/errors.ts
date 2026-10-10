@@ -148,9 +148,54 @@ const EXPLANATIONS: Record<string, ErrorExplanation> = {
     meaning: "That isn't a valid NAT gateway ID.",
     fix: "NAT gateway IDs look like nat-0a1b2c3d4e5f67890. Copy it rather than typing it.",
   },
+  DBInstanceNotFound: {
+    meaning: "No database with that identifier exists in this region.",
+    fix: "List them with aws rds describe-db-instances. Identifiers are lowercase, and databases live in one region.",
+  },
+  DBInstanceAlreadyExists: {
+    meaning: "A database with that identifier already exists in this region.",
+    fix: "Pick another identifier, or use the existing database.",
+  },
+  InvalidDBInstanceState: {
+    meaning: "The database is busy or in the wrong state for this: e.g. still creating, modifying or rebooting, or stopped when you tried to change it.",
+    fix: "Wait until it's 'available' (or start it if it's stopped), then try again.",
+  },
+  DBSubnetGroupDoesNotCoverEnoughAZs: {
+    meaning: "A DB subnet group needs subnets in at least two availability zones, so RDS can place a standby in a second zone.",
+    fix: "Add a subnet from another zone (for a private database, another private subnet).",
+  },
+  DBSubnetGroupNotFoundFault: {
+    meaning: "No DB subnet group with that name exists in this region.",
+    fix: "Create one first (aws rds create-db-subnet-group), or check the name with describe-db-subnet-groups.",
+  },
+  DBSubnetGroupAlreadyExists: {
+    meaning: "A DB subnet group with that name already exists.",
+    fix: "Pick another name, or change the existing group's subnets with modify-db-subnet-group.",
+  },
+  InvalidDBSubnetGroupStateFault: {
+    meaning: "A database still uses this DB subnet group, so it can't be deleted.",
+    fix: "Delete (or move) the databases that use it first.",
+  },
+  InvalidVPCNetworkStateFault: {
+    meaning: "The VPC can't support what you asked for. Usually: a publicly accessible database in a VPC with no internet gateway.",
+    fix: "Keep the database private (recommended), or attach an internet gateway to the VPC.",
+  },
+  DBSnapshotAlreadyExists: {
+    meaning: "A snapshot with that identifier already exists.",
+    fix: "Pick another identifier, e.g. add the date: app-db-2026-05-01.",
+  },
+  DBSnapshotNotFound: {
+    meaning: "No snapshot with that identifier exists in this region.",
+    fix: "List them with aws rds describe-db-snapshots.",
+  },
+  InvalidDBSnapshotState: {
+    meaning: "The snapshot isn't ready yet (still creating).",
+    fix: "Wait until its status is 'available', then restore or delete it.",
+  },
   InvalidParameterCombination: {
-    meaning: "You gave two options that can't be used together, e.g. a route with both an internet gateway and a NAT gateway.",
-    fix: "Keep one of them.",
+    meaning:
+      "Two settings don't work together: e.g. a route with both an internet gateway and a NAT gateway, a database engine and a version that don't match, or deleting a database without saying what to do about the final snapshot.",
+    fix: "Read the message: it names the conflict. For delete-db-instance, add --skip-final-snapshot or --final-db-snapshot-identifier <name>.",
   },
   AddressLimitExceeded: {
     meaning: "You've reached the limit of Elastic IPs in this region (5).",

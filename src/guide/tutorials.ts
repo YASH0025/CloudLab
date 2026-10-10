@@ -20,6 +20,7 @@ import {
 } from "./snapshot";
 import type { GuideLink, Level, TutorialInfo, TutorialView } from "./types";
 import { activityCauses, healthySpread, loadHa, type HaState } from "./ha";
+import { loadDb, type DbState } from "./db";
 import { listenersOf } from "@/engine/services/loadbalancing";
 
 /**
@@ -91,6 +92,10 @@ interface Ctx {
   ha(): Promise<HaState>;
   /** The same, preloaded for tutorials that declare `needsHa`, so links and text can use it. */
   haState?: HaState;
+  /** RDS in the focus VPC (loaded once, on demand). */
+  db(): Promise<DbState>;
+  /** The same, preloaded for tutorials that declare `needsDb`. */
+  dbState?: DbState;
   /** Runs a reachability check (memoised per instance and input). */
   check(instance: Resource | undefined, input: ReachabilityInput): Promise<ReachabilityResult | null>;
 }
@@ -116,6 +121,8 @@ interface TutorialDef {
   nextId?: string;
   /** Load the load balancing and Auto Scaling state before resolving links and text. */
   needsHa?: boolean;
+  /** Load the RDS state before resolving links and text. */
+  needsDb?: boolean;
   steps: StepDef[];
 }
 
@@ -171,12 +178,17 @@ async function buildCtx(engine: Engine, accountId: string, region: string, ident
   let keys: Promise<string[]> | null = null;
   let iamData: ReturnType<Ctx["iam"]> | null = null;
   let haData: Promise<HaState> | null = null;
+  let dbData: Promise<DbState> | null = null;
   const iamList = (type: string) => engine.list(accountId, { service: "iam", type, region: "global" });
   return {
     identity,
     ha() {
       haData ??= loadHa(engine, accountId, region, s, vpc);
       return haData;
+    },
+    db() {
+      dbData ??= loadDb(engine, accountId, region, s, vpc, group);
+      return dbData;
     },
     iam() {
       iamData ??= Promise.all([iamList("user"), iamList("group"), iamList("policy")]).then(([users, groups, policies]) => ({ users, groups, policies }));
@@ -1071,7 +1083,7 @@ const LEAST_PRIVILEGE: TutorialDef = {
   level: "intermediate",
   summary: "Give a teammate exactly the access they need: a user in a group, a read-only policy, a policy you write yourself, and AccessDenied when they go further.",
   minutes: 12,
-  nextId: "highly-available-website",
+  nextId: "managed-database",
   steps: [
     {
       id: "group",
@@ -1429,7 +1441,165 @@ const HIGHLY_AVAILABLE: TutorialDef = {
   ],
 };
 
-TUTORIALS.push(HIGHLY_AVAILABLE);
+// ---------- intermediate: a managed database ----------
+
+const MANAGED_DATABASE: TutorialDef = {
+  id: "managed-database",
+  title: "A managed database for your web app",
+  level: "intermediate",
+  summary:
+    "Give your web server a PostgreSQL database the way production teams do: in private subnets, reachable only from the web server, backed up, with a standby in a second zone.",
+  minutes: 15,
+  nextId: "highly-available-website",
+  needsDb: true,
+  steps: [
+    {
+      id: "web-server",
+      title: "Start with a running web server",
+      why: "The database is for an app, so you need the app's server first. Its security group is what the database will trust.",
+      instructions: (c) =>
+        c.webServer
+          ? [`You have ${label(c.webServer)} in a public subnet. Make sure it's running.`]
+          : ["You need a running web server in a public subnet of your own VPC.", "Do 'Launch your first web server' first, then come back."],
+      link: (c) => (c.webServer ? { service: "compute", type: "instance", mode: "detail", id: c.webServer.id } : undefined),
+      check: (c) => c.webServer?.state === "running",
+    },
+    {
+      id: "private-subnets",
+      title: "Private subnets in two zones",
+      why: "A database never belongs in a public subnet. RDS also needs subnets in two zones, so it has somewhere to put a standby if you ask for one.",
+      instructions: (c) => {
+        const have = c.dbState?.privateSubnets ?? [];
+        const zone = availabilityZones(c.region).find((z) => !have.some((x) => zoneOf(x) === z)) ?? availabilityZones(c.region)[1];
+        return [
+          have.length ? `You have a private subnet in ${have.map(zoneOf).join(", ")}. Add one in ${zone}.` : `Create a private subnet in ${zone}, then another in a second zone.`,
+          "Click Take me there: Auto-assign public IPv4 is off. Don't associate it with your public route table.",
+        ];
+      },
+      link: (c) => {
+        const have = c.dbState?.privateSubnets ?? [];
+        const zone = availabilityZones(c.region).find((z) => !have.some((x) => zoneOf(x) === z)) ?? availabilityZones(c.region)[1];
+        return c.vpc ? { service: "networking", type: "subnet", mode: "create", prefill: subnetPrefill(c, zone, `db-${zone.slice(-1)}`, false) } : undefined;
+      },
+      check: async (c) => (await c.db()).privateSubnets.length >= 2,
+    },
+    {
+      id: "subnet-group",
+      title: "Create a DB subnet group",
+      why: "A DB subnet group tells RDS which subnets the database may use. Picking only private subnets is what keeps the database off the internet.",
+      instructions: ["Click Take me there.", "Pre-filled: name app-db-subnets and your two private subnets.", "Click Create DB subnet group."],
+      link: (c) => ({
+        service: "rds",
+        type: "db-subnet-group",
+        mode: "create",
+        prefill: { name: "app-db-subnets", description: "Private subnets for the app database", subnetIds: (c.dbState?.privateSubnets ?? []).map((x) => x.id) },
+      }),
+      cli: (c) =>
+        `aws rds create-db-subnet-group --db-subnet-group-name app-db-subnets --db-subnet-group-description "App database" --subnet-ids ${(c.dbState?.privateSubnets ?? []).map((x) => x.id).join(" ") || "<subnet-a> <subnet-b>"}`,
+      check: async (c) => !!(await c.db()).group,
+    },
+    {
+      id: "db-group",
+      title: "A security group that only lets the web server in",
+      why: "The database's firewall allows PostgreSQL (port 5432) from one source: the web server's security group. Any server in that group can connect; nothing else can, not even other servers in the VPC.",
+      instructions: (c) => [
+        "Click Take me there.",
+        `Pre-filled: name db, one inbound rule TCP 5432 whose source is ${c.group ? label(c.group) : "your web server's security group"}.`,
+        "Click Create security group.",
+      ],
+      link: (c) => ({
+        service: "networking",
+        type: "security-group",
+        mode: "create",
+        prefill: {
+          name: "db",
+          description: "PostgreSQL from the web servers only",
+          vpcId: c.vpc?.id,
+          inboundRules: [{ protocol: "tcp", fromPort: 5432, toPort: 5432, sourceGroupId: c.group?.id, description: "PostgreSQL from the web servers" }],
+        },
+      }),
+      check: async (c) => !!(await c.db()).dbGroup,
+    },
+    {
+      id: "database",
+      title: "Create the database",
+      why: "RDS runs PostgreSQL for you: installation, patches, backups and failover are its job. You choose the size, the network and the master password.",
+      instructions: [
+        "Click Take me there.",
+        "Pre-filled: PostgreSQL on db.t3.micro, 20 GiB, master user app, your subnet group and the db security group, not publicly accessible.",
+        "Type a master password (8+ characters) and click Create database. It takes about 15 seconds to become available.",
+      ],
+      link: (c) => {
+        const d = c.dbState;
+        if (d?.database) return { service: "rds", type: "db-instance", mode: "detail", id: d.database.id };
+        return {
+          service: "rds",
+          type: "db-instance",
+          mode: "create",
+          prefill: {
+            name: "app-db",
+            engine: "postgres",
+            dbInstanceClass: "db.t3.micro",
+            allocatedStorage: 20,
+            masterUsername: "app",
+            dbName: "app",
+            dbSubnetGroupName: d?.group?.name,
+            vpcSecurityGroupIds: d?.dbGroup ? [d.dbGroup.id] : [],
+            publiclyAccessible: false,
+            multiAZ: false,
+            backupRetentionPeriod: 7,
+          },
+        };
+      },
+      cli: (c) =>
+        `aws rds create-db-instance --db-instance-identifier app-db --engine postgres --db-instance-class db.t3.micro --allocated-storage 20 --master-username app --master-user-password '<choose one>' --db-name app --db-subnet-group-name app-db-subnets --vpc-security-group-ids ${c.dbState?.dbGroup?.id ?? "<db-sg>"} --no-publicly-accessible`,
+      check: async (c) => {
+        const db = (await c.db()).database;
+        return db?.state === "available" && !db.config.publiclyAccessible;
+      },
+    },
+    {
+      id: "connect",
+      title: "Prove it: the web server yes, the internet no",
+      why: "This is the whole design in one check. The web server reaches the database through security group chaining; from the internet there's no address and no rule, so nothing gets in.",
+      instructions: [
+        "Open the database. Under Can it connect?, choose your web server and click Check connection: all green, with the psql command to use.",
+        "Then choose The internet: it fails, because the database is private.",
+      ],
+      link: (c) => (c.dbState?.database ? { service: "rds", type: "db-instance", mode: "detail", id: c.dbState.database.id } : undefined),
+      check: async (c) => {
+        const p = await (await c.db()).proof(c.webServer);
+        return p.fromWeb && !p.fromInternet;
+      },
+    },
+    {
+      id: "snapshot",
+      title: "Take a snapshot",
+      why: "Automated backups run every day, but before a risky change (a migration, a big delete) you take a snapshot yourself. Restoring always makes a new database, so nothing is overwritten.",
+      instructions: ["Open the database and click Take snapshot under Backups and snapshots.", "Click Create snapshot. It's available after a few seconds."],
+      link: (c) =>
+        c.dbState?.database
+          ? { service: "rds", type: "db-snapshot", mode: "create", prefill: { name: `${c.dbState.database.name}-first-backup`, dbInstanceIdentifier: c.dbState.database.name } }
+          : undefined,
+      cli: () => "aws rds create-db-snapshot --db-snapshot-identifier app-db-first-backup --db-instance-identifier app-db",
+      check: async (c) => (await c.db()).snapshots.some((x) => x.state === "available"),
+    },
+    {
+      id: "multi-az",
+      title: "Survive a zone failure with Multi-AZ",
+      why: "With Multi-AZ, RDS keeps a standby copy in the other zone. If the primary's zone fails, the standby takes over and the endpoint name points at it, so the app reconnects without any change.",
+      instructions: [
+        "Open the database. Under Edit settings, tick Multi-AZ and save. Wait until it's available again.",
+        "Click Reboot with failover. Watch Runs in and Standby swap zones, while the endpoint stays exactly the same.",
+      ],
+      link: (c) => (c.dbState?.database ? { service: "rds", type: "db-instance", mode: "detail", id: c.dbState.database.id } : undefined),
+      cli: () => "aws rds modify-db-instance --db-instance-identifier app-db --multi-az --apply-immediately",
+      check: async (c) => Number((await c.db()).database?.attributes.failovers ?? 0) >= 1,
+    },
+  ],
+};
+
+TUTORIALS.push(MANAGED_DATABASE, HIGHLY_AVAILABLE);
 
 const info = (t: TutorialDef): TutorialInfo => ({
   id: t.id,
@@ -1459,6 +1629,7 @@ export async function viewTutorial(
   await engine.ensureDefaults(accountId, region);
   const c = await buildCtx(engine, accountId, region, identity);
   if (t.needsHa) c.haState = await c.ha();
+  if (t.needsDb) c.dbState = await c.db();
   const steps = await Promise.all(
     t.steps.map(async (st) => ({
       id: st.id,

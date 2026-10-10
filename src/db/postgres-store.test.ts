@@ -18,6 +18,7 @@ const REGION = "us-east-1";
 let clock: Date;
 let engine: Engine;
 let store: PostgresStore;
+let rawDb: ReturnType<typeof drizzle>;
 let n = 0;
 const account = () => `acct-pg-${++n}`;
 const advance = (ms: number) => {
@@ -28,6 +29,7 @@ beforeAll(async () => {
   const db = drizzle({ client: new PGlite() });
   await migrate(db, { migrationsFolder: "./drizzle" });
   store = new PostgresStore(db);
+  rawDb = db;
   clock = new Date("2026-01-01T00:00:00Z");
   engine = new Engine(store, () => clock);
 }, 60_000);
@@ -234,5 +236,38 @@ describe("PostgresStore on real Postgres", () => {
     await run("aws autoscaling delete-auto-scaling-group --auto-scaling-group-name web-asg --force-delete");
     await run(`aws elbv2 delete-load-balancer --load-balancer-arn ${lb}`);
     await run(`aws elbv2 delete-target-group --target-group-arn ${tg}`);
+  });
+
+  it("runs RDS on Postgres: never stores the password, fails over, snapshots and restores", async () => {
+    const ctx = { engine, accountId: account(), region: REGION };
+    const run = async (line: string) => {
+      const r = await executeCli(line, ctx);
+      if (r.exitCode !== 0) throw new Error(`'${line}' failed: ${r.output}`);
+      return r.output ? JSON.parse(r.output) : {};
+    };
+    const vpc = (await run("aws ec2 describe-vpcs")).Vpcs[0].VpcId;
+    const subnets = (await run(`aws ec2 describe-subnets --filters Name=vpc-id,Values=${vpc}`)).Subnets.map((x: { SubnetId: string }) => x.SubnetId);
+    await run(`aws rds create-db-subnet-group --db-subnet-group-name app --db-subnet-group-description app --subnet-ids ${subnets.join(" ")}`);
+    await run(
+      "aws rds create-db-instance --db-instance-identifier pgdb --engine postgres --db-instance-class db.t3.micro --allocated-storage 20 --master-username app --master-user-password 'Very-secret-1' --db-subnet-group-name app --multi-az",
+    );
+    const { sql } = await import("drizzle-orm");
+    const rows = await rawDb.execute(sql`select config::text as c, attributes::text as a from resources where name = 'pgdb'`);
+    expect(JSON.stringify(rows)).not.toContain("Very-secret-1");
+
+    advance(16_000);
+    const before = (await run("aws rds describe-db-instances --db-instance-identifier pgdb")).DBInstances[0];
+    await run("aws rds reboot-db-instance --db-instance-identifier pgdb --force-failover");
+    advance(7_000);
+    const after = (await run("aws rds describe-db-instances --db-instance-identifier pgdb")).DBInstances[0];
+    expect(after.AvailabilityZone).toBe(before.SecondaryAvailabilityZone);
+    expect(after.Endpoint.Address).toBe(before.Endpoint.Address);
+
+    await run("aws rds create-db-snapshot --db-snapshot-identifier snap1 --db-instance-identifier pgdb");
+    advance(6_000);
+    await run("aws rds restore-db-instance-from-db-snapshot --db-instance-identifier pgdb-copy --db-snapshot-identifier snap1");
+    await run("aws rds delete-db-instance --db-instance-identifier pgdb --skip-final-snapshot");
+    const left = (await run("aws rds describe-db-instances")).DBInstances.map((d: { DBInstanceIdentifier: string }) => d.DBInstanceIdentifier);
+    expect(left).toEqual(["pgdb-copy"]);
   });
 });

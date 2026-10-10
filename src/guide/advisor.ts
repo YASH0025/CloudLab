@@ -19,6 +19,7 @@ import {
 } from "./snapshot";
 import type { Advice, Level, Milestone, Suggestion } from "./types";
 import { loadBalancingProblems } from "./advisor-elb";
+import { databaseAdvice } from "./advisor-rds";
 
 /**
  * The "What's next?" advisor. It looks at what the learner has built in a
@@ -503,9 +504,21 @@ export async function advise(engine: Engine, accountId: string, region: string):
 
   // ---------- load balancing and Auto Scaling: broken things come first ----------
   const elb = await loadBalancingProblems(engine, accountId, region);
-  out.unshift(...elb.problems);
+  const rds = await databaseAdvice(engine, accountId, region);
+  out.unshift(...rds.problems, ...elb.problems);
+  out.push(...rds.suggestions);
 
   // ---------- advanced ----------
+  if (reachable && vpc && instance && !rds.hasDatabase) {
+    push({
+      id: "managed-database",
+      level: "intermediate",
+      title: "Give your app a managed database",
+      why: "Real apps keep their data in a database. RDS runs one for you, and the safe setup is private: only your web server can reach it.",
+      steps: ["Open Guide me → Tutorials and start 'A managed database for your web app'.", "It covers private subnets, security group chaining, snapshots and Multi-AZ."],
+      link: { service: "rds", type: "db-instance", mode: "list" },
+    });
+  }
   if (reachable && vpc && instance && !elb.hasLoadBalancer) {
     push({
       id: "load-balancer",

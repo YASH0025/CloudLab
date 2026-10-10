@@ -180,3 +180,34 @@ describe("advisor: load balancing", () => {
     expect(explainError("DuplicateListener")).toBeDefined();
   });
 });
+
+describe("advisor: databases", () => {
+  it("flags a database open to the internet before anything else", async () => {
+    await engine.ensureDefaults(ACCOUNT, REGION);
+    const [vpc] = await engine.list(ACCOUNT, { service: "networking", type: "vpc", region: REGION });
+    const subnets = await engine.list(ACCOUNT, { service: "networking", type: "subnet", region: REGION });
+    const create = (service: string, type: string, config: Record<string, unknown>) => engine.create(ACCOUNT, { service, type, region: REGION, config });
+    const open = await create("networking", "security-group", {
+      name: "open-db",
+      description: "x",
+      vpcId: vpc.id,
+      inboundRules: [{ protocol: "tcp", fromPort: 5432, toPort: 5432, cidr: "0.0.0.0/0" }],
+    });
+    await create("rds", "db-subnet-group", { name: "pub", description: "x", subnetIds: subnets.map((x) => x.id) });
+    const db = await create("rds", "db-instance", {
+      name: "leaky",
+      engine: "postgres",
+      dbInstanceClass: "db.t3.micro",
+      allocatedStorage: 20,
+      masterUsername: "app",
+      masterUserPassword: "password123",
+      dbSubnetGroupName: "pub",
+      vpcSecurityGroupIds: [open.id],
+      publiclyAccessible: true,
+      backupRetentionPeriod: 0,
+    });
+    const advice = await advise(engine, ACCOUNT, REGION);
+    expect(advice.next.id).toBe(`db-open-${db.id}`);
+    expect(explainError("DBSubnetGroupDoesNotCoverEnoughAZs")?.fix).toContain("another");
+  });
+});
