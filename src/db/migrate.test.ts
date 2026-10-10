@@ -21,7 +21,8 @@ const recorded = async (pg: PGlite) =>
 const tables = async (pg: PGlite) =>
   (await pg.query<{ t: string }>(`SELECT tablename AS t FROM pg_tables WHERE schemaname = 'public' ORDER BY 1`)).rows.map((r) => r.t);
 
-describe("runMigrations", () => {
+// PGlite (Postgres compiled to WebAssembly) takes a few seconds to start on a cold or busy machine.
+describe("runMigrations", { timeout: 30_000 }, () => {
   it("applies everything on a fresh database and is a no-op the second time", async () => {
     const pg = new PGlite();
     expect(await runMigrations(adapter(pg))).toBe(migrations.length);
