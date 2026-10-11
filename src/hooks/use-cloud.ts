@@ -79,6 +79,38 @@ export function useTargetHealth(id: string) {
   });
 }
 
+/** Runs a function with a test event. Errors show inline in the panel. */
+export function useInvoke(id: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (event: unknown) => api.invoke(id, event).then((r) => r.result),
+    onSettled: () => qc.invalidateQueries({ queryKey: queryKeys.resource(id) }),
+  });
+}
+
+/** Adds or removes a statement in a function's resource-based policy. */
+export function usePermission(id: string) {
+  const qc = useQueryClient();
+  const done = () => qc.invalidateQueries({ queryKey: queryKeys.resource(id) });
+  const add = useMutation({
+    mutationFn: (input: { statementId: string; principal: string; sourceArn?: string }) => api.addPermission(id, input),
+    onSuccess: () => {
+      done();
+      toast.success("Permission added");
+    },
+    onError,
+  });
+  const remove = useMutation({
+    mutationFn: (statementId: string) => api.removePermission(id, statementId),
+    onSuccess: () => {
+      done();
+      toast.success("Permission removed");
+    },
+    onError,
+  });
+  return { add, remove };
+}
+
 /** Checks a connection to a database. Errors show inline in the panel. */
 export function useDbConnect(id: string) {
   return useMutation({

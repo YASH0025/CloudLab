@@ -20,6 +20,7 @@ import type { ObjectInfo } from "@/engine/objects";
 import type { TargetHealth } from "@/engine/analysis/health";
 import type { LoadTestResult } from "@/engine/analysis/loadtest";
 import type { DbConnectInput, DbConnectResult } from "@/engine/analysis/dbconnect";
+import type { InvokeResult } from "@/engine/lambda/invoke";
 
 export type { ObjectInfo };
 
@@ -116,6 +117,17 @@ export const api = {
     request<{ result: LoadTestResult }>(`/api/resources/${encodeURIComponent(id)}/test-requests`, {
       method: "POST",
       body: JSON.stringify(input),
+    }),
+
+  invoke: (id: string, event: unknown) =>
+    request<{ result: InvokeResult }>(`/api/resources/${encodeURIComponent(id)}/invoke`, { method: "POST", body: JSON.stringify({ event }) }),
+
+  addPermission: (id: string, input: { statementId: string; principal: string; sourceArn?: string }) =>
+    request<{ statement: unknown }>(`/api/resources/${encodeURIComponent(id)}/permissions`, { method: "POST", body: JSON.stringify(input) }),
+
+  removePermission: (id: string, statementId: string) =>
+    request<{ removed: string }>(`/api/resources/${encodeURIComponent(id)}/permissions?statementId=${encodeURIComponent(statementId)}`, {
+      method: "DELETE",
     }),
 
   dbConnect: (id: string, input: DbConnectInput) =>

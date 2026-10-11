@@ -17,6 +17,7 @@ import { formatValue } from "@/lib/utils";
 import { ConfirmDialog } from "./confirm-dialog";
 import { AutoScalingPanel, LoadBalancerPanel, TargetHealthPanel } from "./load-balancing-panels";
 import { DatabasePanel, SnapshotPanel } from "./database-panels";
+import { ApiPanel, FunctionPanel } from "./serverless-panels";
 import { ObjectsPanel, WebsiteCard } from "./objects-panel";
 import { PermissionChecker } from "./permission-checker";
 import { ReachabilityPanel } from "./reachability-panel";
@@ -34,6 +35,14 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
 }
 
 function FieldValue({ field, value }: { field: FieldDef; value: unknown }) {
+  if (field.type === "files") {
+    const names = Object.keys((value as Record<string, string>) ?? {});
+    return (
+      <span className="font-mono text-xs">
+        {names.length} file{names.length === 1 ? "" : "s"}: {names.join(", ")}
+      </span>
+    );
+  }
   if (field.secret) return <span className="text-muted-foreground">Hidden. It’s never shown after it’s set.</span>;
   if (field.type === "ref" && field.ref?.by === "name") {
     return <span className="font-mono text-xs">{value ? String(value) : "–"}</span>;
@@ -274,6 +283,8 @@ export function ResourceDetailView() {
       {item.type === "auto-scaling-group" && <AutoScalingPanel group={item} />}
       {item.type === "db-instance" && <DatabasePanel db={item} />}
       {item.type === "db-snapshot" && <SnapshotPanel snapshot={item} />}
+      {item.service === "lambda" && item.type === "function" && <FunctionPanel fn={item} />}
+      {item.service === "apigateway" && item.type === "api" && <ApiPanel api={item} />}
       {item.service === "iam" && (item.type === "user" || item.type === "group" || item.type === "role") && (
         <PermissionChecker kind={item.type} name={item.name} />
       )}
@@ -294,7 +305,8 @@ export function ResourceDetailView() {
             <ResourceForm
               // Live pages refresh often; only reset the form when the settings themselves change.
               key={JSON.stringify(item.config)}
-              fields={typeDef.fields}
+              // Code is edited and deployed in its own panel above.
+              fields={typeDef.fields.filter((f) => f.type !== "files")}
               mode="edit"
               currentState={item.state}
               initialValues={item.config}

@@ -12,6 +12,7 @@ import {
   type Resolver,
 } from "react-hook-form";
 import { Button } from "@/components/ui/button";
+import { CodeEditor } from "./code-editor";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -194,6 +195,17 @@ function FieldControl({ field, name, control, errors, disabled, lockReason, comp
                 value={f.value === undefined || f.value === null ? "" : String(f.value)}
                 onChange={(e) => f.onChange(e.target.value)}
                 onBlur={f.onBlur}
+              />
+            );
+          }
+          if (field.type === "files") {
+            return (
+              <CodeEditor
+                id={id}
+                value={f.value && typeof f.value === "object" ? (f.value as Record<string, string>) : {}}
+                onChange={f.onChange}
+                disabled={disabled}
+                invalid={!!message}
               />
             );
           }
