@@ -67,6 +67,7 @@ describe("tutorials", () => {
       "website-real-name",
       "disks-and-backups",
       "highly-available-website",
+      "connect-and-protect",
     ]);
     expect(listTutorials().filter((t) => t.level === "intermediate")).toHaveLength(9);
     expect(listTutorials().find((t) => t.id === "troubleshoot-reachability")?.nextId).toBe("static-website");
@@ -160,6 +161,31 @@ describe("tutorials", () => {
       },
     });
     expect(steps).toBe(6);
+  });
+
+  it("completes 'Connect networks, and lock them down': peering both ways, a stateless ACL, an S3 endpoint", { timeout: 60_000 }, async () => {
+    await play("first-web-server");
+    const list = (type: string) => engine.list(ACCOUNT, { service: "networking", type, region: REGION });
+    const steps = await play("connect-and-protect", {
+      accept: async () => {
+        await engine.runAction(ACCOUNT, (await list("peering-connection"))[0].id, "accept");
+      },
+      routes: async () => {
+        const pcx = (await list("peering-connection"))[0];
+        for (const t of await list("route-table")) {
+          const mine = t.config.vpcId === pcx.config.vpcId;
+          if (!mine && t.config.vpcId !== pcx.config.peerVpcId) continue;
+          if (mine && !((t.config.subnetIds as string[]) ?? []).length) continue;
+          const routes = (t.config.routes as unknown[]) ?? [];
+          await engine.update(ACCOUNT, t.id, { routes: [...routes, { destination: mine ? "10.1.0.0/16" : "10.0.0.0/16", vpcPeeringConnectionId: pcx.id }] });
+        }
+      },
+      replies: async () => {
+        const acl = (await list("network-acl")).find((a) => a.name === "web-subnet-acl")!;
+        await engine.update(ACCOUNT, acl.id, { outboundRules: [{ ruleNumber: 100, protocol: "tcp", fromPort: 1024, toPort: 65535, cidr: "0.0.0.0/0", action: "allow" }] });
+      },
+    });
+    expect(steps).toBe(8);
   });
 
   it("completes 'A managed database for your web app': private, chained, backed up, Multi-AZ", async () => {

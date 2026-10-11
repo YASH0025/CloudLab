@@ -25,6 +25,7 @@ import { loadServerless, type ServerlessState } from "./serverless";
 import { loadWatch, WATCHED_FUNCTION, type WatchState } from "./watch";
 import { loadDns, TUTORIAL_DOMAIN, type DnsState } from "./dns";
 import { DATA_FILE, loadStorage, type StorageState } from "./storage";
+import { loadVpcx, type VpcxState } from "./vpcx";
 import { listenersOf } from "@/engine/services/loadbalancing";
 
 /**
@@ -116,6 +117,10 @@ interface Ctx {
   storage(): Promise<StorageState>;
   /** The same, preloaded for tutorials that declare `needsStorage`. */
   storageState?: StorageState;
+  /** The networking tutorial's second VPC, peering, ACL and endpoint (loaded once, on demand). */
+  vpcx(): Promise<VpcxState>;
+  /** The same, preloaded for tutorials that declare `needsVpcx`. */
+  vpcxState?: VpcxState;
   /** Runs a reachability check (memoised per instance and input). */
   check(instance: Resource | undefined, input: ReachabilityInput): Promise<ReachabilityResult | null>;
 }
@@ -151,6 +156,8 @@ interface TutorialDef {
   needsDns?: boolean;
   /** Load the EBS state before resolving links and text. */
   needsStorage?: boolean;
+  /** Load the networking tutorial's state before resolving links and text. */
+  needsVpcx?: boolean;
   steps: StepDef[];
 }
 
@@ -211,6 +218,7 @@ async function buildCtx(engine: Engine, accountId: string, region: string, ident
   let watchData: Promise<WatchState> | null = null;
   let dnsData: Promise<DnsState> | null = null;
   let storageData: Promise<StorageState> | null = null;
+  let vpcxData: Promise<VpcxState> | null = null;
   const iamList = (type: string) => engine.list(accountId, { service: "iam", type, region: "global" });
   return {
     identity,
@@ -229,6 +237,10 @@ async function buildCtx(engine: Engine, accountId: string, region: string, ident
     watch() {
       watchData ??= loadWatch(engine, accountId, region);
       return watchData;
+    },
+    vpcx() {
+      vpcxData ??= loadVpcx(engine, accountId, region, vpc, instance);
+      return vpcxData;
     },
     storage() {
       storageData ??= loadStorage(engine, accountId, region, instance);
@@ -1243,6 +1255,7 @@ const HIGHLY_AVAILABLE: TutorialDef = {
   summary:
     "Put a load balancer in front of a group of servers in two zones. Stop a server and watch it get replaced while the site keeps answering, then turn up the traffic and watch it grow.",
   minutes: 20,
+  nextId: "connect-and-protect",
   needsHa: true,
   steps: [
     {
@@ -2202,7 +2215,130 @@ const DISKS_AND_BACKUPS: TutorialDef = {
   ],
 };
 
-TUTORIALS.push(SERVERLESS_API, WATCH_YOUR_APP, MANAGED_DATABASE, REAL_NAME, DISKS_AND_BACKUPS, HIGHLY_AVAILABLE);
+
+const SHARED_CIDR = "10.1.0.0/16";
+const pcxLink = (c: Ctx): GuideLink | undefined => (c.vpcxState?.peering ? { service: "networking", type: "peering-connection", mode: "detail", id: c.vpcxState.peering.id } : undefined);
+
+const CONNECT_AND_PROTECT: TutorialDef = {
+  id: "connect-and-protect",
+  title: "Connect networks, and lock them down",
+  level: "advanced",
+  summary:
+    "Link your VPC to a second one with peering (and see why routes must go both ways), put a network ACL in front of your web subnet (and see why stateless rules break replies), then reach S3 privately through a VPC endpoint.",
+  minutes: 15,
+  needsVpcx: true,
+  steps: [
+    {
+      id: "server",
+      title: "Start from a working web server",
+      why: "This tutorial changes the network around the server from 'Launch your first web server', and uses its reachability check to see the effect of each change.",
+      instructions: (c) => (c.instance ? [`Your server ${label(c.instance)} should answer on HTTP from the internet.`] : ["Do 'Launch your first web server' first, then come back."]),
+      link: (c) => (c.instance ? { service: "compute", type: "instance", mode: "detail", id: c.instance.id } : { service: "compute", type: "instance", mode: "list" }),
+      check: reachable,
+    },
+    {
+      id: "shared-vpc",
+      title: "Create a second VPC",
+      why: "Companies often keep shared things (monitoring, a central database) in their own VPC. Its range must not overlap yours (10.0.0.0/16), or the two can never be connected.",
+      instructions: ["Click Take me there.", `Pre-filled: shared-vpc, ${SHARED_CIDR}. Click Create VPC.`],
+      link: (c) => (c.vpcxState?.shared ? { service: "networking", type: "vpc", mode: "detail", id: c.vpcxState.shared.id } : { service: "networking", type: "vpc", mode: "create", prefill: { name: "shared-vpc", cidrBlock: SHARED_CIDR } }),
+      cli: () => `aws ec2 create-vpc --cidr-block ${SHARED_CIDR}`,
+      check: async (c) => !!(await c.vpcx()).shared,
+    },
+    {
+      id: "request",
+      title: "Request a peering connection",
+      why: "Peering is a private link between two VPCs: traffic uses private IPs and never touches the internet. One side asks, the other accepts (they could be different teams, or even different AWS accounts).",
+      instructions: ["Click Take me there.", "Pre-filled: your VPC as the requester, shared-vpc as the accepter. Click Create peering connection: it's pending-acceptance."],
+      link: (c) =>
+        pcxLink(c) ??
+        (c.vpc && c.vpcxState?.shared
+          ? { service: "networking", type: "peering-connection", mode: "create", prefill: { name: "main-to-shared", vpcId: c.vpc.id, peerVpcId: c.vpcxState.shared.id } }
+          : undefined),
+      cli: (c) => `aws ec2 create-vpc-peering-connection --vpc-id ${c.vpc?.id ?? "<vpc>"} --peer-vpc-id ${c.vpcxState?.shared?.id ?? "<shared-vpc>"}`,
+      check: async (c) => !!(await c.vpcx()).peering,
+    },
+    {
+      id: "accept",
+      title: "Accept it",
+      why: "Until the accepter says yes, nothing flows. Here you own both VPCs, so you accept your own request.",
+      instructions: ["Open the peering connection and click Accept request. It provisions for a moment, then it's active."],
+      link: pcxLink,
+      cli: (c) => `aws ec2 accept-vpc-peering-connection --vpc-peering-connection-id ${c.vpcxState?.peering?.id ?? "<pcx-id>"}`,
+      check: async (c) => (await c.vpcx()).peering?.state === "active",
+    },
+    {
+      id: "routes",
+      title: "Add a route on both sides",
+      why: "The connection exists, but no route table uses it yet. Each side needs a route to the other's range via the peering connection: the most common mistake is adding only one, so requests go out and replies never come back.",
+      instructions: (c) => [
+        `In your VPC's route table (${c.table ? label(c.table) : "the web subnet's table"}), add ${SHARED_CIDR} → the peering connection.`,
+        `In shared-vpc's main route table, add ${String(c.vpc?.config.cidrBlock ?? "10.0.0.0/16")} → the peering connection.`,
+        "The peering connection's page shows a tick for each side once it's done.",
+      ],
+      link: pcxLink,
+      cli: (c) => `aws ec2 create-route --route-table-id ${c.table?.id ?? "<rtb-id>"} --destination-cidr-block ${SHARED_CIDR} --vpc-peering-connection-id ${c.vpcxState?.peering?.id ?? "<pcx-id>"}`,
+      check: async (c) => {
+        const s = await c.vpcx();
+        return s.routeThere && s.routeBack;
+      },
+    },
+    {
+      id: "acl",
+      title: "Put a network ACL on the web subnet",
+      why: "Security groups protect each server; a network ACL protects a whole subnet, and can also deny (say, a range of bad IPs). A new ACL denies everything, so this one allows HTTP in and nothing else.",
+      instructions: ["Click Take me there.", "Pre-filled: one inbound rule (100: allow TCP 80 from anywhere), no outbound rules, associated with your web server's subnet. Click Create network ACL."],
+      link: (c) =>
+        c.vpcxState?.acl
+          ? { service: "networking", type: "network-acl", mode: "detail", id: c.vpcxState.acl.id }
+          : c.vpc && c.instance
+            ? {
+                service: "networking",
+                type: "network-acl",
+                mode: "create",
+                prefill: {
+                  name: "web-subnet-acl",
+                  vpcId: c.vpc.id,
+                  inboundRules: [{ ruleNumber: 100, protocol: "tcp", fromPort: 80, toPort: 80, cidr: "0.0.0.0/0", action: "allow" }],
+                  outboundRules: [],
+                  subnetIds: [c.instance.config.subnetId],
+                },
+              }
+            : undefined,
+      check: async (c) => !!(await c.vpcx()).acl,
+    },
+    {
+      id: "replies",
+      title: "Your site broke: let the replies out",
+      why: "Visitors' requests get in, but the server's answers go back to the visitor's random high port (1024–65535), and this ACL has no outbound rule for that. Network ACLs are stateless: unlike security groups, they don't remember the request.",
+      instructions: (c) => [
+        `Run the HTTP check on ${c.instance ? label(c.instance) : "your server"}: the step “Network ACL lets the replies out” fails.`,
+        "Edit web-subnet-acl: add outbound rule 100, TCP 1024–65535 to 0.0.0.0/0, allow.",
+        "Run the check again: reachable.",
+      ],
+      link: (c) => (c.instance ? { service: "compute", type: "instance", mode: "detail", id: c.instance.id } : undefined),
+      cli: (c) =>
+        `aws ec2 create-network-acl-entry --network-acl-id ${c.vpcxState?.acl?.id ?? "<acl-id>"} --egress --rule-number 100 --protocol tcp --port-range From=1024,To=65535 --cidr-block 0.0.0.0/0 --rule-action allow`,
+      check: async (c) => !!(await c.vpcx()).acl && (await reachable(c)),
+    },
+    {
+      id: "endpoint",
+      title: "Reach S3 without the internet",
+      why: "Servers often read and write S3. A gateway VPC endpoint gives the VPC a private path to S3: no NAT gateway (and no NAT data charges), and the traffic never leaves AWS's network. It's free.",
+      instructions: ["Click Take me there.", "Pre-filled: Amazon S3, your VPC and its route table. Click Create VPC endpoint.", "Then on your server, run the check To Amazon S3: it goes through the endpoint."],
+      link: (c) =>
+        c.vpcxState?.endpoint
+          ? { service: "networking", type: "vpc-endpoint", mode: "detail", id: c.vpcxState.endpoint.id }
+          : c.vpc
+            ? { service: "networking", type: "vpc-endpoint", mode: "create", prefill: { name: "s3-endpoint", vpcId: c.vpc.id, service: "s3", routeTableIds: c.table ? [c.table.id] : [] } }
+            : undefined,
+      cli: (c) => `aws ec2 create-vpc-endpoint --vpc-id ${c.vpc?.id ?? "<vpc>"} --service-name com.amazonaws.${c.region}.s3 --route-table-ids ${c.table?.id ?? "<rtb-id>"}`,
+      check: async (c) => !!(await c.vpcx()).endpoint,
+    },
+  ],
+};
+
+TUTORIALS.push(SERVERLESS_API, WATCH_YOUR_APP, MANAGED_DATABASE, REAL_NAME, DISKS_AND_BACKUPS, HIGHLY_AVAILABLE, CONNECT_AND_PROTECT);
 
 const info = (t: TutorialDef): TutorialInfo => ({
   id: t.id,
@@ -2236,6 +2372,7 @@ export async function viewTutorial(
   if (t.needsServerless) c.slsState = await c.sls();
   if (t.needsDns) c.dnsState = await c.dns();
   if (t.needsStorage) c.storageState = await c.storage();
+  if (t.needsVpcx) c.vpcxState = await c.vpcx();
   if (t.needsWatch) {
     c.slsState = await c.sls();
     c.watchState = await c.watch();

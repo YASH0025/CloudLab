@@ -21,7 +21,7 @@ import { ApiError } from "@/lib/api-client";
 import { routes } from "@/lib/routes";
 import { cn } from "@/lib/utils";
 
-type Mode = "internet" | "instance" | "outbound";
+type Mode = "internet" | "instance" | "outbound" | "s3";
 
 type Traffic = Pick<ReachabilityInput, "protocol" | "port">;
 
@@ -43,12 +43,14 @@ const PRESETS: Record<Mode, { label: string; value: Traffic }[]> = {
     { label: "HTTPS (updates, APIs)", value: { protocol: "tcp", port: 443 } },
     { label: "HTTP", value: { protocol: "tcp", port: 80 } },
   ],
+  s3: [{ label: "Check the way to S3 (HTTPS)", value: { protocol: "tcp", port: 443 } }],
 };
 
 const MODES: { value: Mode; label: string; description: string }[] = [
   { value: "internet", label: "From the internet", description: "Can visitors on the internet reach this instance?" },
-  { value: "instance", label: "From another instance", description: "Can another server in the VPC reach this one, e.g. a bastion host or a web server talking to a database?" },
+  { value: "instance", label: "From another instance", description: "Can another server reach this one, e.g. a bastion host, or a web server talking to a database (in this VPC, or a peered one)?" },
   { value: "outbound", label: "Out to the internet", description: "Can this instance connect out, e.g. to download updates? Private servers need a NAT gateway for this." },
+  { value: "s3", label: "To Amazon S3", description: "Can this instance reach S3? Through a VPC endpoint it stays on the AWS network; without one it needs a way to the internet." },
 ];
 
 const statusIcon: Record<StepStatus, React.ReactNode> = {
@@ -103,7 +105,7 @@ export function ReachabilityPanel({ instanceId }: { instanceId: string }) {
 
   const request = (values: ReachabilityInput): ReachabilityInput => ({
     ...values,
-    direction: mode === "outbound" ? "outbound" : "inbound",
+    direction: mode === "outbound" ? "outbound" : mode === "s3" ? "s3" : "inbound",
     from: mode === "instance" ? from : "internet",
     source: mode === "instance" ? "0.0.0.0/0" : values.source,
   });
@@ -125,7 +127,7 @@ export function ReachabilityPanel({ instanceId }: { instanceId: string }) {
           <RadarIcon className="size-4 text-primary" /> Reachability check
         </CardTitle>
         <CardDescription>
-          {MODES.find((m) => m.value === mode)!.description} Walks the route tables, gateways and security groups,
+          {MODES.find((m) => m.value === mode)!.description} Walks the route tables, gateways, security groups and network ACLs,
           and explains any break in the chain.
         </CardDescription>
       </CardHeader>
@@ -194,6 +196,7 @@ export function ReachabilityPanel({ instanceId }: { instanceId: string }) {
           ))}
         </div>
 
+        {mode !== "s3" && (
         <form
           onSubmit={run}
           className={cn(
@@ -244,6 +247,7 @@ export function ReachabilityPanel({ instanceId }: { instanceId: string }) {
             <p className="text-xs text-destructive sm:col-span-4">{errors.port?.message ?? errors.source?.message}</p>
           )}
         </form>
+        )}
 
         {check.error && (
           <p className="rounded-md border border-destructive/40 bg-destructive/8 p-3 text-sm">

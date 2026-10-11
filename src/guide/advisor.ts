@@ -24,6 +24,7 @@ import { serverlessAdvice } from "./advisor-serverless";
 import { monitoringAdvice } from "./advisor-cloudwatch";
 import { dnsAdvice } from "./advisor-route53";
 import { storageAdvice } from "./advisor-ebs";
+import { vpcxAdvice } from "./advisor-vpcx";
 
 /**
  * The "What's next?" advisor. It looks at what the learner has built in a
@@ -512,7 +513,9 @@ export async function advise(engine: Engine, accountId: string, region: string):
   const sls = await serverlessAdvice(engine, accountId, region);
   const cw = await monitoringAdvice(engine, accountId, region);
   const dns = await dnsAdvice(engine, accountId);
-  out.unshift(...rds.problems, ...sls.problems, ...cw.problems, ...dns.problems, ...elb.problems);
+  const vpcx = await vpcxAdvice(engine, accountId, region);
+  out.unshift(...vpcx.problems, ...rds.problems, ...sls.problems, ...cw.problems, ...dns.problems, ...elb.problems);
+  out.push(...vpcx.suggestions);
   const ebs = await storageAdvice(engine, accountId, region);
   out.push(...sls.suggestions, ...rds.suggestions, ...dns.suggestions, ...ebs.suggestions);
   if (sls.hasFunction && !cw.hasAlarm) {

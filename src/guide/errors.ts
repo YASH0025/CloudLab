@@ -274,6 +274,30 @@ const EXPLANATIONS: Record<string, ErrorExplanation> = {
     meaning: "That function, policy statement, log group or log stream doesn't exist in this region.",
     fix: "Check the name and region: aws lambda list-functions or aws logs describe-log-groups. Both live in one region. A function's log group appears after its first run.",
   },
+  NetworkAclEntryAlreadyExists: {
+    meaning: "That rule number is already used in this direction of the network ACL. Each rule number appears once per direction (inbound and outbound are separate).",
+    fix: "Pick a free number (leave gaps, like 100, 110, 120, so you can insert rules later), or replace the existing rule with replace-network-acl-entry.",
+  },
+  "InvalidNetworkAclID.NotFound": {
+    meaning: "No network ACL with that ID in this region. They look like acl-0a1b2c3d4e5f67890.",
+    fix: "List them with aws ec2 describe-network-acls --filters Name=vpc-id,Values=<vpc-id>.",
+  },
+  VpcPeeringConnectionAlreadyExists: {
+    meaning: "These two VPCs already have a peering connection (pending or active). Two VPCs can only be peered once.",
+    fix: "Use the existing one: aws ec2 describe-vpc-peering-connections.",
+  },
+  "InvalidVpcPeeringConnectionID.NotFound": {
+    meaning: "No peering connection with that ID in this region (or it was rejected or deleted).",
+    fix: "List them with aws ec2 describe-vpc-peering-connections, and check the region.",
+  },
+  InvalidStateTransition: {
+    meaning: "The peering connection isn't waiting for an answer: it's already active, rejected or being set up.",
+    fix: "Check its status with describe-vpc-peering-connections. Only a pending-acceptance request can be accepted or rejected.",
+  },
+  InvalidServiceName: {
+    meaning: "That isn't a VPC endpoint service in this region. Gateway endpoints exist for S3 and DynamoDB, named com.amazonaws.<region>.s3 and com.amazonaws.<region>.dynamodb.",
+    fix: "Use the service name for the region you're in, e.g. com.amazonaws.us-east-1.s3.",
+  },
   "InvalidVolume.ZoneMismatch": {
     meaning: "The volume and the instance are in different Availability Zones. A volume can only attach to instances in its own zone, and neither can move.",
     fix: "Snapshot the volume (or use an existing snapshot) and restore it as a new volume in the instance's zone, then attach that.",

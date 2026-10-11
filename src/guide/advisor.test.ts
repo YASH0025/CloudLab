@@ -299,3 +299,26 @@ describe("advisor: EBS", () => {
     expect(explainError("InvalidVolume.ZoneMismatch")?.fix).toContain("Snapshot");
   });
 });
+
+describe("advisor: network ACLs and peering", () => {
+  it("flags an ACL that blocks replies, and peering routed one way", async () => {
+    const make = (type: string, config: Record<string, unknown>) => engine.create(ACCOUNT, { service: "networking", type, region: REGION, config });
+    const a = await make("vpc", { cidrBlock: "10.0.0.0/16" });
+    const b = await make("vpc", { cidrBlock: "10.1.0.0/16" });
+    const subnet = await make("subnet", { vpcId: a.id, cidrBlock: "10.0.1.0/24", availabilityZone: "us-east-1a" });
+    const acl = await make("network-acl", {
+      vpcId: a.id,
+      inboundRules: [{ ruleNumber: 100, protocol: "tcp", fromPort: 80, toPort: 80, cidr: "0.0.0.0/0", action: "allow" }],
+      subnetIds: [subnet.id],
+    });
+    expect((await next()).id).toBe(`acl-no-replies-${acl.id}`);
+    await engine.update(ACCOUNT, acl.id, { outboundRules: [{ ruleNumber: 100, protocol: "tcp", fromPort: 1024, toPort: 65535, cidr: "0.0.0.0/0", action: "allow" }] });
+    const pcx = await make("peering-connection", { vpcId: a.id, peerVpcId: b.id });
+    await engine.runAction(ACCOUNT, pcx.id, "accept");
+    clock = new Date(clock.getTime() + 3000);
+    const rt = await make("route-table", { vpcId: a.id, routes: [{ destination: "10.1.0.0/16", vpcPeeringConnectionId: pcx.id }] });
+    expect(rt.id).toMatch(/^rtb-/);
+    expect((await next()).id).toBe(`pcx-one-way-${pcx.id}`);
+    expect(explainError("NetworkAclEntryAlreadyExists")?.fix).toContain("100, 110");
+  });
+});

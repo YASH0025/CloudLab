@@ -110,6 +110,7 @@ export const networkAcl: ResourceTypeDef = {
   notFoundCode: "InvalidNetworkAclID.NotFound",
   notFoundMessage: (id) => `The networkAcl ID '${id}' does not exist`,
   apiNoun: "networkAcl",
+  panelAttributes: ["inboundCount", "outboundCount"],
   iam: {
     create: "ec2:CreateNetworkAcl",
     read: "ec2:DescribeNetworkAcls",

@@ -495,7 +495,112 @@ const DISK_ZONE: ChallengeDef = {
   },
 };
 
-const CHALLENGES: ChallengeDef[] = [SITE_DOWN, NO_UPDATES, ACCESS_DENIED, DB_CONNECT, API_500, DISK_ZONE, UNHEALTHY];
+const ACL_REPLIES: ChallengeDef = {
+  id: "acl-replies",
+  title: "The site broke after the security review",
+  level: "advanced",
+  minutes: 10,
+  summary: "The security team added a network ACL that “allows web traffic”. Since then, every visit times out.",
+  story:
+    "Change log, Tuesday: “Security review: added network ACL web-acl to the web subnet. Inbound: HTTP from anywhere, SSH from the office. Outbound: only HTTP and HTTPS.” Since then, the shop at shop-web times out for everyone. The security group hasn't changed, and the server is fine.",
+  goal: "Customers can open the shop on port 80 again. web-acl must stay on the web subnet, and must not allow all inbound traffic.",
+  tools: ["shop-web's Reachability panel (HTTP from the internet): read every step", "VPC → Network ACLs → web-acl", "How a reply finds its way back to a visitor"],
+  hints: [
+    "Run the HTTP reachability check: the request gets in. Look at what happens to the server's answer on its way back out.",
+    "The visitor's browser sent the request from a random high port, and the reply goes back to that port. Network ACLs are stateless: they check the reply like any other outbound packet.",
+    "Edit web-acl: add an outbound rule (e.g. 120) allowing TCP 1024–65535 to 0.0.0.0/0. Keep the inbound rules as they are.",
+  ],
+  explanation:
+    "Security groups are stateful: once a request is allowed in, its reply is allowed out automatically. Network ACLs are stateless: every packet is checked on its own, in both directions. The reply to a visitor goes to the visitor's ephemeral port (somewhere in 1024–65535), and web-acl's outbound rules only allowed ports 80 and 443, which is what you'd allow for the server's own requests, not for replies. Adding the ephemeral range outbound fixes it. Every ACL that allows a service in needs this matching rule out.",
+  async setup(b) {
+    const { vpc, pub } = await b.network({ publicAzs: ["us-east-1a"] });
+    const sg = await b.group("web-sg", vpc.id, [
+      { protocol: "tcp", fromPort: 80, toPort: 80, cidr: "0.0.0.0/0", description: "HTTP" },
+      { protocol: "tcp", fromPort: 22, toPort: 22, cidr: "198.51.100.0/24", description: "SSH from the office" },
+    ]);
+    await b.instance("shop-web", pub[0].id, [sg.id]);
+    await b.make("networking", "network-acl", {
+      name: "web-acl",
+      vpcId: vpc.id,
+      inboundRules: [
+        { ruleNumber: 100, protocol: "tcp", fromPort: 80, toPort: 80, cidr: "0.0.0.0/0", action: "allow" },
+        { ruleNumber: 110, protocol: "tcp", fromPort: 22, toPort: 22, cidr: "198.51.100.0/24", action: "allow" },
+      ],
+      outboundRules: [
+        { ruleNumber: 100, protocol: "tcp", fromPort: 80, toPort: 80, cidr: "0.0.0.0/0", action: "allow" },
+        { ruleNumber: 110, protocol: "tcp", fromPort: 443, toPort: 443, cidr: "0.0.0.0/0", action: "allow" },
+      ],
+      subnetIds: [pub[0].id],
+    });
+  },
+  async facts(engine, accountId) {
+    const web = await named(engine, accountId, "compute", "instance", "shop-web");
+    return [web ? `Shop address: http://${String(web.attributes.publicIp)}` : "Shop server: shop-web", "Changed on Tuesday: network ACL web-acl"];
+  },
+  async check(engine, accountId) {
+    const web = await named(engine, accountId, "compute", "instance", "shop-web");
+    const acl = await named(engine, accountId, "networking", "network-acl", "web-acl");
+    if (!web || web.state !== "running") return { solved: false, status: "shop-web isn't running." };
+    if (!acl || !((acl.config.subnetIds as string[] | undefined) ?? []).includes(String(web.config.subnetId))) {
+      return { solved: false, status: "web-acl must stay on the web subnet: the security team requires it." };
+    }
+    const inbound = (acl.config.inboundRules as { protocol: string; cidr: string; action: string }[] | undefined) ?? [];
+    if (inbound.some((r) => r.action === "allow" && r.protocol === "all" && r.cidr === "0.0.0.0/0")) {
+      return { solved: false, status: "web-acl now allows all inbound traffic. Fix what's really missing instead." };
+    }
+    const r = await analyzeReachability(engine, accountId, web.id, { protocol: "tcp", port: 80, source: "0.0.0.0/0" });
+    return r.reachable ? { solved: true } : { solved: false, status: "Visitors still time out." };
+  },
+};
+
+const PEERING_ONE_WAY: ChallengeDef = {
+  id: "peering-one-way",
+  title: "The VPCs are peered, but the app can't connect",
+  level: "intermediate",
+  minutes: 8,
+  summary: "Peering is active, routes were added, security groups allow it. The app still times out connecting to the database in the other VPC.",
+  story:
+    "From the platform team: “We peered app-vpc with data-vpc yesterday (pcx is active), added the route, and the database's security group allows 10.0.0.0/16 on 5432. But app-server still can't reach db-server: connection timed out.” Both servers are private, in their own VPCs.",
+  goal: "app-server can connect to db-server on TCP 5432 over the peering connection.",
+  tools: ["db-server's Reachability panel → From another instance → app-server, PostgreSQL", "The peering connection's page (routes on each side)", "Both VPCs' route tables"],
+  hints: [
+    "Run the check from app-server to db-server on port 5432 and find the first failing step.",
+    "A connection is two-way: db-server's reply has to find its way back to 10.0.x.x. Where does data-vpc's route table send that range?",
+    "Add a route to data-vpc's route table: 10.0.0.0/16 → the peering connection. (Only app-vpc's side had one.)",
+  ],
+  explanation:
+    "Peering needs routes on both sides. app-vpc's route table sent 10.1.0.0/16 to the peering connection, so requests arrived; but data-vpc's table had no route for 10.0.0.0/16, so db-server's replies had nowhere to go and the client timed out. It's the most common peering mistake, because the side you configure first looks right on its own. Also remember peering isn't transitive: a third VPC peered with data-vpc still couldn't reach app-vpc.",
+  async setup(b) {
+    const make = async (name: string, cidr: string, port: number | null, from: string) => {
+      const base = cidr.split(".").slice(0, 2).join(".");
+      const vpc = await b.make("networking", "vpc", { name, cidrBlock: cidr });
+      const subnet = await b.make("networking", "subnet", { name: `${name}-private`, vpcId: vpc.id, cidrBlock: `${base}.1.0/24`, availabilityZone: "us-east-1a" });
+      const table = await b.make("networking", "route-table", { name: `${name}-rt`, vpcId: vpc.id, subnetIds: [subnet.id], routes: [] });
+      const sg = await b.group(`${name}-sg`, vpc.id, port ? [{ protocol: "tcp", fromPort: port, toPort: port, cidr: from, description: "From the other VPC" }] : []);
+      return { vpc, subnet, table, sg };
+    };
+    const app = await make("app-vpc", "10.0.0.0/16", null, "");
+    const data = await make("data-vpc", "10.1.0.0/16", 5432, "10.0.0.0/16");
+    await b.instance("app-server", app.subnet.id, [app.sg.id]);
+    await b.instance("db-server", data.subnet.id, [data.sg.id]);
+    const pcx = await b.make("networking", "peering-connection", { name: "app-to-data", vpcId: app.vpc.id, peerVpcId: data.vpc.id });
+    await b.engine.runAction(b.accountId, pcx.id, "accept");
+    await b.engine.update(b.accountId, app.table.id, { routes: [{ destination: "10.1.0.0/16", vpcPeeringConnectionId: pcx.id }] });
+  },
+  async facts(engine, accountId) {
+    const db = await named(engine, accountId, "compute", "instance", "db-server");
+    return [`Database: db-server${db ? ` (${String(db.attributes.privateIp)}:5432)` : ""}`, "app-vpc: 10.0.0.0/16 · data-vpc: 10.1.0.0/16"];
+  },
+  async check(engine, accountId) {
+    const app = await named(engine, accountId, "compute", "instance", "app-server");
+    const db = await named(engine, accountId, "compute", "instance", "db-server");
+    if (!app || !db) return { solved: false, status: "app-server or db-server is gone." };
+    const r = await analyzeReachability(engine, accountId, db.id, { protocol: "tcp", port: 5432, from: app.id, source: "0.0.0.0/0" });
+    return r.reachable ? { solved: true } : { solved: false, status: "app-server still can't connect to db-server on 5432." };
+  },
+};
+
+const CHALLENGES: ChallengeDef[] = [SITE_DOWN, NO_UPDATES, ACCESS_DENIED, DB_CONNECT, API_500, DISK_ZONE, PEERING_ONE_WAY, ACL_REPLIES, UNHEALTHY];
 
 const info = (c: ChallengeDef): ChallengeInfo => ({ id: c.id, title: c.title, level: c.level, minutes: c.minutes, summary: c.summary });
 

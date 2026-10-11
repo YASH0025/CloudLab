@@ -42,7 +42,7 @@ beforeEach(() => {
 
 describe("challenges", { timeout: 60_000 }, () => {
   it("lists them, and scores fewer points per hint", () => {
-    expect(listChallenges().map((c) => c.id)).toEqual(["site-down", "no-updates", "access-denied", "db-connect", "api-500", "disk-wrong-zone", "unhealthy-targets"]);
+    expect(listChallenges().map((c) => c.id)).toEqual(["site-down", "no-updates", "access-denied", "db-connect", "api-500", "disk-wrong-zone", "peering-one-way", "acl-replies", "unhealthy-targets"]);
     expect([0, 1, 2, 3].map(challengeScore)).toEqual([100, 90, 70, 40]);
   });
 
@@ -134,6 +134,35 @@ describe("challenges", { timeout: 60_000 }, () => {
       clock = new Date(clock.getTime() + 3_000);
       await engine.list(ACCOUNT, { service: "compute", type: "volume", region: R });
     });
+  });
+
+  it("peering-one-way: the reply needs a route back", async () => {
+    await play("peering-one-way", async () => {
+      const rt = await find("networking", "route-table", "data-vpc-rt");
+      const pcx = await find("networking", "peering-connection", "app-to-data");
+      await engine.update(ACCOUNT, rt.id, { routes: [{ destination: "10.0.0.0/16", vpcPeeringConnectionId: pcx.id }] });
+    });
+  });
+
+  it("acl-replies: network ACLs are stateless", async () => {
+    const acl = () => find("networking", "network-acl", "web-acl");
+    await play(
+      "acl-replies",
+      async () => {
+        const a = await acl();
+        await engine.update(ACCOUNT, a.id, {
+          inboundRules: (a.config.inboundRules as unknown[]).filter((r) => (r as { protocol: string }).protocol !== "all"),
+          outboundRules: [...(a.config.outboundRules as unknown[]), { ruleNumber: 120, protocol: "tcp", fromPort: 1024, toPort: 65535, cidr: "0.0.0.0/0", action: "allow" }],
+        });
+      },
+      {
+        apply: async () => {
+          const a = await acl();
+          await engine.update(ACCOUNT, a.id, { inboundRules: [...(a.config.inboundRules as unknown[]), { ruleNumber: 200, protocol: "all", cidr: "0.0.0.0/0", action: "allow" }] });
+        },
+        status: /allows all inbound/,
+      },
+    );
   });
 
   it("unhealthy-targets: allow HTTP from the load balancer's group", async () => {
