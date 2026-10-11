@@ -10,6 +10,8 @@ const nextConfig: NextConfig = {
     return [{ source: "/samples/:path*", headers: [{ key: "Content-Disposition", value: "attachment" }] }];
   },
   partialPrefetching: true,
+  // The Lambda sandbox loads its WebAssembly engine from node_modules at run time.
+  serverExternalPackages: ["quickjs-emscripten", "quickjs-emscripten-core", "@jitl/quickjs-wasmfile-release-sync"],
   turbopack: {
     rules: {
       "*.css": {
