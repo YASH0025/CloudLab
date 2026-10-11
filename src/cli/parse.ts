@@ -12,6 +12,9 @@ export class LocalPathError extends Error {
   }
 }
 
+/** An error the CLI itself reports before calling AWS (printed as is, exit code 255), e.g. "Invalid base64". */
+export class ClientSideError extends Error {}
+
 /** Splits a command line like a shell would: whitespace separates, quotes group, backslash escapes. */
 export function tokenize(line: string): string[] {
   const tokens: string[] = [];

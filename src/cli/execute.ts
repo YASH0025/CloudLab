@@ -4,7 +4,8 @@ import { Args, COMMANDS, findCommand, servicesList, type CliContext, type CliEff
 import { authorize } from "@/engine/iam/authorize";
 import { applyQuery, formatOutput, QueryError } from "./output";
 import { cliChecks } from "./permissions";
-import { LocalPathError, parseAws, tokenize, UsageError } from "./parse";
+import { runCurl } from "./curl";
+import { ClientSideError, LocalPathError, parseAws, tokenize, UsageError } from "./parse";
 
 export interface CliResult {
   output: string;
@@ -77,6 +78,7 @@ function helpText(service?: string): string {
     ...servicesList().map((s) => `  aws ${s} help`),
     "",
     "Global options: --region <region>, --query <jmespath>, --output json|text",
+    "Also: curl <your API's URL> to call an API Gateway endpoint (-X, -d, -H, -i).",
     "Terminal keys: ↑/↓ history, Ctrl+C cancel line, Ctrl+L or 'clear' to clear.",
     "",
     "Try:",
@@ -105,11 +107,12 @@ export async function executeCli(line: string, ctx: CliContext): Promise<CliResu
       changed: false,
     };
   }
+  if (tokens[0] === "curl") return runCurl(tokens, ctx.engine);
   if (tokens[0] === "help" || (tokens[0] === "aws" && (tokens.length === 1 || tokens[1] === "help"))) {
     return { output: helpText(), exitCode: 0, changed: false };
   }
   if (tokens[0] !== "aws") {
-    return { output: `${tokens[0]}: command not found. Commands start with 'aws' (try 'help').`, exitCode: 127, changed: false };
+    return { output: `${tokens[0]}: command not found. Commands start with 'aws' (or curl, for your APIs). Try 'help'.`, exitCode: 127, changed: false };
   }
   if (tokens[2] === "help" && tokens.length === 3) {
     if (!servicesList().includes(tokens[1])) return usageError(`argument command: Invalid choice: '${tokens[1]}'`);
@@ -195,7 +198,7 @@ export async function executeCli(line: string, ctx: CliContext): Promise<CliResu
   } catch (e) {
     if (e instanceof UsageError) return usageError(e.message);
     if (e instanceof QueryError) return { output: e.message, exitCode: 255, changed: command.mutates };
-    if (e instanceof LocalPathError) return { output: e.message, exitCode: 255, changed: false };
+    if (e instanceof LocalPathError || e instanceof ClientSideError) return { output: e.message, exitCode: 255, changed: false };
     if (e instanceof EngineError) {
       const prefix = effects.failurePrefix ?? "\n";
       return {

@@ -9,6 +9,8 @@ import { IAM_COMMANDS } from "./iam";
 import { S3_COMMANDS } from "./s3";
 import { ELB_COMMANDS } from "./elb";
 import { RDS_COMMANDS } from "./rds";
+import { LAMBDA_COMMANDS } from "./lambda";
+import { APIGATEWAY_COMMANDS } from "./apigateway";
 
 export interface CliContext {
   engine: Engine;
@@ -1005,6 +1007,10 @@ export const COMMANDS: Command[] = [
 
   // --- RDS ---
   ...RDS_COMMANDS,
+
+  // --- Lambda and API Gateway ---
+  ...LAMBDA_COMMANDS,
+  ...APIGATEWAY_COMMANDS,
 
   // --- S3 (buckets, objects, websites) ---
   ...S3_COMMANDS,

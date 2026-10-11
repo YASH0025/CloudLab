@@ -94,6 +94,14 @@ export function cliChecks(command: Command, args: Args, ctx: CliContext): Check[
     }
   }
 
+  if (command.service === "lambda" && command.apiName !== "ListFunctions") {
+    const name = args.one("function-name");
+    if (name) {
+      const fn = name.startsWith("arn:") ? name : `arn:aws:lambda:${ctx.region}:${account}:function:${name.split(":").pop()}`;
+      return [{ action, resource: fn }];
+    }
+  }
+
   if (command.service === "autoscaling" && !COLLECTION.test(command.apiName)) {
     const name = args.one("auto-scaling-group-name");
     if (name) return [{ action, resource: `arn:aws:autoscaling:${ctx.region}:${account}:autoScalingGroup:*:autoScalingGroupName/${name}` }];
