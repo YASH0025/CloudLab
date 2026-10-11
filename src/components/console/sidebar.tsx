@@ -5,6 +5,7 @@ import {
   BoxIcon,
   DatabaseIcon,
   DatabaseZapIcon,
+  ActivityIcon,
   LayoutDashboardIcon,
   MenuIcon,
   NetworkIcon,
@@ -28,6 +29,7 @@ const icons: Record<string, ComponentType<{ className?: string }>> = {
   Compute: ServerIcon,
   Storage: DatabaseIcon,
   Database: DatabaseZapIcon,
+  Monitoring: ActivityIcon,
   Security: ShieldIcon,
 };
 

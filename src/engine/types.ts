@@ -165,6 +165,8 @@ export interface SystemApi {
   setAttributes(id: string, patch: Record<string, unknown>): Promise<void>;
   /** Deletes a resource, e.g. an API's routes when the API is deleted. */
   remove(id: string): Promise<void>;
+  /** Deletes a log group's events. */
+  purgeLogs(group: string): Promise<void>;
 }
 
 /**

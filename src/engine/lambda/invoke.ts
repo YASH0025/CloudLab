@@ -97,7 +97,12 @@ export async function invokeFunction(engine: Engine, accountId: string, fn: Reso
   };
   const previous = (fn.attributes.invocations as InvocationRecord[] | undefined) ?? [];
   const metrics = (fn.attributes.metrics as { invocations?: number; errors?: number; durationMs?: number } | undefined) ?? {};
+  // CloudWatch Logs: written only if the execution role allows it.
+  const cold = now.getTime() > warmUntil;
+  const logging = await engine.logs.fromLambda(fn, out.logs, cold).catch((e) => ({ written: false, stream: undefined, reason: String(e) }));
   await engine.setAttributes(accountId, fn.id, {
+    logStream: logging.stream ?? fn.attributes.logStream ?? null,
+    logsDenied: logging.written ? null : (logging.reason ?? null),
     invocations: [record, ...previous].slice(0, KEEP_INVOCATIONS),
     metrics: {
       invocations: (metrics.invocations ?? 0) + 1,

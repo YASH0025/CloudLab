@@ -6,6 +6,7 @@ import { generateId } from "./ids";
 import { scheduleTransition, settle } from "./lifecycle";
 import { ObjectStorage } from "./objects";
 import { Metrics } from "./telemetry/metrics";
+import { Logs } from "./telemetry/logs";
 import { reconcileScaling } from "./scaling";
 import { allTypes, getTypeDef, resolveTypeDef } from "./registry";
 import type { ResourceStore } from "./store";
@@ -131,6 +132,8 @@ export class Engine {
   readonly objects: ObjectStorage;
   /** CloudWatch metrics. */
   readonly metrics: Metrics;
+  /** CloudWatch Logs events. */
+  readonly logs: Logs;
 
   constructor(
     private store: ResourceStore,
@@ -138,6 +141,7 @@ export class Engine {
   ) {
     this.objects = new ObjectStorage(this, store, now);
     this.metrics = new Metrics(this, store, now);
+    this.logs = new Logs(this, store, now);
   }
 
   private context(accountId: string, region: string): HookContext {
@@ -235,6 +239,7 @@ export class Engine {
       update: (id, patch) => this.update(accountId, id, patch),
       runAction: (id, action) => this.runAction(accountId, id, action),
       remove: (id) => this.remove(accountId, id),
+      purgeLogs: (group) => this.store.deleteLogEvents(accountId, region, group),
       setAttributes: async (id, patch) => {
         const r = await this.store.get(accountId, id);
         if (!r) return;

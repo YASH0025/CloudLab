@@ -101,7 +101,7 @@ const lambdaFunction: ResourceTypeDef = {
   malformedMessage: (id) => `Function not found: ${id}`,
   apiNoun: "function",
   stateErrorCode: "ResourceConflictException",
-  panelAttributes: ["invocations", "permissions", "warmUntil", "metrics", "revisionId"],
+  panelAttributes: ["invocations", "permissions", "warmUntil", "metrics", "revisionId", "logStream", "logsDenied", "lastInvokedAt"],
   fields: [
     {
       key: "name",
