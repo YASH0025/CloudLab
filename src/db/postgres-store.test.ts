@@ -67,8 +67,8 @@ describe("PostgresStore on real Postgres", () => {
       region: REGION,
       config: { vpcId: vpc.id, cidrBlock: "10.0.1.0/24", availabilityZone: "us-east-1a" },
     });
-    // Main route table, default security group and the subnet all reference the VPC.
-    expect((await store.findReferencing(a, vpc.id)).map((r) => r.type).sort()).toEqual(["route-table", "security-group", "subnet"]);
+    // Main route table, default security group, default network ACL and the subnet all reference the VPC.
+    expect((await store.findReferencing(a, vpc.id)).map((r) => r.type).sort()).toEqual(["network-acl", "route-table", "security-group", "subnet"]);
     await expect(engine.remove(a, vpc.id)).rejects.toSatisfy((e) => e instanceof EngineError && e.code === "DependencyViolation");
     await engine.remove(a, subnet.id);
     await engine.remove(a, vpc.id);

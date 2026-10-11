@@ -3,6 +3,7 @@ import { cidrContains, cidrOverlaps, parseCidr } from "../cidr";
 import type { Engine } from "../engine";
 import { EngineError } from "../errors";
 import { systemOf, type Resource } from "../types";
+import { aclDecision, aclFor, EPHEMERAL_PORT, type AclRule } from "../services/vpc-extras";
 
 /**
  * Reachability checks. Each walks the same chain the real network would and
@@ -12,15 +13,21 @@ import { systemOf, type Resource } from "../types";
  *   internet gateway → security group;
  * - outbound to the internet: state → route table → route → internet gateway
  *   (needs a public IP) or NAT gateway (needs its own way out) → outbound rules;
- * - from another instance in the VPC: both running → same VPC (local route) →
- *   source's outbound rules → target's inbound rules, including rules that
- *   name a security group ("chaining").
+ * - from another instance: both running → same VPC (local route), or an
+ *   active peering connection with a route each way → source's outbound
+ *   rules → target's inbound rules, including rules that name a security
+ *   group ("chaining");
+ * - to Amazon S3: through a gateway VPC endpoint if the subnet's route table
+ *   has one, otherwise out to the internet.
+ *
+ * Network ACLs are checked wherever traffic crosses a subnet boundary, both
+ * ways: they're stateless, so replies need a rule of their own.
  */
 
 export const reachabilityInput = z
   .object({
-    /** inbound: traffic arriving at the instance. outbound: the instance connecting out to the internet. */
-    direction: z.enum(["inbound", "outbound"]).default("inbound"),
+    /** inbound: traffic arriving at the instance. outbound: the instance connecting out to the internet. s3: to Amazon S3. */
+    direction: z.enum(["inbound", "outbound", "s3"]).default("inbound"),
     /** For inbound checks: "internet", or the ID of another instance in the same VPC. */
     from: z.string().default("internet"),
     protocol: z.enum(["tcp", "udp", "icmp"]),
@@ -80,6 +87,7 @@ interface Route {
   destination: string;
   gatewayId?: string;
   natGatewayId?: string;
+  vpcPeeringConnectionId?: string;
 }
 
 /** Whether a rule's protocol and ports cover the traffic. */
@@ -117,7 +125,8 @@ async function networkOf(engine: Engine, accountId: string, instance: Resource) 
   const groups = (await Promise.all(groupIds.map((id) => engine.get(accountId, id).catch(() => null)))).filter(
     (g): g is Resource => g !== null,
   );
-  return { subnet, vpc, tables, groupIds, groups, ...tableFor(subnet, tables) };
+  const acls = subnet ? await engine.list(accountId, { service: "networking", type: "network-acl", region: instance.region }) : [];
+  return { subnet, vpc, tables, groupIds, groups, acl: aclFor(subnet, acls), ...tableFor(subnet, tables) };
 }
 
 /** A subnet uses the route table it's explicitly associated with, otherwise its VPC's main route table. */
@@ -136,7 +145,49 @@ export function routeTo(table: Resource | undefined, destination: string) {
     .sort((a, b) => b.block!.prefix - a.block!.prefix)[0];
 }
 
-const targetOf = (r: Route) => r.gatewayId || r.natGatewayId || "";
+const targetOf = (r: Route) => r.gatewayId || r.natGatewayId || r.vpcPeeringConnectionId || "";
+
+const aclRuleText = (r: AclRule) =>
+  `rule #${r.ruleNumber} (${r.action} ${r.protocol === "all" ? "all traffic" : r.protocol.toUpperCase()}${r.protocol === "all" || r.protocol === "icmp" ? "" : ` ${r.fromPort}–${r.toPort}`} ${r.cidr})`;
+
+/**
+ * One direction through a subnet's network ACL. `reply` marks the return leg
+ * (ephemeral ports), which security groups handle by themselves but ACLs don't.
+ */
+function aclStep(
+  acl: Resource | undefined,
+  opts: { id: string; egress: boolean; protocol: string; port?: number; cidr: string; reply: boolean; what: string },
+): ReachabilityStep {
+  const title = opts.reply
+    ? `Network ACL lets the replies ${opts.egress ? "out" : "back in"}`
+    : `Network ACL allows the traffic ${opts.egress ? "out" : "in"}`;
+  if (!acl) return { id: opts.id, title, status: "pass", detail: "The subnet uses the default network ACL, which allows everything." };
+  const port = opts.protocol === "icmp" ? undefined : opts.reply ? EPHEMERAL_PORT : opts.port;
+  const d = aclDecision(acl, opts.egress, opts.protocol, port, opts.cidr);
+  const where = `${systemOf(acl).isDefault ? "the default network ACL " : ""}${acl.id}`;
+  const traffic = opts.reply
+    ? opts.protocol === "icmp"
+      ? "the ICMP replies"
+      : `${opts.protocol.toUpperCase()} replies on ports 1024–65535 (the client's “ephemeral” ports)`
+    : opts.what;
+  if (d.allowed) {
+    return { id: opts.id, title, status: "pass", detail: `${where} allows ${traffic} ${opts.egress ? "to" : "from"} ${opts.cidr}: ${aclRuleText(d.rule!)}.`, resource: link(acl) };
+  }
+  const why = d.rule ? `${aclRuleText(d.rule)} matches first and denies it` : "no rule matches it, so the final “*” rule denies it";
+  const stateless = opts.reply
+    ? " Network ACLs are stateless: unlike security groups, they don't remember the request, so the reply needs its own rule."
+    : "";
+  return {
+    id: opts.id,
+    title,
+    status: "fail",
+    detail: `${where} blocks ${traffic} ${opts.egress ? "to" : "from"} ${opts.cidr}: ${why}.${stateless}`,
+    fix: `Add an ${opts.egress ? "outbound" : "inbound"} rule to ${acl.id} with a lower number than any deny that matches: allow ${
+      opts.reply ? `${opts.protocol === "icmp" ? "ICMP" : `${opts.protocol.toUpperCase()} 1024–65535`}` : traffic
+    } ${opts.egress ? "to" : "from"} ${opts.cidr}.`,
+    resource: link(acl),
+  };
+}
 
 function stateStep(instance: Resource, title = "Instance is running"): ReachabilityStep {
   return instance.state === "running"
@@ -201,6 +252,7 @@ export async function analyzeReachability(
   const input = reachabilityInput.parse(rawInput);
   const instance = await loadInstance(engine, accountId, instanceId);
   if (input.direction === "outbound") return analyzeOutbound(engine, accountId, instance, input);
+  if (input.direction === "s3") return analyzeS3(engine, accountId, instance);
   if (input.from !== "internet") {
     if (input.from === instance.id) throw new EngineError("InvalidParameterValue", "Pick a different instance as the source.");
     return analyzeBetween(engine, accountId, await loadInstance(engine, accountId, input.from), instance, input);
@@ -310,13 +362,9 @@ export async function analyzeInbound(engine: Engine, accountId: string, instance
     });
   }
 
-  steps.push({
-    id: "return-traffic",
-    title: "Return traffic",
-    status: "info",
-    detail:
-      "Security groups are stateful, so replies to allowed inbound traffic go out automatically, whatever the outbound rules say. Network ACLs aren't simulated yet; they behave like the default (allow all).",
-  });
+  const { acl } = await networkOf(engine, accountId, instance);
+  steps.push(aclStep(acl, { id: "nacl-in", egress: false, protocol: input.protocol, port: input.port, cidr: input.source, reply: false, what: traffic }));
+  steps.push(aclStep(acl, { id: "nacl-out", egress: true, protocol: input.protocol, cidr: input.source, reply: true, what: traffic }));
 
   return finish(
     steps,
@@ -394,6 +442,15 @@ async function analyzeOutbound(engine: Engine, accountId: string, instance: Reso
 
   if (!route) {
     steps.push({ id: "gateway", title: "Way out of the VPC", status: "skip", detail: "Needs a matching route first." });
+  } else if (route.vpcPeeringConnectionId) {
+    steps.push({
+      id: "gateway",
+      title: "Way out of the VPC",
+      status: "fail",
+      detail: `The route sends ${destination} to peering connection ${route.vpcPeeringConnectionId}. Peering only connects the two VPCs: it never carries traffic on to the internet (or through the other VPC's gateways).`,
+      fix: "Route 0.0.0.0/0 to a NAT gateway or internet gateway in this VPC.",
+      resource: { id: route.vpcPeeringConnectionId, service: "networking", type: "peering-connection" },
+    });
   } else if (route.gatewayId) {
     const gw = await gatewayStep(engine, accountId, route.gatewayId, vpcId);
     steps.push(gw);
@@ -492,12 +549,9 @@ async function analyzeOutbound(engine: Engine, accountId: string, instance: Reso
           resource: groups[0] ? link(groups[0]) : undefined,
         },
   );
-  steps.push({
-    id: "return-traffic",
-    title: "Return traffic",
-    status: "info",
-    detail: "Replies come back automatically: security groups are stateful, and the gateway remembers each connection the instance started.",
-  });
+  const { acl } = await networkOf(engine, accountId, instance);
+  steps.push(aclStep(acl, { id: "nacl-out", egress: true, protocol: input.protocol, port: input.port, cidr: destination, reply: false, what: traffic }));
+  steps.push(aclStep(acl, { id: "nacl-in", egress: false, protocol: input.protocol, cidr: destination, reply: true, what: traffic }));
 
   return finish(
     steps,
@@ -523,22 +577,16 @@ export async function analyzeBetween(engine: Engine, accountId: string, source: 
 
   const srcVpc = source.attributes.vpcId as string;
   const dstVpc = target.attributes.vpcId as string;
-  steps.push(
-    srcVpc === dstVpc
-      ? {
-          id: "same-vpc",
-          title: "Both are in the same VPC",
-          status: "pass",
-          detail: `Both are in ${dstVpc}. Every route table has a local route for ${dst.vpc?.config.cidrBlock ?? "the VPC range"}, so traffic between subnets is routed automatically, public or private.`,
-        }
-      : {
-          id: "same-vpc",
-          title: "Both are in the same VPC",
-          status: "fail",
-          detail: `${source.id} is in ${srcVpc} and ${target.id} is in ${dstVpc}. VPCs are isolated from each other: private addresses in one can't reach the other.`,
-          fix: "Launch both into the same VPC. (Connecting VPCs with peering isn't simulated yet.)",
-        },
-  );
+  if (srcVpc === dstVpc) {
+    steps.push({
+      id: "same-vpc",
+      title: "Both are in the same VPC",
+      status: "pass",
+      detail: `Both are in ${dstVpc}. Every route table has a local route for ${dst.vpc?.config.cidrBlock ?? "the VPC range"}, so traffic between subnets is routed automatically, public or private.`,
+    });
+  } else {
+    steps.push(...(await peeringSteps(engine, accountId, source, target, src, dst)));
+  }
 
   // Source's outbound rules: an address range containing the target, or the target's security group.
   const targetGroups = new Set(dst.groupIds);
@@ -607,10 +655,144 @@ export async function analyzeBetween(engine: Engine, accountId: string, source: 
         },
   );
 
+  if (src.subnet && dst.subnet && src.subnet.id === dst.subnet.id) {
+    steps.push({ id: "nacl", title: "Network ACLs", status: "info", detail: `Both are in ${src.subnet.id}: traffic inside a subnet doesn't cross a network ACL.` });
+  } else {
+    steps.push(aclStep(src.acl, { id: "nacl-source-out", egress: true, protocol: input.protocol, port: input.port, cidr: `${targetIp}/32`, reply: false, what: `${traffic} (source subnet)` }));
+    steps.push(aclStep(dst.acl, { id: "nacl-in", egress: false, protocol: input.protocol, port: input.port, cidr: `${sourceIp}/32`, reply: false, what: `${traffic} (target subnet)` }));
+    steps.push(aclStep(dst.acl, { id: "nacl-out", egress: true, protocol: input.protocol, cidr: `${sourceIp}/32`, reply: true, what: traffic }));
+    steps.push(aclStep(src.acl, { id: "nacl-source-in", egress: false, protocol: input.protocol, cidr: `${targetIp}/32`, reply: true, what: traffic }));
+  }
+
   return finish(
     steps,
     targetAddr,
     `${traffic} from ${source.id} can reach ${target.id} at ${targetAddr}.`,
     `${traffic} from ${source.id} cannot reach ${target.id}.`,
   );
+}
+
+// ---------- between VPCs ----------
+
+type Net = Awaited<ReturnType<typeof networkOf>>;
+
+/** Two VPCs talk only through an active peering connection, with a route each way. */
+async function peeringSteps(engine: Engine, accountId: string, source: Resource, target: Resource, src: Net, dst: Net): Promise<ReachabilityStep[]> {
+  const srcVpc = source.attributes.vpcId as string;
+  const dstVpc = target.attributes.vpcId as string;
+  const steps: ReachabilityStep[] = [];
+  const peerings = await engine.list(accountId, { service: "networking", type: "peering-connection", region: source.region });
+  const between = (a: string, b: string) => peerings.filter((p) => (p.config.vpcId === a && p.config.peerVpcId === b) || (p.config.vpcId === b && p.config.peerVpcId === a));
+  const pcx = between(srcVpc, dstVpc).sort((a, b) => Number(b.state === "active") - Number(a.state === "active"))[0];
+
+  if (!pcx) {
+    // Peering isn't transitive: point it out when both VPCs are peered with the same third one.
+    const via = peerings
+      .filter((p) => p.state === "active" && (p.config.vpcId === srcVpc || p.config.peerVpcId === srcVpc))
+      .map((p) => (p.config.vpcId === srcVpc ? p.config.peerVpcId : p.config.vpcId) as string)
+      .find((mid) => between(mid, dstVpc).some((p) => p.state === "active"));
+    steps.push({
+      id: "same-vpc",
+      title: "The VPCs are connected",
+      status: "fail",
+      detail: via
+        ? `${srcVpc} and ${dstVpc} are each peered with ${via}, but peering isn't transitive: traffic can't pass through ${via} from one to the other.`
+        : `${source.id} is in ${srcVpc} and ${target.id} is in ${dstVpc}. VPCs are isolated from each other unless they're peered.`,
+      fix: `Create a peering connection between ${srcVpc} and ${dstVpc}, accept it, and add a route to the other VPC's range on each side.`,
+    });
+    return steps;
+  }
+  if (pcx.state !== "active") {
+    steps.push({
+      id: "same-vpc",
+      title: "The VPCs are peered",
+      status: "fail",
+      detail: `Peering connection ${pcx.id} is ${pcx.state}.${pcx.state === "pending-acceptance" ? " The accepter VPC's owner must accept it before any traffic flows." : ""}`,
+      fix: pcx.state === "pending-acceptance" ? `Open ${pcx.id} and click Accept request.` : "Create a new peering connection.",
+      resource: link(pcx),
+    });
+    return steps;
+  }
+  steps.push({ id: "same-vpc", title: "The VPCs are peered", status: "pass", detail: `${pcx.id} connects ${srcVpc} and ${dstVpc} and is active.`, resource: link(pcx) });
+
+  const leg = (from: Net, toIp: string, id: string, title: string, side: string): ReachabilityStep => {
+    const r = routeTo(from.table, `${toIp}/32`);
+    if (r?.vpcPeeringConnectionId === pcx.id) {
+      return { id, title, status: "pass", detail: `${from.table!.id} routes ${r.destination} → ${pcx.id}.`, resource: link(from.table!) };
+    }
+    return {
+      id,
+      title,
+      status: "fail",
+      detail: r
+        ? `${from.table?.id} sends ${toIp} to ${targetOf(r)} (route ${r.destination}), not to the peering connection.`
+        : `${from.table?.id ?? "The subnet's route table"} has no route for ${toIp}, so the packets have nowhere to go.${side === "back" ? " Peering needs routes on both sides: the reply has to find its way back too." : ""}`,
+      fix: from.table ? `Add a route to ${from.table.id}: ${side === "back" ? String(src.vpc?.config.cidrBlock) : String(dst.vpc?.config.cidrBlock)} → ${pcx.id}.` : undefined,
+      resource: from.table ? link(from.table) : undefined,
+    };
+  };
+  steps.push(leg(src, target.attributes.privateIp as string, "peering-route", "Route to the other VPC", "there"));
+  steps.push(leg(dst, source.attributes.privateIp as string, "peering-route-back", "Route back from the other VPC", "back"));
+  return steps;
+}
+
+// ---------- to Amazon S3 ----------
+
+/** A representative S3 address range, for security group and network ACL checks. */
+const S3_RANGE = "52.216.0.0/15";
+
+export async function analyzeS3(engine: Engine, accountId: string, instance: Resource): Promise<ReachabilityResult> {
+  const net = await networkOf(engine, accountId, instance);
+  const endpoints = await engine.list(accountId, { service: "networking", type: "vpc-endpoint", region: instance.region });
+  const endpoint = net.table
+    ? endpoints.find((e) => e.config.service === "s3" && e.state === "available" && ((e.config.routeTableIds as string[] | undefined) ?? []).includes(net.table!.id))
+    : undefined;
+  const input: Input = { direction: "s3", from: "internet", protocol: "tcp", port: 443, source: S3_RANGE };
+
+  if (!endpoint) {
+    const viaInternet = await analyzeOutbound(engine, accountId, instance, { ...input, direction: "outbound", source: "0.0.0.0/0" });
+    const pending = endpoints.find((e) => e.config.service === "s3" && e.config.vpcId === instance.attributes.vpcId);
+    viaInternet.steps.unshift({
+      id: "endpoint",
+      title: "Gateway endpoint for S3",
+      status: "info",
+      detail: pending
+        ? `${pending.id} exists in this VPC but isn't on ${net.table?.id ?? "this subnet's route table"}, so S3 traffic goes out through the internet path below.`
+        : "No S3 gateway endpoint on this subnet's route table, so S3 traffic goes out through the internet path below (for a private server: through the NAT gateway, which charges per GB).",
+      fix: net.table ? `Create a VPC endpoint for Amazon S3 in ${instance.attributes.vpcId as string} and pick ${net.table.id}.` : undefined,
+    });
+    return {
+      ...viaInternet,
+      target: "Amazon S3 (HTTPS)",
+      summary: viaInternet.reachable ? `${instance.id} reaches Amazon S3 over the internet.` : `${instance.id} cannot reach Amazon S3. ${viaInternet.summary.split(". ").slice(1).join(". ")}`,
+    };
+  }
+
+  const steps: ReachabilityStep[] = [stateStep(instance)];
+  steps.push(tableStep(net.subnet, net.table, net.explicit, "or an S3 endpoint"));
+  steps.push({
+    id: "endpoint",
+    title: "Gateway endpoint for S3",
+    status: "pass",
+    detail: `${net.table!.id} has the endpoint route ${String(endpoint.attributes.prefixListId)} (S3's addresses) → ${endpoint.id}. Traffic to S3 stays on the AWS network: no internet gateway, NAT gateway or public IP involved.`,
+    resource: link(endpoint),
+  });
+  const allowedBy = net.groups
+    .map((g) => ({ group: g, rule: ((g.config.outboundRules as Rule[]) ?? []).find((r) => ruleCoversTraffic(r, input) && ruleCoversCidr(r, S3_RANGE)) }))
+    .find((x) => x.rule);
+  steps.push(
+    allowedBy
+      ? { id: "security-group", title: "Security group allows HTTPS out", status: "pass", detail: `${allowedBy.group.id} allows ${ruleText(allowedBy.rule!, input)} out to ${allowedBy.rule!.cidr}.`, resource: link(allowedBy.group) }
+      : {
+          id: "security-group",
+          title: "Security group allows HTTPS out",
+          status: "fail",
+          detail: `None of ${net.groupIds.join(", ")} allows TCP 443 out to S3's addresses.`,
+          fix: net.groups[0] ? `Add an outbound rule to ${net.groups[0].id}: TCP 443 to 0.0.0.0/0 (or to the prefix list ${String(endpoint.attributes.prefixListId)}).` : undefined,
+          resource: net.groups[0] ? link(net.groups[0]) : undefined,
+        },
+  );
+  steps.push(aclStep(net.acl, { id: "nacl-out", egress: true, protocol: "tcp", port: 443, cidr: S3_RANGE, reply: false, what: "HTTPS (TCP 443)" }));
+  steps.push(aclStep(net.acl, { id: "nacl-in", egress: false, protocol: "tcp", cidr: S3_RANGE, reply: true, what: "HTTPS" }));
+  return finish(steps, "Amazon S3 (HTTPS)", `${instance.id} reaches Amazon S3 privately through ${endpoint.id}.`, `${instance.id} cannot reach Amazon S3.`);
 }

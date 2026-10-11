@@ -9,6 +9,7 @@ import { Metrics } from "./telemetry/metrics";
 import { Logs } from "./telemetry/logs";
 import { reconcileScaling } from "./scaling";
 import { evaluateAlarms } from "./telemetry/alarms";
+import { defaultAclConfig } from "./services/vpc-extras";
 import { allTypes, getTypeDef, resolveTypeDef } from "./registry";
 import type { ResourceStore } from "./store";
 import {
@@ -567,14 +568,28 @@ export class Engine {
     await reconcileScaling(this, accountId, region, this.now());
     // CloudWatch alarms are evaluated the same way.
     await evaluateAlarms(this, accountId, region, this.now());
+    // VPCs made before network ACLs existed in CloudLab get their default ACL once.
+    if (await this.store.tryClaim(`default-acl:${accountId}:${region}`)) await this.backfillDefaultAcls(accountId, region);
     if (!(await this.store.tryClaim(`default-vpc:${accountId}:${region}`))) return;
     if (!(await this.defaultVpc(accountId, region))) await this.createDefaultVpc(accountId, region);
+  }
+
+  private async backfillDefaultAcls(accountId: string, region: string) {
+    const [vpcs, acls] = await Promise.all([
+      this.store.list(accountId, { service: "networking", type: "vpc", region }),
+      this.store.list(accountId, { service: "networking", type: "network-acl", region }),
+    ]);
+    for (const vpc of vpcs) {
+      if (acls.some((a) => a.config.vpcId === vpc.id && systemOf(a).isDefault)) continue;
+      await this.create(accountId, { service: "networking", type: "network-acl", region, config: defaultAclConfig(vpc.id) }, { system: { isDefault: true, ownedBy: vpc.id }, settled: true });
+    }
   }
 
   /** Deletes everything the account has in a region; the default VPC comes back on next use. */
   async resetRegion(accountId: string, region: string): Promise<number> {
     const removed = await this.store.deleteRegion(accountId, region);
     await this.store.releaseClaim(`default-vpc:${accountId}:${region}`);
+    await this.store.releaseClaim(`default-acl:${accountId}:${region}`);
     return removed;
   }
 

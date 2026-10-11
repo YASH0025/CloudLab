@@ -14,6 +14,7 @@ import { APIGATEWAY_COMMANDS } from "./apigateway";
 import { CLOUDWATCH_COMMANDS, LOGS_COMMANDS } from "./cloudwatch";
 import { ROUTE53_COMMANDS } from "./route53";
 import { EBS_COMMANDS } from "./ebs";
+import { VPC_EXTRA_COMMANDS } from "./vpc-extras";
 
 export interface CliContext {
   engine: Engine;
@@ -539,15 +540,21 @@ export const COMMANDS: Command[] = [
     operation: "create-route",
     apiName: "CreateRoute",
     summary: "Add a route to a route table",
-    usage: "--route-table-id <id> --destination-cidr-block <cidr> (--gateway-id <igw-id> | --nat-gateway-id <nat-id>)",
+    usage: "--route-table-id <id> --destination-cidr-block <cidr> (--gateway-id <igw-id> | --nat-gateway-id <nat-id> | --vpc-peering-connection-id <pcx-id>)",
     mutates: true,
     async run(args, ctx) {
       const rt = await load(ctx, "networking", "route-table", args.required("route-table-id"));
       const destination = args.required("destination-cidr-block");
       const gatewayId = args.one("gateway-id");
       const natGatewayId = args.one("nat-gateway-id");
+      const vpcPeeringConnectionId = args.one("vpc-peering-connection-id");
       const routes = (rt.config.routes as Record<string, unknown>[]) ?? [];
-      const route = { destination, ...(gatewayId ? { gatewayId } : {}), ...(natGatewayId ? { natGatewayId } : {}) };
+      const route = {
+        destination,
+        ...(gatewayId ? { gatewayId } : {}),
+        ...(natGatewayId ? { natGatewayId } : {}),
+        ...(vpcPeeringConnectionId ? { vpcPeeringConnectionId } : {}),
+      };
       await ctx.engine.update(ctx.accountId, rt.id, { routes: [...routes, route] });
       return { Return: true };
     },
@@ -1004,6 +1011,9 @@ export const COMMANDS: Command[] = [
       await ctx.engine.remove(ctx.accountId, eip.id);
     },
   }),
+
+  // --- Network ACLs, VPC peering and endpoints ---
+  ...VPC_EXTRA_COMMANDS,
 
   // --- EBS volumes and snapshots ---
   ...EBS_COMMANDS,

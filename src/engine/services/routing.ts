@@ -10,9 +10,10 @@ export interface Route {
   destination: string;
   gatewayId?: string;
   natGatewayId?: string;
+  vpcPeeringConnectionId?: string;
 }
 
-export const routeTarget = (r: Route) => r.gatewayId || r.natGatewayId || "";
+export const routeTarget = (r: Route) => r.gatewayId || r.natGatewayId || r.vpcPeeringConnectionId || "";
 
 /**
  * Internet gateways and route tables. Together with subnets and security
@@ -158,6 +159,12 @@ export const routeTable: ResourceTypeDef = {
           type: "ref",
           ref: { service: "networking", type: "nat-gateway", weak: true },
         },
+        {
+          key: "vpcPeeringConnectionId",
+          label: "or peering connection",
+          type: "ref",
+          ref: { service: "networking", type: "peering-connection", weak: true },
+        },
       ],
     },
     {
@@ -197,16 +204,31 @@ export const routeTable: ResourceTypeDef = {
         );
       }
 
-      if (route.gatewayId && route.natGatewayId) {
-        throw new EngineError("InvalidParameterCombination", "Only one of gatewayId and natGatewayId can be specified for a route.");
+      const targets = [route.gatewayId, route.natGatewayId, route.vpcPeeringConnectionId].filter(Boolean).length;
+      if (targets > 1) {
+        throw new EngineError("InvalidParameterCombination", "Only one of gatewayId, natGatewayId and vpcPeeringConnectionId can be specified for a route.");
       }
-      if (!route.gatewayId && !route.natGatewayId) {
+      if (targets === 0) {
         throw new EngineError(
           "MissingParameter",
           "The request must contain exactly one of gatewayId, natGatewayId, networkInterfaceId, vpcPeeringConnectionId or instanceId",
           400,
-          [{ field: "routes", message: `Choose a target for ${route.destination}: an internet gateway or a NAT gateway.` }],
+          [{ field: "routes", message: `Choose a target for ${route.destination}: an internet gateway, a NAT gateway or a peering connection.` }],
         );
+      }
+      if (route.vpcPeeringConnectionId) {
+        const known = ((existing?.config.routes as Route[] | undefined) ?? []).some(
+          (r) => r.destination === route.destination && r.vpcPeeringConnectionId === route.vpcPeeringConnectionId,
+        );
+        if (known) continue;
+        const pcx = await ctx.get(route.vpcPeeringConnectionId);
+        if (!pcx || pcx.type !== "peering-connection" || ["rejected", "deleted", "failed"].includes(pcx.state ?? "")) {
+          throw new EngineError("InvalidVpcPeeringConnectionID.NotFound", `The vpcPeeringConnection ID '${route.vpcPeeringConnectionId}' does not exist`);
+        }
+        if (pcx.config.vpcId !== vpcId && pcx.config.peerVpcId !== vpcId) {
+          throw new EngineError("InvalidParameterValue", `route table ${existing?.id ?? "in " + vpcId} and VPC peering connection ${pcx.id} belong to different networks`);
+        }
+        continue;
       }
       if (route.natGatewayId) {
         // Existing routes may point at a deleted NAT gateway (a blackhole); only new targets are checked.

@@ -78,9 +78,18 @@ export function internetGateway(r: Resource, ctx: PresentContext) {
 
 export async function routeTable(r: Resource, ctx: PresentContext) {
   const vpcRes = await ctx.engine.get(ctx.accountId, r.config.vpcId as string).catch(() => null);
-  const routes = (r.config.routes as { destination: string; gatewayId?: string; natGatewayId?: string }[]) ?? [];
+  const routes = (r.config.routes as { destination: string; gatewayId?: string; natGatewayId?: string; vpcPeeringConnectionId?: string }[]) ?? [];
   const routeEntries = await Promise.all(
     routes.map(async (route) => {
+      if (route.vpcPeeringConnectionId) {
+        const pcx = await ctx.engine.get(ctx.accountId, route.vpcPeeringConnectionId).catch(() => null);
+        return {
+          DestinationCidrBlock: route.destination,
+          VpcPeeringConnectionId: route.vpcPeeringConnectionId,
+          Origin: "CreateRoute",
+          State: pcx?.state === "active" ? "active" : "blackhole",
+        };
+      }
       if (route.natGatewayId) {
         const nat = await ctx.engine.get(ctx.accountId, route.natGatewayId).catch(() => null);
         return {
@@ -124,6 +133,10 @@ export async function routeTable(r: Resource, ctx: PresentContext) {
         ? [{ DestinationCidrBlock: vpcRes.config.cidrBlock, GatewayId: "local", Origin: "CreateRouteTable", State: "active" }]
         : []),
       ...routeEntries,
+      // Gateway endpoints add a route to the service's prefix list.
+      ...(await ctx.engine.list(ctx.accountId, { service: "networking", type: "vpc-endpoint", region: r.region }))
+        .filter((e) => ((e.config.routeTableIds as string[] | undefined) ?? []).includes(r.id))
+        .map((e) => ({ DestinationPrefixListId: e.attributes.prefixListId, GatewayId: e.id, Origin: "CreateRoute", State: "active" })),
     ],
     VpcId: r.config.vpcId,
     OwnerId: ownerId(ctx.accountId),

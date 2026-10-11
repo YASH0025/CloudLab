@@ -4,6 +4,7 @@ import { availabilityZones } from "../catalog";
 import { EngineError } from "../errors";
 import { systemOf, type FieldDef, type ResourceTypeDef, type ServiceDef } from "../types";
 import { internetGateway, natGateway, routeTable } from "./routing";
+import { defaultAclConfig, networkAcl, peeringConnection, vpcEndpoint } from "./vpc-extras";
 
 const nameField = (label: string, required = false): FieldDef => ({
   key: "name",
@@ -63,6 +64,8 @@ const vpc: ResourceTypeDef = {
     );
     // Members of the default group can reach each other on anything.
     await system.update(sg.id, { inboundRules: [{ protocol: "all", sourceGroupId: sg.id }] });
+    // And a default network ACL that allows everything, for subnets that don't pick another.
+    await system.create("networking", "network-acl", defaultAclConfig(resource.id), { isDefault: true, ownedBy: resource.id });
   },
 };
 
@@ -340,7 +343,7 @@ export const networkingService: ServiceDef = {
   id: "networking",
   label: "Virtual Network",
   modelledOn: "VPC",
-  description: "Private networks, subnets, routing, internet and NAT gateways, and firewalls.",
+  description: "Private networks, subnets, routing, internet and NAT gateways, firewalls (security groups and network ACLs), peering and endpoints.",
   category: "Networking",
-  types: [vpc, subnet, internetGateway, natGateway, routeTable, securityGroup],
+  types: [vpc, subnet, internetGateway, natGateway, routeTable, securityGroup, networkAcl, peeringConnection, vpcEndpoint],
 };
