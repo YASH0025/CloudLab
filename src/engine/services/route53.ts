@@ -71,7 +71,7 @@ const HEALTH_CHECK_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-
 export function nameServersFor(zoneId: string): string[] {
   let h = 7;
   for (const c of zoneId) h = (h * 33 + c.charCodeAt(0)) >>> 0;
-  const n = (i: number) => (h >> (i * 5)) % 2048;
+  const n = (i: number) => (h >>> (i * 5)) % 2048;
   const tld = ["com", "net", "org", "co.uk"];
   return tld.map((t, i) => `ns-${n(i)}.awsdns-${String(n(i) % 64).padStart(2, "0")}.${t}`);
 }
@@ -359,6 +359,7 @@ const recordSet: ResourceTypeDef = {
     },
     {
       key: "values",
+      itemLabel: "value",
       label: "Values",
       type: "list",
       param: "ResourceRecords",

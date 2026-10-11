@@ -55,6 +55,7 @@ const alarm: ResourceTypeDef = {
     { key: "metricName", label: "Metric", type: "string", required: true, maxLength: 255, placeholder: "Errors", param: "MetricName" },
     {
       key: "dimensions",
+      itemLabel: "dimension",
       label: "Dimensions",
       type: "list",
       item: dimensionItem,

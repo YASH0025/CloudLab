@@ -167,6 +167,7 @@ const loadBalancer: ResourceTypeDef = {
     },
     {
       key: "listeners",
+      itemLabel: "listener",
       label: "Listeners",
       type: "list",
       maxItems: 10,

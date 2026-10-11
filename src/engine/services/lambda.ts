@@ -170,6 +170,7 @@ const lambdaFunction: ResourceTypeDef = {
     },
     {
       key: "environment",
+      itemLabel: "variable",
       label: "Environment variables",
       type: "list",
       item: envItem,

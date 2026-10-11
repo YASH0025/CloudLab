@@ -130,6 +130,7 @@ export const routeTable: ResourceTypeDef = {
     },
     {
       key: "routes",
+      itemLabel: "route",
       label: "Routes",
       type: "list",
       maxItems: 50,

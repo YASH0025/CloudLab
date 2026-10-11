@@ -43,7 +43,7 @@ export function ResourceCreateView() {
         <p className="mt-1 text-sm text-muted-foreground">
           {typeDef.description}{" "}
           {typeDef.global ? (
-            "IAM is global: it isn't tied to a region."
+            "Global: not tied to a region."
           ) : (
             <>
               Region: <span className="font-mono">{region}</span>

@@ -18,6 +18,7 @@ import { ConfirmDialog } from "./confirm-dialog";
 import { AutoScalingPanel, LoadBalancerPanel, TargetHealthPanel } from "./load-balancing-panels";
 import { DatabasePanel, SnapshotPanel } from "./database-panels";
 import { ApiPanel, FunctionPanel } from "./serverless-panels";
+import { DnsTestCard, HealthCheckPanel, HostedZonePanel } from "./route53-panels";
 import { AlarmPanel, AlarmStateBadge, DashboardPanel, FunctionLogsCard, LogGroupPanel, MonitoringCard } from "./monitoring-panels";
 import { ObjectsPanel, WebsiteCard } from "./objects-panel";
 import { PermissionChecker } from "./permission-checker";
@@ -216,6 +217,9 @@ export function ResourceDetailView() {
       {item.service === "cloudwatch" && item.type === "alarm" && <AlarmPanel alarm={item} />}
       {item.service === "cloudwatch" && item.type === "dashboard" && <DashboardPanel dashboard={item} />}
       {item.service === "logs" && item.type === "log-group" && <LogGroupPanel group={item} />}
+      {item.service === "route53" && item.type === "hosted-zone" && <HostedZonePanel zone={item} />}
+      {item.service === "route53" && item.type === "health-check" && <HealthCheckPanel check={item} />}
+      {item.service === "route53" && item.type === "record-set" && <DnsTestCard defaultName={item.name} title="Test this record" />}
 
       <div className="grid gap-5 lg:grid-cols-2">
         <Card>

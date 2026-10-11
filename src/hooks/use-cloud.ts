@@ -90,6 +90,21 @@ export function useMetricSeries(queries: MetricQuery[], minutes: number) {
   });
 }
 
+/** Asks the resolver about a name (and optionally fetches it like curl). Errors show inline. */
+export function useDnsTest() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { name: string; type: string; http: boolean; path?: string }) => api.dnsTest(input),
+    // A request through a hosted zone is remembered on the zone.
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["resource"] }),
+  });
+}
+
+/** A health check's current result, refreshed every 10 seconds. */
+export function useHealthCheckStatus(id: string) {
+  return useQuery({ queryKey: ["health-check-status", id], queryFn: () => api.healthCheckStatus(id), refetchInterval: 10_000 });
+}
+
 /** A log group's recent events (optionally filtered), refreshed every 5 seconds. */
 export function useLogEvents(group: string, pattern: string, stream: string | null, minutes: number) {
   const region = useConsoleStore((s) => s.region);

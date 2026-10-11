@@ -7,6 +7,7 @@ import {
   Controller,
   useFieldArray,
   useForm,
+  useWatch,
   type Control,
   type FieldErrors,
   type Resolver,
@@ -36,6 +37,12 @@ interface ResourceFormProps {
   error?: unknown;
   onSubmit: (values: Values) => void;
   onCancel?: () => void;
+}
+
+/** Whether a field applies, given the other values (see FieldDef.showWhen). */
+function isShown(f: FieldDef, values: Values): boolean {
+  if (!f.showWhen) return true;
+  return f.showWhen.in.some((v) => (v === null || v === undefined ? values[f.showWhen!.field] == null : values[f.showWhen!.field] === v));
 }
 
 function errorMessage(errors: FieldErrors, name: string): string | undefined {
@@ -68,6 +75,9 @@ export function ResourceForm({
     }
   }, [error, form]);
 
+  // Fields that only apply to some choices (a TTL only when not an alias) come and go as they change.
+  const watched = useWatch({ control: form.control });
+
   const isLocked = (f: FieldDef) =>
     mode === "edit" &&
     (f.immutable || (f.mutableInStates !== undefined && (!currentState || !f.mutableInStates.includes(currentState))));
@@ -77,7 +87,8 @@ export function ResourceForm({
       onSubmit={form.handleSubmit((values) => {
         // Unset fields become null so "clear this field" survives JSON (undefined would be dropped).
         const out: Values = {};
-        for (const f of fields) out[f.key] = values[f.key] === undefined ? null : values[f.key];
+        // Fields that don't apply right now are left out, so the server uses its defaults.
+        for (const f of fields) if (isShown(f, values)) out[f.key] = values[f.key] === undefined ? null : values[f.key];
         onSubmit(out);
       })}
       className="space-y-6"
@@ -93,7 +104,7 @@ export function ResourceForm({
         </div>
       )}
 
-      {fields.map((f) => (
+      {fields.filter((f) => isShown(f, watched)).map((f) => (
         <FieldControl
           key={f.key}
           field={f}
@@ -428,7 +439,7 @@ function ListControl({
         disabled={disabled || (field.maxItems !== undefined && rows.length >= field.maxItems)}
         onClick={() => append(defaultValues(items) as never)}
       >
-        <PlusIcon /> Add rule
+        <PlusIcon /> Add {field.itemLabel ?? "rule"}
       </Button>
     </fieldset>
   );

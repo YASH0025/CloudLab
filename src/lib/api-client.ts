@@ -22,6 +22,18 @@ export interface MetricSeries {
   points: { t: number; v: number }[];
 }
 
+export interface DnsTestResult {
+  dns: {
+    question: { name: string; type: string };
+    status: "NOERROR" | "NXDOMAIN" | "SERVFAIL";
+    answers: { name: string; type: string; ttl: number; value: string }[];
+    authority: { name: string; type: string; ttl: number; value: string }[];
+    steps: string[];
+    zoneId: string | null;
+  };
+  http?: { ok: true; status: number; statusText: string; servedBy: string; contentType: string | null; body: string } | { ok: false; error: string; reason: string };
+}
+
 export interface IamPolicyOption {
   name: string;
   arn: string;
@@ -135,6 +147,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify(input),
     }),
+
+  dnsTest: (input: { name: string; type: string; http: boolean; path?: string }) =>
+    request<DnsTestResult>(`/api/route53/test`, { method: "POST", body: JSON.stringify(input) }),
+
+  healthCheckStatus: (id: string) => request<{ healthy: boolean; report: string; checkedAt: string }>(`/api/route53/health-checks/${encodeURIComponent(id)}/status`),
 
   metrics: (input: { region: string; minutes: number; queries: MetricQuery[] }) =>
     request<{ series: MetricSeries[]; from: number; to: number; account: string }>(`/api/metrics/query`, { method: "POST", body: JSON.stringify(input) }),

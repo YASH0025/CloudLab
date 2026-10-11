@@ -85,6 +85,8 @@ export interface FieldDef {
   secret?: boolean;
   /** Only shown in the console form while another field has one of these values (e.g. TTL only when not an alias). */
   showWhen?: { field: string; in: unknown[] };
+  /** list: what one item is called on the "Add …" button (default "rule"). */
+  itemLabel?: string;
   /** list: shape of each item */
   item?: FieldDef[];
   maxItems?: number;
