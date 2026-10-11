@@ -230,3 +230,42 @@ describe("advisor: serverless", () => {
     expect(s.link).toMatchObject({ service: "lambda", id: fn.id });
   });
 });
+
+describe("advisor: monitoring", () => {
+  it("flags lost Lambda logs, then an alarm that is going off", { timeout: 30_000 }, async () => {
+    const { invokeFunction } = await import("@/engine/lambda/invoke");
+    const create = (service: string, type: string, config: Record<string, unknown>, region = REGION) => engine.create(ACCOUNT, { service, type, region, config });
+    const trust = JSON.stringify({ Version: "2012-10-17", Statement: [{ Effect: "Allow", Principal: { Service: "lambda.amazonaws.com" }, Action: "sts:AssumeRole" }] });
+    await create("iam", "role", { name: "r", trustPolicy: trust }, "global");
+    const fn = await create("lambda", "function", { name: "orders", role: "r", files: { "index.mjs": "export const handler = async () => { throw new Error('no'); };" } });
+    clock = new Date(clock.getTime() + 2_000);
+    const a = await advise(engine, ACCOUNT, REGION);
+    expect([a.next, ...a.more].map((x) => x.id)).toContain("watch-your-app");
+    await invokeFunction(engine, ACCOUNT, await engine.get(ACCOUNT, fn.id), {}, "console");
+    let s = await next();
+    expect(s.id).toBe(`fn-logs-denied-${fn.id}`);
+    expect(s.cli).toContain("attach-role-policy --role-name r ");
+
+    const role = (await engine.list(ACCOUNT, { service: "iam", type: "role", region: "global" }))[0];
+    await engine.update(ACCOUNT, role.id, { policyArns: ["arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"] });
+    await create("cloudwatch", "alarm", {
+      name: "orders-errors",
+      namespace: "AWS/Lambda",
+      metricName: "Errors",
+      dimensions: [{ name: "FunctionName", value: "orders" }],
+      statistic: "Sum",
+      period: 60,
+      evaluationPeriods: 1,
+      comparisonOperator: "GreaterThanThreshold",
+      threshold: 0,
+      treatMissingData: "notBreaching",
+    });
+    await invokeFunction(engine, ACCOUNT, await engine.get(ACCOUNT, fn.id), {}, "console");
+    clock = new Date(clock.getTime() + 60_000);
+    await engine.ensureDefaults(ACCOUNT, REGION); // alarms are checked whenever the region is looked at
+    s = await next();
+    expect(s.id).toMatch(/^alarm-firing-arn:aws:cloudwatch:us-east-1:\d{12}:alarm:orders-errors$/);
+    expect(s.why).toMatch(/^Errors > 0 for 1 of 1 × 1 min is true right now\. Threshold Crossed/);
+    expect(explainError("InvalidParameterInput")?.fix).toContain("Add to dashboard");
+  });
+});

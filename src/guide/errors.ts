@@ -271,8 +271,24 @@ const EXPLANATIONS: Record<string, ErrorExplanation> = {
     fix: "List them with aws ec2 describe-launch-templates.",
   },
   ResourceNotFoundException: {
-    meaning: "That function (or policy statement) doesn't exist in this region.",
-    fix: "Check the name and region: aws lambda list-functions. Functions live in one region.",
+    meaning: "That function, policy statement, log group or log stream doesn't exist in this region.",
+    fix: "Check the name and region: aws lambda list-functions or aws logs describe-log-groups. Both live in one region. A function's log group appears after its first run.",
+  },
+  ResourceNotFound: {
+    meaning: "CloudWatch can't find that alarm or dashboard. Alarms belong to one region; dashboards are global.",
+    fix: "List them: aws cloudwatch describe-alarms or aws cloudwatch list-dashboards, and check the name's spelling and case.",
+  },
+  ResourceAlreadyExistsException: {
+    meaning: "A log group or log stream with that name already exists.",
+    fix: "Use the existing one, or pick another name. Lambda creates /aws/lambda/<function> for you on the first run.",
+  },
+  InvalidParameterException: {
+    meaning: "CloudWatch Logs rejected a value, e.g. a retention period it doesn't offer (it must be 1, 3, 5, 7, 14, 30, 60, 90… days) or an invalid name.",
+    fix: "Read the message for the allowed values. aws logs put-retention-policy --retention-in-days 7 is a good start.",
+  },
+  InvalidParameterInput: {
+    meaning: "The dashboard body isn't valid: it must be JSON with a widgets list, and each metric widget needs properties.metrics.",
+    fix: 'Start from {"widgets":[{"type":"metric","properties":{"metrics":[["AWS/Lambda","Invocations","FunctionName","hello"]],"stat":"Sum","period":60}}]}, or use "Add to dashboard" under any graph.',
   },
   ResourceConflictException: {
     meaning: "The function is busy or already exists: still Pending after creation, a name that's taken, or a statement ID already in its policy.",

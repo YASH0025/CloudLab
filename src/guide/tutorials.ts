@@ -22,6 +22,7 @@ import type { GuideLink, Level, TutorialInfo, TutorialView } from "./types";
 import { activityCauses, healthySpread, loadHa, type HaState } from "./ha";
 import { loadDb, type DbState } from "./db";
 import { loadServerless, type ServerlessState } from "./serverless";
+import { loadWatch, WATCHED_FUNCTION, type WatchState } from "./watch";
 import { listenersOf } from "@/engine/services/loadbalancing";
 
 /**
@@ -101,6 +102,10 @@ interface Ctx {
   sls(): Promise<ServerlessState>;
   /** The same, preloaded for tutorials that declare `needsServerless`. */
   slsState?: ServerlessState;
+  /** The function, logs, alarm and dashboard of the monitoring tutorial (loaded once, on demand). */
+  watch(): Promise<WatchState>;
+  /** The same, preloaded for tutorials that declare `needsWatch`. */
+  watchState?: WatchState;
   /** Runs a reachability check (memoised per instance and input). */
   check(instance: Resource | undefined, input: ReachabilityInput): Promise<ReachabilityResult | null>;
 }
@@ -130,6 +135,8 @@ interface TutorialDef {
   needsDb?: boolean;
   /** Load the Lambda and API Gateway state before resolving links and text. */
   needsServerless?: boolean;
+  /** Load the monitoring state before resolving links and text. */
+  needsWatch?: boolean;
   steps: StepDef[];
 }
 
@@ -187,6 +194,7 @@ async function buildCtx(engine: Engine, accountId: string, region: string, ident
   let haData: Promise<HaState> | null = null;
   let dbData: Promise<DbState> | null = null;
   let slsData: Promise<ServerlessState> | null = null;
+  let watchData: Promise<WatchState> | null = null;
   const iamList = (type: string) => engine.list(accountId, { service: "iam", type, region: "global" });
   return {
     identity,
@@ -201,6 +209,10 @@ async function buildCtx(engine: Engine, accountId: string, region: string, ident
     sls() {
       slsData ??= loadServerless(engine, accountId, region);
       return slsData;
+    },
+    watch() {
+      watchData ??= loadWatch(engine, accountId, region);
+      return watchData;
     },
     iam() {
       iamData ??= Promise.all([iamList("user"), iamList("group"), iamList("policy")]).then(([users, groups, policies]) => ({ users, groups, policies }));
@@ -1637,7 +1649,7 @@ const SERVERLESS_API: TutorialDef = {
   summary:
     "Write a Lambda function, put an HTTP API in front of it, and call it from your browser. No servers, no network setup: and you'll meet (and fix) the error almost everyone hits first.",
   minutes: 12,
-  nextId: "managed-database",
+  nextId: "watch-your-app",
   needsServerless: true,
   steps: [
     {
@@ -1775,7 +1787,197 @@ const SERVERLESS_API: TutorialDef = {
   ],
 };
 
-TUTORIALS.push(SERVERLESS_API, MANAGED_DATABASE, HIGHLY_AVAILABLE);
+
+const ORDERS_CODE = `export const handler = async (event) => {
+  console.log("New order:", JSON.stringify(event));
+  if (!event.item) {
+    // A bad order: this error shows up in the logs and in the Errors graph.
+    throw new Error("Order has no item");
+  }
+  console.log("Saved order for", event.item);
+  return { ok: true, item: event.item };
+};
+`;
+
+const fnLink = (c: Ctx): GuideLink | undefined => (c.watchState?.fn ? { service: "lambda", type: "function", mode: "detail", id: c.watchState.fn.id } : undefined);
+
+const WATCH_YOUR_APP: TutorialDef = {
+  id: "watch-your-app",
+  title: "Watch your app: logs, graphs and an alarm",
+  level: "intermediate",
+  summary:
+    "Things break in production, and you want to know before your users tell you. Read a function's logs, find the error, see it on a graph, and set an alarm that goes off by itself when errors happen.",
+  minutes: 10,
+  nextId: "managed-database",
+  needsWatch: true,
+  steps: [
+    {
+      id: "role",
+      title: "A role that can write logs",
+      why: "Lambda writes your function's logs using its execution role. AWSLambdaBasicExecutionRole is what allows it (logs:CreateLogGroup, CreateLogStream, PutLogEvents). Without it, the function runs but its logs are lost.",
+      instructions: (c) =>
+        c.slsState?.role
+          ? [`You already have ${c.slsState.role.name}. Nothing to do.`]
+          : ["Click Take me there.", "Pre-filled: name lambda-basic, trusted by Lambda, with AWSLambdaBasicExecutionRole.", "Click Create role."],
+      link: (c) =>
+        c.slsState?.role
+          ? { service: "iam", type: "role", mode: "detail", id: c.slsState.role.id }
+          : {
+              service: "iam",
+              type: "role",
+              mode: "create",
+              prefill: {
+                name: "lambda-basic",
+                description: "Lets Lambda functions run and write logs",
+                trustPolicy: LAMBDA_TRUST,
+                policyArns: ["arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"],
+              },
+            },
+      check: async (c) => !!(await c.sls()).role,
+    },
+    {
+      id: "function",
+      title: `Create the ${WATCHED_FUNCTION} function`,
+      why: "A small function that saves orders, and fails when an order has no item. A real bug we can watch for.",
+      instructions: ["Click Take me there.", `Pre-filled: name ${WATCHED_FUNCTION}, Node.js 22, and code that throws an error for an order without an item.`, "Click Create function."],
+      link: (c) =>
+        fnLink(c) ?? {
+          service: "lambda",
+          type: "function",
+          mode: "create",
+          prefill: { name: WATCHED_FUNCTION, runtime: "nodejs22.x", handler: "index.handler", role: c.slsState?.role?.name, files: { "index.mjs": ORDERS_CODE } },
+        },
+      check: async (c) => (await c.watch()).fn?.state === "Active",
+    },
+    {
+      id: "run",
+      title: "Send one good order and one bad one",
+      why: "Logs and graphs only show what happened, so first make something happen: a success and a failure.",
+      instructions: [
+        `On ${WATCHED_FUNCTION}'s page, under Test, write the event {"item": "book"} and click Test. Succeeded.`,
+        'Now test with {} (no item). It fails with "Order has no item".',
+      ],
+      link: fnLink,
+      cli: () => `aws lambda invoke --function-name ${WATCHED_FUNCTION} --cli-binary-format raw-in-base64-out --payload '{}' out.json`,
+      check: async (c) => {
+        const runs = ((await c.watch()).fn?.attributes.invocations as { status: string }[] | undefined) ?? [];
+        return runs.some((r) => r.status === "Succeeded") && runs.some((r) => r.status !== "Succeeded");
+      },
+    },
+    {
+      id: "logs",
+      title: "Find the error in the logs",
+      why: "Everything a function prints goes to CloudWatch Logs: the log group /aws/lambda/<name>, one log stream per running copy. Searching it is how you find out what went wrong.",
+      instructions: (c) =>
+        c.watchState?.fn?.attributes.logsDenied
+          ? [`The function's logs aren't being saved: its role can't write them. Attach AWSLambdaBasicExecutionRole to ${String(c.watchState.fn.config.role)}, then run the tests again.`]
+          : [
+              `Open the log group /aws/lambda/${WATCHED_FUNCTION} (or click View logs in CloudWatch on the function's page).`,
+              "Read the lines: START, your console.log output, END and REPORT (duration and memory) for each run.",
+              'Type ERROR in the filter box and click Search: only the failed run\'s error is left.',
+            ],
+      link: (c) => (c.watchState?.logGroup ? { service: "logs", type: "log-group", mode: "detail", id: c.watchState.logGroup.id } : fnLink(c)),
+      cli: () => `aws logs tail /aws/lambda/${WATCHED_FUNCTION} --since 1h`,
+      check: async (c) => {
+        const w = await c.watch();
+        return !!w.logGroup && w.hasLogEvents && !w.fn?.attributes.logsDenied;
+      },
+    },
+    {
+      id: "graphs",
+      title: "See it on the graphs",
+      why: "Logs tell you what happened once; metrics show the trend. Lambda counts every run (Invocations), every failure (Errors) and how long each took (Duration), per minute.",
+      instructions: [
+        `Open ${WATCHED_FUNCTION}'s page and scroll to Monitoring.`,
+        "Invocations shows 2, Errors shows 1. Hover a point to see its exact time and value.",
+      ],
+      link: fnLink,
+      cli: () =>
+        `aws cloudwatch get-metric-statistics --namespace AWS/Lambda --metric-name Errors --dimensions Name=FunctionName,Value=${WATCHED_FUNCTION} --statistics Sum --period 60 --start-time <1 hour ago> --end-time <now>`,
+      check: async (c) => (await c.watch()).hasMetrics,
+    },
+    {
+      id: "alarm",
+      title: "Create an alarm on errors",
+      why: "Nobody stares at graphs all day. An alarm watches one metric for you and changes to ALARM when it crosses a line: here, more than 0 errors in a minute. (On AWS it would then email you through SNS.)",
+      instructions: [
+        "Click Take me there (or Create alarm under the Errors graph).",
+        `Pre-filled: Errors of ${WATCHED_FUNCTION}, Sum over 1 minute, > 0. Missing data is notBreaching: no runs means no errors.`,
+        "Click Create alarm. It starts as Insufficient data or OK.",
+      ],
+      link: (c) =>
+        c.watchState?.alarm
+          ? { service: "cloudwatch", type: "alarm", mode: "detail", id: c.watchState.alarm.id }
+          : {
+              service: "cloudwatch",
+              type: "alarm",
+              mode: "create",
+              prefill: {
+                name: `${WATCHED_FUNCTION}-errors`,
+                description: `Any error in ${WATCHED_FUNCTION}`,
+                namespace: "AWS/Lambda",
+                metricName: "Errors",
+                dimensions: [{ name: "FunctionName", value: WATCHED_FUNCTION }],
+                statistic: "Sum",
+                period: 60,
+                evaluationPeriods: 1,
+                comparisonOperator: "GreaterThanThreshold",
+                threshold: 0,
+                treatMissingData: "notBreaching",
+              },
+            },
+      cli: () =>
+        `aws cloudwatch put-metric-alarm --alarm-name ${WATCHED_FUNCTION}-errors --namespace AWS/Lambda --metric-name Errors --dimensions Name=FunctionName,Value=${WATCHED_FUNCTION} --statistic Sum --period 60 --evaluation-periods 1 --threshold 0 --comparison-operator GreaterThanThreshold --treat-missing-data notBreaching`,
+      check: async (c) => !!(await c.watch()).alarm,
+    },
+    {
+      id: "fire",
+      title: "Break it, and watch the alarm go off",
+      why: "An alarm looks at complete minutes, so it reacts within about a minute of the problem. The Reason says exactly which value crossed the threshold.",
+      instructions: [
+        `Test ${WATCHED_FUNCTION} with {} again (a bad order).`,
+        "Open the alarm and wait up to a minute: it turns In alarm, and the History shows the change.",
+        "Later, with no more errors, it goes back to OK by itself.",
+      ],
+      link: (c) => (c.watchState?.alarm ? { service: "cloudwatch", type: "alarm", mode: "detail", id: c.watchState.alarm.id } : fnLink(c)),
+      cli: () => `aws cloudwatch describe-alarms --alarm-names ${WATCHED_FUNCTION}-errors`,
+      check: async (c) => (await c.watch()).alarmFired,
+    },
+    {
+      id: "dashboard",
+      title: "Put the graphs on a dashboard",
+      why: "A dashboard is your own page of graphs, mixing any services: the first place to look when something seems wrong.",
+      instructions: [
+        "Click Take me there: a dashboard with Invocations and Errors is pre-filled. Click Create dashboard.",
+        `Or, on ${WATCHED_FUNCTION}'s page, click Add to dashboard under any graph.`,
+      ],
+      link: (c) =>
+        c.watchState?.dashboard
+          ? { service: "cloudwatch", type: "dashboard", mode: "detail", id: c.watchState.dashboard.id }
+          : {
+              service: "cloudwatch",
+              type: "dashboard",
+              mode: "create",
+              prefill: {
+                name: "my-app",
+                body: JSON.stringify(
+                  {
+                    widgets: [
+                      { type: "metric", width: 12, height: 6, properties: { title: "Orders handled", stat: "Sum", period: 60, metrics: [["AWS/Lambda", "Invocations", "FunctionName", WATCHED_FUNCTION]] } },
+                      { type: "metric", width: 12, height: 6, properties: { title: "Failed orders", stat: "Sum", period: 60, metrics: [["AWS/Lambda", "Errors", "FunctionName", WATCHED_FUNCTION]] } },
+                    ],
+                  },
+                  null,
+                  2,
+                ),
+              },
+            },
+      check: async (c) => !!(await c.watch()).dashboard,
+    },
+  ],
+};
+
+TUTORIALS.push(SERVERLESS_API, WATCH_YOUR_APP, MANAGED_DATABASE, HIGHLY_AVAILABLE);
 
 const info = (t: TutorialDef): TutorialInfo => ({
   id: t.id,
@@ -1807,6 +2009,10 @@ export async function viewTutorial(
   if (t.needsHa) c.haState = await c.ha();
   if (t.needsDb) c.dbState = await c.db();
   if (t.needsServerless) c.slsState = await c.sls();
+  if (t.needsWatch) {
+    c.slsState = await c.sls();
+    c.watchState = await c.watch();
+  }
   const steps = await Promise.all(
     t.steps.map(async (st) => ({
       id: st.id,

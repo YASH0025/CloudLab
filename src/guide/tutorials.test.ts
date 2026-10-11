@@ -62,10 +62,11 @@ describe("tutorials", () => {
       "web-and-database",
       "least-privilege",
       "serverless-api",
+      "watch-your-app",
       "managed-database",
       "highly-available-website",
     ]);
-    expect(listTutorials().filter((t) => t.level === "intermediate")).toHaveLength(6);
+    expect(listTutorials().filter((t) => t.level === "intermediate")).toHaveLength(7);
     expect(listTutorials().find((t) => t.id === "troubleshoot-reachability")?.nextId).toBe("static-website");
   });
 
@@ -104,6 +105,27 @@ describe("tutorials", () => {
       },
     });
     expect(steps).toBe(10);
+  });
+
+  it("completes 'Watch your app': logs, graphs, an alarm that fires, a dashboard", { timeout: 60_000 }, async () => {
+    const id = "watch-your-app";
+    const fnOf = async () => (await engine.list(ACCOUNT, { service: "lambda", type: "function", region: REGION })).find((f) => f.name === "orders")!;
+    const steps = await play(id, {
+      run: async () => {
+        await invokeFunction(engine, ACCOUNT, await fnOf(), { item: "book" }, "console");
+        await invokeFunction(engine, ACCOUNT, await fnOf(), {}, "console");
+      },
+      // Reading steps: nothing to do, their checks pass from what's already there.
+      logs: async () => undefined,
+      graphs: async () => undefined,
+      fire: async () => {
+        await invokeFunction(engine, ACCOUNT, await fnOf(), {}, "console");
+        tick(60_000);
+      },
+    });
+    expect(steps).toBe(8);
+    const t = await view(id);
+    expect(t.steps.find((s) => s.id === "fire")!.link).toMatchObject({ service: "cloudwatch", type: "alarm", mode: "detail" });
   });
 
   it("completes 'A managed database for your web app': private, chained, backed up, Multi-AZ", async () => {

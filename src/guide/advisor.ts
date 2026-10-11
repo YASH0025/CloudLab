@@ -21,6 +21,7 @@ import type { Advice, Level, Milestone, Suggestion } from "./types";
 import { loadBalancingProblems } from "./advisor-elb";
 import { databaseAdvice } from "./advisor-rds";
 import { serverlessAdvice } from "./advisor-serverless";
+import { monitoringAdvice } from "./advisor-cloudwatch";
 
 /**
  * The "What's next?" advisor. It looks at what the learner has built in a
@@ -507,8 +508,19 @@ export async function advise(engine: Engine, accountId: string, region: string):
   const elb = await loadBalancingProblems(engine, accountId, region);
   const rds = await databaseAdvice(engine, accountId, region);
   const sls = await serverlessAdvice(engine, accountId, region);
-  out.unshift(...rds.problems, ...sls.problems, ...elb.problems);
+  const cw = await monitoringAdvice(engine, accountId, region);
+  out.unshift(...rds.problems, ...sls.problems, ...cw.problems, ...elb.problems);
   out.push(...sls.suggestions, ...rds.suggestions);
+  if (sls.hasFunction && !cw.hasAlarm) {
+    out.push({
+      id: "watch-your-app",
+      level: "intermediate",
+      title: "Find out when your function fails",
+      why: "Right now you'd only learn about errors when someone complains. CloudWatch keeps your function's logs and graphs, and an alarm can watch the Errors graph for you.",
+      steps: ["Open Guide me → Tutorials and start 'Watch your app: logs, graphs and an alarm'.", "Or open your function, scroll to Monitoring and click Create alarm under Errors."],
+      link: { service: "cloudwatch", type: "alarm", mode: "list" },
+    });
+  }
 
   // ---------- advanced ----------
   if (reachable && !sls.hasFunction) {
