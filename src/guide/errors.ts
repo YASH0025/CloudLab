@@ -274,6 +274,26 @@ const EXPLANATIONS: Record<string, ErrorExplanation> = {
     meaning: "That function, policy statement, log group or log stream doesn't exist in this region.",
     fix: "Check the name and region: aws lambda list-functions or aws logs describe-log-groups. Both live in one region. A function's log group appears after its first run.",
   },
+  "InvalidVolume.ZoneMismatch": {
+    meaning: "The volume and the instance are in different Availability Zones. A volume can only attach to instances in its own zone, and neither can move.",
+    fix: "Snapshot the volume (or use an existing snapshot) and restore it as a new volume in the instance's zone, then attach that.",
+  },
+  VolumeInUse: {
+    meaning: "The volume is attached to an instance, so it can't be deleted or attached somewhere else.",
+    fix: "Detach it first (unmount it on the server, then detach-volume or clear Attached to instance), wait until it's available, then try again.",
+  },
+  "InvalidVolume.NotFound": {
+    meaning: "No volume with that ID in this region. Volume IDs look like vol-0a1b2c3d4e5f67890.",
+    fix: "Check the region at the top, and list them with aws ec2 describe-volumes.",
+  },
+  "InvalidSnapshot.NotFound": {
+    meaning: "No snapshot with that ID in this region. Snapshots belong to one region: to use one elsewhere, copy it there first.",
+    fix: "Check the region, or run aws ec2 copy-snapshot in the target region with --source-region.",
+  },
+  OperationNotPermitted: {
+    meaning: "That action isn't allowed here, e.g. detaching an instance's root volume, which it needs to run.",
+    fix: "Stop or terminate the instance instead, or work with its data volumes.",
+  },
   InvalidChangeBatch: {
     meaning:
       "Route 53 refused a record change. Common reasons: a CNAME at the domain itself (the apex), a CNAME next to other records with the same name, a record that already exists, a value that isn't an IP address, or a name outside the zone.",

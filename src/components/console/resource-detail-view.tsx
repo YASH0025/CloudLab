@@ -18,6 +18,7 @@ import { ConfirmDialog } from "./confirm-dialog";
 import { AutoScalingPanel, LoadBalancerPanel, TargetHealthPanel } from "./load-balancing-panels";
 import { DatabasePanel, SnapshotPanel } from "./database-panels";
 import { ApiPanel, FunctionPanel } from "./serverless-panels";
+import { InstanceStoragePanel, SnapshotPanel as EbsSnapshotPanel, VolumePanel } from "./storage-panels";
 import { DnsTestCard, HealthCheckPanel, HostedZonePanel } from "./route53-panels";
 import { AlarmPanel, AlarmStateBadge, DashboardPanel, FunctionLogsCard, LogGroupPanel, MonitoringCard } from "./monitoring-panels";
 import { ObjectsPanel, WebsiteCard } from "./objects-panel";
@@ -289,6 +290,9 @@ export function ResourceDetailView() {
       </Card>
 
       {item.service === "compute" && item.type === "instance" && <ReachabilityPanel instanceId={item.id} />}
+      {item.service === "compute" && item.type === "instance" && <InstanceStoragePanel instance={item} />}
+      {item.service === "compute" && item.type === "volume" && <VolumePanel volume={item} />}
+      {item.service === "compute" && item.type === "snapshot" && <EbsSnapshotPanel snapshot={item} />}
       {item.type === "load-balancer" && <LoadBalancerPanel lb={item} />}
       {item.type === "target-group" && <TargetHealthPanel targetGroup={item} />}
       {item.type === "auto-scaling-group" && <AutoScalingPanel group={item} />}

@@ -453,7 +453,49 @@ const UNHEALTHY: ChallengeDef = {
   },
 };
 
-const CHALLENGES: ChallengeDef[] = [SITE_DOWN, NO_UPDATES, ACCESS_DENIED, DB_CONNECT, API_500, UNHEALTHY];
+const REPORTS = "month,revenue\nAugust,218000\nSeptember,231000\n";
+
+const DISK_ZONE: ChallengeDef = {
+  id: "disk-wrong-zone",
+  title: "The restored disk won't attach",
+  level: "intermediate",
+  minutes: 8,
+  summary: "Last night's backup was restored as a new volume, but it can't be attached to the server that needs it.",
+  story:
+    "Incident, 7:40 AM: the disk holding the monthly reports failed overnight. The on-call engineer restored the nightly snapshot, reports-nightly, as a new volume called reports-restore, but attaching it to the reports server shop-app fails, and the finance team needs their files by 9.",
+  goal: "shop-app has a volume attached that holds /data/reports.csv from the nightly backup.",
+  tools: ["Try attaching reports-restore to shop-app (edit the volume, or aws ec2 attach-volume) and read the error", "Where each thing lives: the volume's and the instance's Availability Zones", "The snapshot reports-nightly"],
+  hints: [
+    "Attach it and read the error word by word. Then compare the Availability Zone of the volume with the instance's.",
+    "A volume can never move to another zone, and an instance can't either. But a snapshot isn't tied to any zone.",
+    "Restore reports-nightly again, this time in the instance's zone (us-east-1a), and attach that volume to shop-app as /dev/sdf. Then delete reports-restore so you don't pay for it.",
+  ],
+  explanation:
+    "EBS volumes live in one Availability Zone and can only attach to instances in that same zone (InvalidVolume.ZoneMismatch). The engineer restored the snapshot into us-east-1b, where the old server used to run, while shop-app runs in us-east-1a. Snapshots are stored regionally, so the fix is simply to restore again into the right zone. It's the standard way to move a disk between zones, and a reason to always note which zone a restore is for.",
+  async setup(b) {
+    const { vpc, pub } = await b.network({ publicAzs: ["us-east-1a"] });
+    const sg = await b.group("app-sg", vpc.id, [{ protocol: "tcp", fromPort: 22, toPort: 22, cidr: "198.51.100.0/24", description: "SSH from the office" }]);
+    await b.instance("shop-app", pub[0].id, [sg.id]);
+    const old = await b.make("compute", "volume", { name: "reports-data", availabilityZone: "us-east-1b", size: 20, volumeType: "gp3" });
+    await b.engine.setAttributes(b.accountId, old.id, { files: [{ path: "/data/reports.csv", content: REPORTS, modifiedAt: old.createdAt }] });
+    const snap = await b.make("compute", "snapshot", { name: "reports-nightly", volumeId: old.id, description: "Nightly backup of reports-data" });
+    await b.engine.remove(b.accountId, old.id);
+    await b.make("compute", "volume", { name: "reports-restore", availabilityZone: "us-east-1b", snapshotId: snap.id, volumeType: "gp3" });
+  },
+  async facts(engine, accountId) {
+    const app = await named(engine, accountId, "compute", "instance", "shop-app");
+    return [`Server: shop-app${app ? ` (${app.id})` : ""}`, "Wanted on the server as: /dev/sdf → /data"];
+  },
+  async check(engine, accountId) {
+    const app = await named(engine, accountId, "compute", "instance", "shop-app");
+    if (!app || app.state === "terminated") return { solved: false, status: "shop-app is gone." };
+    const vols = (await list(engine, accountId, "compute", "volume")).filter((v) => v.config.instanceId === app.id && v.state === "in-use");
+    const ok = vols.some((v) => ((v.attributes.files as { path: string; content: string }[] | undefined) ?? []).some((f) => f.path === "/data/reports.csv" && f.content === REPORTS));
+    return ok ? { solved: true } : { solved: false, status: "shop-app still has no disk with the reports attached." };
+  },
+};
+
+const CHALLENGES: ChallengeDef[] = [SITE_DOWN, NO_UPDATES, ACCESS_DENIED, DB_CONNECT, API_500, DISK_ZONE, UNHEALTHY];
 
 const info = (c: ChallengeDef): ChallengeInfo => ({ id: c.id, title: c.title, level: c.level, minutes: c.minutes, summary: c.summary });
 

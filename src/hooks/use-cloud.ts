@@ -90,6 +90,15 @@ export function useMetricSeries(queries: MetricQuery[], minutes: number) {
   });
 }
 
+/** Writes a file onto a volume "from its server". Errors show inline. */
+export function useWriteVolumeFile(id: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { path: string; content: string }) => api.writeVolumeFile(id, input),
+    onSuccess: () => qc.invalidateQueries({ queryKey: queryKeys.resource(id) }),
+  });
+}
+
 export function useChallenges() {
   return useQuery({ queryKey: ["challenges"], queryFn: async () => (await api.challenges()).challenges, staleTime: Infinity });
 }

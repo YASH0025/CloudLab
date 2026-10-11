@@ -24,6 +24,7 @@ import { loadDb, type DbState } from "./db";
 import { loadServerless, type ServerlessState } from "./serverless";
 import { loadWatch, WATCHED_FUNCTION, type WatchState } from "./watch";
 import { loadDns, TUTORIAL_DOMAIN, type DnsState } from "./dns";
+import { DATA_FILE, loadStorage, type StorageState } from "./storage";
 import { listenersOf } from "@/engine/services/loadbalancing";
 
 /**
@@ -111,6 +112,10 @@ interface Ctx {
   dns(): Promise<DnsState>;
   /** The same, preloaded for tutorials that declare `needsDns`. */
   dnsState?: DnsState;
+  /** The EBS tutorial's volumes and snapshots around `instance` (loaded once, on demand). */
+  storage(): Promise<StorageState>;
+  /** The same, preloaded for tutorials that declare `needsStorage`. */
+  storageState?: StorageState;
   /** Runs a reachability check (memoised per instance and input). */
   check(instance: Resource | undefined, input: ReachabilityInput): Promise<ReachabilityResult | null>;
 }
@@ -144,6 +149,8 @@ interface TutorialDef {
   needsWatch?: boolean;
   /** Load the Route 53 state before resolving links and text. */
   needsDns?: boolean;
+  /** Load the EBS state before resolving links and text. */
+  needsStorage?: boolean;
   steps: StepDef[];
 }
 
@@ -203,6 +210,7 @@ async function buildCtx(engine: Engine, accountId: string, region: string, ident
   let slsData: Promise<ServerlessState> | null = null;
   let watchData: Promise<WatchState> | null = null;
   let dnsData: Promise<DnsState> | null = null;
+  let storageData: Promise<StorageState> | null = null;
   const iamList = (type: string) => engine.list(accountId, { service: "iam", type, region: "global" });
   return {
     identity,
@@ -221,6 +229,10 @@ async function buildCtx(engine: Engine, accountId: string, region: string, ident
     watch() {
       watchData ??= loadWatch(engine, accountId, region);
       return watchData;
+    },
+    storage() {
+      storageData ??= loadStorage(engine, accountId, region, instance);
+      return storageData;
     },
     dns() {
       dnsData ??= loadDns(engine, accountId, instance?.attributes.publicIp as string | undefined);
@@ -2001,7 +2013,7 @@ const REAL_NAME: TutorialDef = {
   summary:
     "Nobody remembers 3.91.12.7. Create a hosted zone for myshop.com, point www.myshop.com at your web server, make the bare domain work too (and meet the CNAME-at-apex rule), then add a health check that watches the site.",
   minutes: 10,
-  nextId: "highly-available-website",
+  nextId: "disks-and-backups",
   needsDns: true,
   steps: [
     {
@@ -2095,7 +2107,102 @@ const REAL_NAME: TutorialDef = {
   ],
 };
 
-TUTORIALS.push(SERVERLESS_API, WATCH_YOUR_APP, MANAGED_DATABASE, REAL_NAME, HIGHLY_AVAILABLE);
+
+const volumeLink = (v: Resource | undefined): GuideLink | undefined => (v ? { service: "compute", type: "volume", mode: "detail", id: v.id } : undefined);
+
+const DISKS_AND_BACKUPS: TutorialDef = {
+  id: "disks-and-backups",
+  title: "Keep your data safe: disks and backups",
+  level: "intermediate",
+  summary:
+    "Give your server a data disk (an EBS volume), save a file on it, back it up with a snapshot, then “lose” the data and get it back. The skill behind every “we restored from last night's backup”.",
+  minutes: 10,
+  nextId: "highly-available-website",
+  needsStorage: true,
+  steps: [
+    {
+      id: "server",
+      title: "Meet your server's root volume",
+      why: "Every instance boots from its own disk, the root volume (8 GiB here). It holds the operating system, and it's deleted when the instance terminates, so it's the wrong place for data you want to keep.",
+      instructions: (c) =>
+        c.instance
+          ? [`Open ${label(c.instance)} and scroll to Storage: /dev/xvda is the root volume.`, "The instance needs to be running for the next steps."]
+          : ["You need an instance first: do 'Launch your first web server', then come back."],
+      link: (c) => (c.instance ? { service: "compute", type: "instance", mode: "detail", id: c.instance.id } : { service: "compute", type: "instance", mode: "list" }),
+      check: async (c) => c.instance?.state === "running" && !!(await c.storage()).root,
+    },
+    {
+      id: "volume",
+      title: "Add a data volume",
+      why: "A separate volume for data survives the instance: detach it, attach it to a new server, and the data comes along. It must be in the same Availability Zone as the instance.",
+      instructions: (c) => [
+        "Click Take me there.",
+        `Pre-filled: app-data, 10 GiB gp3, in ${String(c.instance?.attributes.availabilityZone ?? "the instance's zone")}, attached to your instance as /dev/sdf.`,
+        "Click Create volume. It's creating for a moment, then in-use.",
+      ],
+      link: (c) =>
+        volumeLink(c.storageState?.data) ??
+        (c.instance
+          ? {
+              service: "compute",
+              type: "volume",
+              mode: "create",
+              prefill: { name: "app-data", availabilityZone: c.instance.attributes.availabilityZone, size: 10, volumeType: "gp3", instanceId: c.instance.id, device: "/dev/sdf" },
+            }
+          : undefined),
+      cli: (c) => `aws ec2 create-volume --availability-zone ${String(c.instance?.attributes.availabilityZone ?? "<az>")} --size 10 --volume-type gp3`,
+      check: async (c) => (await c.storage()).data?.state === "in-use",
+    },
+    {
+      id: "write",
+      title: "Save some data on it",
+      why: "On a real server you'd format the disk once (mkfs) and mount it at /data; CloudLab does that for you. Then apps write files to it like any folder.",
+      instructions: ["Open the volume app-data.", `Under Files on this volume, write ${DATA_FILE} with a couple of lines, e.g. id,item and 1,book.`],
+      link: (c) => volumeLink(c.storageState?.data),
+      check: async (c) => !!(await c.storage()).file,
+    },
+    {
+      id: "snapshot",
+      title: "Back it up with a snapshot",
+      why: "A snapshot copies the volume as it is right now. It isn't tied to a zone, and only the changed blocks are stored each time, so frequent snapshots are cheap.",
+      instructions: ["On the volume's page, under Snapshots of this volume, click Create snapshot, then Create snapshot again.", "It's pending for a few seconds, then completed."],
+      link: (c) =>
+        c.storageState?.snapshot
+          ? { service: "compute", type: "snapshot", mode: "detail", id: c.storageState.snapshot.id }
+          : c.storageState?.data
+            ? { service: "compute", type: "snapshot", mode: "create", prefill: { name: "app-data-backup", volumeId: c.storageState.data.id, description: "Before the upgrade" } }
+            : undefined,
+      cli: (c) => `aws ec2 create-snapshot --volume-id ${c.storageState?.data?.id ?? "<volume-id>"} --description "Before the upgrade"`,
+      check: async (c) => !!(await c.storage()).snapshot,
+    },
+    {
+      id: "oops",
+      title: "Oops: overwrite the data",
+      why: "Mistakes happen: a bad deploy, a wrong command. Simulate one by replacing the file's contents.",
+      instructions: [`On app-data, write ${DATA_FILE} again with different text, like “oops, all gone”.`, "The snapshot isn't affected: it keeps what the disk held when it was taken."],
+      link: (c) => volumeLink(c.storageState?.data),
+      check: async (c) => {
+        const s = await c.storage();
+        return !!s.file && !!s.snapshotFile && s.file !== s.snapshotFile;
+      },
+    },
+    {
+      id: "restore",
+      title: "Restore the backup",
+      why: "You never write a snapshot back over a volume: you create a new volume from it (in any zone of the region), check the data, then attach it in place of the broken one.",
+      instructions: [
+        "Open the snapshot and click Restore as volume. Keep the zone the same as your instance's, and attach it to your instance as /dev/sdg.",
+        `Open the new volume: ${DATA_FILE} has the original contents again.`,
+      ],
+      link: (c) => (c.storageState?.restored ? volumeLink(c.storageState.restored) : c.storageState?.snapshot ? { service: "compute", type: "snapshot", mode: "detail", id: c.storageState.snapshot.id } : undefined),
+      cli: (c) =>
+        `aws ec2 create-volume --availability-zone ${String(c.instance?.attributes.availabilityZone ?? "<az>")} --snapshot-id ${c.storageState?.snapshot?.id ?? "<snapshot-id>"} --volume-type gp3`,
+      check: async (c) => !!(await c.storage()).restored,
+    },
+  ],
+};
+
+TUTORIALS.push(SERVERLESS_API, WATCH_YOUR_APP, MANAGED_DATABASE, REAL_NAME, DISKS_AND_BACKUPS, HIGHLY_AVAILABLE);
 
 const info = (t: TutorialDef): TutorialInfo => ({
   id: t.id,
@@ -2128,6 +2235,7 @@ export async function viewTutorial(
   if (t.needsDb) c.dbState = await c.db();
   if (t.needsServerless) c.slsState = await c.sls();
   if (t.needsDns) c.dnsState = await c.dns();
+  if (t.needsStorage) c.storageState = await c.storage();
   if (t.needsWatch) {
     c.slsState = await c.sls();
     c.watchState = await c.watch();

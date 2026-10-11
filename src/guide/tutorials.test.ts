@@ -65,9 +65,10 @@ describe("tutorials", () => {
       "watch-your-app",
       "managed-database",
       "website-real-name",
+      "disks-and-backups",
       "highly-available-website",
     ]);
-    expect(listTutorials().filter((t) => t.level === "intermediate")).toHaveLength(8);
+    expect(listTutorials().filter((t) => t.level === "intermediate")).toHaveLength(9);
     expect(listTutorials().find((t) => t.id === "troubleshoot-reachability")?.nextId).toBe("static-website");
   });
 
@@ -141,6 +142,24 @@ describe("tutorials", () => {
     expect(steps).toBe(6);
     const apex = (await engine.list(ACCOUNT, { service: "route53", type: "record-set", region: "global" })).find((r) => r.name === "myshop.com" && r.config.type === "A");
     expect(apex?.config).toMatchObject({ alias: true, aliasTarget: "www.myshop.com" });
+  });
+
+  it("completes 'Keep your data safe': a data volume, a file, a snapshot, a mistake and a restore", { timeout: 60_000 }, async () => {
+    const { writeVolumeFile } = await import("@/engine/services/ebs");
+    await play("first-web-server");
+    const write = async (content: string) => {
+      const vol = (await engine.list(ACCOUNT, { service: "compute", type: "volume", region: REGION })).find((v) => v.name === "app-data")!;
+      await writeVolumeFile((id) => engine.get(ACCOUNT, id), (id, p) => engine.setAttributes(ACCOUNT, id, p), vol.id, { path: "/data/orders.csv", content }, clock);
+    };
+    const steps = await play("disks-and-backups", {
+      write: () => write("id,item\n1,book\n"),
+      oops: () => write("oops, all gone"),
+      restore: async () => {
+        const snap = (await engine.list(ACCOUNT, { service: "compute", type: "snapshot", region: REGION }))[0];
+        await engine.create(ACCOUNT, { service: "compute", type: "volume", region: REGION, config: { snapshotId: snap.id, availabilityZone: "us-east-1a", volumeType: "gp3" } });
+      },
+    });
+    expect(steps).toBe(6);
   });
 
   it("completes 'A managed database for your web app': private, chained, backed up, Multi-AZ", async () => {

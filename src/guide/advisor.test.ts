@@ -289,3 +289,13 @@ describe("advisor: Route 53", () => {
     expect(explainError("InvalidChangeBatch")?.fix).toContain("Alias");
   });
 });
+
+describe("advisor: EBS", () => {
+  it("points out unattached volumes", async () => {
+    const vol = await engine.create(ACCOUNT, { service: "compute", type: "volume", region: REGION, config: { name: "old-data", availabilityZone: "us-east-1a", size: 50, volumeType: "gp3" } });
+    clock = new Date(clock.getTime() + 5_000);
+    const a = await advise(engine, ACCOUNT, REGION);
+    expect([a.next, ...a.more].map((s) => s.id)).toContain(`volume-unattached-${vol.id}`);
+    expect(explainError("InvalidVolume.ZoneMismatch")?.fix).toContain("Snapshot");
+  });
+});

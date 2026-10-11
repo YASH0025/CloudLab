@@ -170,6 +170,9 @@ export const api = {
       body: JSON.stringify(input),
     }),
 
+  writeVolumeFile: (id: string, input: { path: string; content: string }) =>
+    request<{ files: { path: string; content: string; modifiedAt: string }[] }>(`/api/resources/${encodeURIComponent(id)}/files`, { method: "POST", body: JSON.stringify(input) }),
+
   challenges: () => request<{ challenges: ChallengeInfo[] }>(`/api/challenges`),
   challenge: (id: string, hints: number) => request<{ challenge: ChallengeView }>(`/api/challenges/${encodeURIComponent(id)}?hints=${hints}`),
   startChallenge: (id: string) => request<{ challenge: ChallengeView }>(`/api/challenges/${encodeURIComponent(id)}`, { method: "POST" }),

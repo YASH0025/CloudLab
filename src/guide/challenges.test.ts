@@ -41,8 +41,8 @@ beforeEach(() => {
 });
 
 describe("challenges", { timeout: 60_000 }, () => {
-  it("lists six, and scores fewer points per hint", () => {
-    expect(listChallenges().map((c) => c.id)).toEqual(["site-down", "no-updates", "access-denied", "db-connect", "api-500", "unhealthy-targets"]);
+  it("lists them, and scores fewer points per hint", () => {
+    expect(listChallenges().map((c) => c.id)).toEqual(["site-down", "no-updates", "access-denied", "db-connect", "api-500", "disk-wrong-zone", "unhealthy-targets"]);
     expect([0, 1, 2, 3].map(challengeScore)).toEqual([100, 90, 70, 40]);
   });
 
@@ -121,6 +121,19 @@ describe("challenges", { timeout: 60_000 }, () => {
         status: /any API Gateway API may invoke/,
       },
     );
+  });
+
+  it("disk-wrong-zone: restore the snapshot in the instance's zone", async () => {
+    await play("disk-wrong-zone", async () => {
+      const app = await find("compute", "instance", "shop-app");
+      const wrong = await find("compute", "volume", "reports-restore");
+      await expect(engine.update(ACCOUNT, wrong.id, { instanceId: app.id, device: "/dev/sdf" })).rejects.toMatchObject({ code: "InvalidVolume.ZoneMismatch" });
+      const snap = await find("compute", "snapshot", "reports-nightly");
+      await engine.create(ACCOUNT, { service: "compute", type: "volume", region: R, config: { snapshotId: snap.id, availabilityZone: "us-east-1a", volumeType: "gp3", instanceId: app.id, device: "/dev/sdf" } });
+      // Creating (2 s), then attaching (1.5 s): each step settles when the volume is next looked at.
+      clock = new Date(clock.getTime() + 3_000);
+      await engine.list(ACCOUNT, { service: "compute", type: "volume", region: R });
+    });
   });
 
   it("unhealthy-targets: allow HTTP from the load balancer's group", async () => {

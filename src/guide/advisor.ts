@@ -23,6 +23,7 @@ import { databaseAdvice } from "./advisor-rds";
 import { serverlessAdvice } from "./advisor-serverless";
 import { monitoringAdvice } from "./advisor-cloudwatch";
 import { dnsAdvice } from "./advisor-route53";
+import { storageAdvice } from "./advisor-ebs";
 
 /**
  * The "What's next?" advisor. It looks at what the learner has built in a
@@ -512,7 +513,8 @@ export async function advise(engine: Engine, accountId: string, region: string):
   const cw = await monitoringAdvice(engine, accountId, region);
   const dns = await dnsAdvice(engine, accountId);
   out.unshift(...rds.problems, ...sls.problems, ...cw.problems, ...dns.problems, ...elb.problems);
-  out.push(...sls.suggestions, ...rds.suggestions, ...dns.suggestions);
+  const ebs = await storageAdvice(engine, accountId, region);
+  out.push(...sls.suggestions, ...rds.suggestions, ...dns.suggestions, ...ebs.suggestions);
   if (sls.hasFunction && !cw.hasAlarm) {
     out.push({
       id: "watch-your-app",
@@ -542,6 +544,16 @@ export async function advise(engine: Engine, accountId: string, region: string):
       title: "Test yourself: fix a broken setup",
       why: "Following steps is the easy part. Challenges give you a broken setup and a symptom, like a real support ticket, and you find the cause yourself. They run in a separate account, so your lab stays as it is.",
       steps: ["Open Guide me → Challenges and start 'The shop is down'."],
+    });
+  }
+  if (reachable && vpc && instance && !ebs.hasDataVolume) {
+    push({
+      id: "disks-and-backups",
+      level: "intermediate",
+      title: "Keep your data safe: disks and backups",
+      why: "Your server's root volume is deleted when the server terminates. Real apps keep data on a separate volume and back it up with snapshots.",
+      steps: ["Open Guide me → Tutorials and start 'Keep your data safe: disks and backups'."],
+      link: { service: "compute", type: "volume", mode: "list" },
     });
   }
   if (reachable && vpc && instance && !dns.hasZone) {

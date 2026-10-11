@@ -56,7 +56,7 @@ export const volume: ResourceTypeDef = {
   notFoundMessage: (id) => `The volume '${id}' does not exist.`,
   apiNoun: "volume",
   stateErrorCode: "IncorrectState",
-  panelAttributes: ["files", "terminating"],
+  panelAttributes: ["files", "terminating", "sizeLabel"],
   iam: {
     create: "ec2:CreateVolume",
     read: "ec2:DescribeVolumes",
@@ -255,7 +255,7 @@ export const snapshot: ResourceTypeDef = {
   notFoundMessage: (id) => `The snapshot '${id}' does not exist.`,
   apiNoun: "snapshot",
   stateErrorCode: "IncorrectState",
-  panelAttributes: ["files"],
+  panelAttributes: ["files", "sizeLabel", "volumeIdShown"],
   iam: {
     create: "ec2:CreateSnapshot",
     read: "ec2:DescribeSnapshots",

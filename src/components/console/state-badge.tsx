@@ -1,7 +1,7 @@
 import { Loader2Icon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 
-const GOOD = ["running", "available", "active"];
+const GOOD = ["running", "available", "active", "in-use", "completed"];
 const BAD = ["terminated", "failed", "error"];
 const IDLE = ["stopped"];
 
