@@ -177,6 +177,7 @@ async function reconcileGroup(engine: Engine, accountId: string, group: Resource
     }
   }
 
+  await engine.metrics.autoScalingCpu(group, await members(), averageCpu);
   const previous = (group.attributes.activities as Activity[] | undefined) ?? [];
   await engine.setAttributes(accountId, group.id, {
     instanceCount: alive.length,

@@ -5,6 +5,7 @@ import { buildSchema, collectRefs, type IssueKind } from "./fields";
 import { generateId } from "./ids";
 import { scheduleTransition, settle } from "./lifecycle";
 import { ObjectStorage } from "./objects";
+import { Metrics } from "./telemetry/metrics";
 import { reconcileScaling } from "./scaling";
 import { allTypes, getTypeDef, resolveTypeDef } from "./registry";
 import type { ResourceStore } from "./store";
@@ -128,12 +129,15 @@ function issueToError(
 export class Engine {
   /** Objects in buckets, and static websites. */
   readonly objects: ObjectStorage;
+  /** CloudWatch metrics. */
+  readonly metrics: Metrics;
 
   constructor(
     private store: ResourceStore,
     readonly now: () => Date = () => new Date(),
   ) {
     this.objects = new ObjectStorage(this, store, now);
+    this.metrics = new Metrics(this, store, now);
   }
 
   private context(accountId: string, region: string): HookContext {

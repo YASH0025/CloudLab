@@ -43,6 +43,13 @@ interface Rule {
 const INTERNET = parseCidr("0.0.0.0/0")!;
 
 export async function testLoadBalancer(engine: Engine, accountId: string, lb: Resource, options: { port?: number; count?: number } = {}): Promise<LoadTestResult> {
+  const result = await runTest(engine, accountId, lb, options);
+  // Requests that reached the load balancer show up in its CloudWatch metrics.
+  if (lb.state === "active") for (const r of result.responses) await engine.metrics.loadBalancerRequest(lb, { status: r.status, ms: r.ms });
+  return result;
+}
+
+async function runTest(engine: Engine, accountId: string, lb: Resource, options: { port?: number; count?: number }): Promise<LoadTestResult> {
   const now = engine.now();
   const count = Math.min(Math.max(options.count ?? 6, 1), 20);
   const listeners = listenersOf(lb);

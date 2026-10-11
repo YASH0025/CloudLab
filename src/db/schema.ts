@@ -1,9 +1,12 @@
 import {
+  bigserial,
   boolean,
+  doublePrecision,
   index,
   integer,
   jsonb,
   pgTable,
+  primaryKey,
   text,
   timestamp,
 } from "drizzle-orm/pg-core";
@@ -184,4 +187,44 @@ export const verification = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [index("verification_identifier_idx").on(t.identifier)],
+);
+
+/**
+ * CloudWatch metrics: one row per metric, dimension set and minute, holding
+ * the aggregates CloudWatch keeps (sum, count, min, max). Statistics for any
+ * period are computed from these. Dimensions are stored canonically:
+ * "FunctionName=hello" or "ApiId=abc|Stage=$default", sorted by name.
+ */
+export const metricData = pgTable(
+  "metric_data",
+  {
+    accountId: text("account_id").notNull(),
+    region: text("region").notNull(),
+    namespace: text("namespace").notNull(),
+    metricName: text("metric_name").notNull(),
+    dimensions: text("dimensions").notNull(),
+    minute: timestamp("minute", { withTimezone: true }).notNull(),
+    sum: doublePrecision("sum").notNull(),
+    count: doublePrecision("count").notNull(),
+    min: doublePrecision("min").notNull(),
+    max: doublePrecision("max").notNull(),
+    unit: text("unit").notNull().default("None"),
+  },
+  (t) => [primaryKey({ columns: [t.accountId, t.region, t.namespace, t.metricName, t.dimensions, t.minute] })],
+);
+
+/** CloudWatch Logs events, by log group and stream. */
+export const logEvents = pgTable(
+  "log_events",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    accountId: text("account_id").notNull(),
+    region: text("region").notNull(),
+    logGroup: text("log_group").notNull(),
+    logStream: text("log_stream").notNull(),
+    timestamp: timestamp("timestamp", { withTimezone: true, precision: 3 }).notNull(),
+    ingestedAt: timestamp("ingested_at", { withTimezone: true, precision: 3 }).notNull().defaultNow(),
+    message: text("message").notNull(),
+  },
+  (t) => [index("log_events_group_time").on(t.accountId, t.region, t.logGroup, t.timestamp)],
 );

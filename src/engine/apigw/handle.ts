@@ -47,6 +47,8 @@ export interface RequestLog {
   /** Why it failed, in plain words (CloudLab's addition). */
   reason?: string;
   lambdaRequestId?: string;
+  /** How long the function took (for IntegrationLatency). */
+  integrationMs?: number;
 }
 
 /** Requests per API per minute. */
@@ -133,6 +135,7 @@ export async function handleApiRequest(engine: Engine, req: ApiRequest): Promise
     const previous = (fresh.attributes.recentRequests as RequestLog[] | undefined) ?? [];
     const item: RequestLog = { at: engine.now().toISOString(), requestId, method: req.method, path: req.path || "/", latencyMs: Date.now() - started, ...entry };
     await engine.setAttributes(accountId, api.id, { recentRequests: [item, ...previous].slice(0, KEEP_REQUESTS) });
+    await engine.metrics.apiRequest(fresh, entry.stage, { status: res.status, latencyMs: item.latencyMs, integrationMs: entry.integrationMs });
     res.headers["apigw-requestid"] = requestId;
     if (entry.reason) res.headers["x-cloudlab-reason"] = entry.reason.replace(/[^\x20-\x7e]/g, "");
     return res;
@@ -235,7 +238,7 @@ export async function handleApiRequest(engine: Engine, req: ApiRequest): Promise
     );
   }
   response.headers = { ...cors, ...response.headers };
-  return log({ routeKey, stage: stage.name, status: response.status, lambdaRequestId: result.requestId }, response);
+  return log({ routeKey, stage: stage.name, status: response.status, lambdaRequestId: result.requestId, integrationMs: Math.round(result.durationMs) }, response);
 }
 
 function buildEvent(

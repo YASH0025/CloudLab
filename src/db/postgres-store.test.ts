@@ -297,4 +297,37 @@ describe("PostgresStore on real Postgres", () => {
     expect(await store.increment("test-counter", 60_000, clock)).toBe(1);
     expect(await store.increment("test-counter", 60_000, clock)).toBe(2);
   });
+
+  it("stores metric aggregates and log events", async () => {
+    const accountId = account();
+    const key = { accountId, region: REGION, namespace: "AWS/Lambda", name: "Duration", dimensions: "FunctionName=hello" };
+    const minute = new Date("2026-01-01T10:00:00Z");
+    for (const v of [10, 30, 20]) await store.putMetric(key, minute, v, "Milliseconds");
+    await store.putMetric(key, new Date("2026-01-01T10:01:00Z"), 5, "Milliseconds");
+    const points = await store.queryMetric(key, new Date("2026-01-01T09:59:00Z"), new Date("2026-01-01T10:05:00Z"));
+    expect(points.map((p) => [p.sum, p.count, p.min, p.max])).toEqual([
+      [60, 3, 10, 30],
+      [5, 1, 5, 5],
+    ]);
+    expect(await store.listMetrics(accountId, REGION, new Date("2026-01-01T00:00:00Z"))).toEqual([
+      { namespace: "AWS/Lambda", name: "Duration", dimensions: "FunctionName=hello", unit: "Milliseconds" },
+    ]);
+
+    const t = Date.parse("2026-01-01T10:00:00Z");
+    await store.putLogEvents(accountId, REGION, "/aws/lambda/hello", "s1", [
+      { timestamp: t, message: "START" },
+      { timestamp: t + 5, message: "hello world" },
+    ]);
+    await store.putLogEvents(accountId, REGION, "/aws/lambda/hello", "s2", [{ timestamp: t + 10, message: "ERROR boom" }]);
+    const newest = await store.queryLogEvents({ accountId, region: REGION, group: "/aws/lambda/hello", limit: 2, ascending: false });
+    expect(newest.map((e) => e.message)).toEqual(["ERROR boom", "hello world"]);
+    const s1 = await store.queryLogEvents({ accountId, region: REGION, group: "/aws/lambda/hello", streams: ["s1"], limit: 10, ascending: true });
+    expect(s1.map((e) => e.message)).toEqual(["START", "hello world"]);
+    const streams = await store.logStreams(accountId, REGION, "/aws/lambda/hello");
+    expect(streams.map((x) => x.stream)).toEqual(["s2", "s1"]);
+    await store.deleteLogEvents(accountId, REGION, "/aws/lambda/hello", t + 7);
+    expect((await store.queryLogEvents({ accountId, region: REGION, group: "/aws/lambda/hello", limit: 10, ascending: true })).map((e) => e.message)).toEqual([
+      "ERROR boom",
+    ]);
+  });
 });

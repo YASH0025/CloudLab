@@ -61,6 +61,7 @@ export async function invokeFunction(engine: Engine, accountId: string, fn: Reso
   }
   const count = await engine.countInWindow(`lambda-invoke:${accountId}`, 60_000);
   if (count > INVOKES_PER_MINUTE) {
+    await engine.metrics.lambdaInvoked(fn, { durationMs: 0, error: false, throttled: true });
     throw new EngineError("TooManyRequestsException", `Rate Exceeded. (CloudLab allows ${INVOKES_PER_MINUTE} invocations a minute per account.)`, 429);
   }
 
@@ -106,6 +107,8 @@ export async function invokeFunction(engine: Engine, accountId: string, fn: Reso
     warmUntil: new Date(now.getTime() + WARM_MS).toISOString(),
     lastInvokedAt: now.toISOString(),
   });
+
+  await engine.metrics.lambdaInvoked(fn, { durationMs: out.durationMs, error: !!out.error });
 
   return {
     requestId,
