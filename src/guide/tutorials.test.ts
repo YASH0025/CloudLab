@@ -3,6 +3,8 @@ import { Engine } from "@/engine/engine";
 import { MemoryStore } from "@/engine/store";
 import { advanceProgress } from "./progress";
 import { listTutorials, viewTutorial } from "./tutorials";
+import { handleApiRequest } from "@/engine/apigw/handle";
+import { addPermission, invokeFunction } from "@/engine/lambda/invoke";
 
 const ACCOUNT = "acct-tutorial";
 const REGION = "us-east-1";
@@ -59,10 +61,11 @@ describe("tutorials", () => {
       "bastion-host",
       "web-and-database",
       "least-privilege",
+      "serverless-api",
       "managed-database",
       "highly-available-website",
     ]);
-    expect(listTutorials().filter((t) => t.level === "intermediate")).toHaveLength(5);
+    expect(listTutorials().filter((t) => t.level === "intermediate")).toHaveLength(6);
     expect(listTutorials().find((t) => t.id === "troubleshoot-reachability")?.nextId).toBe("static-website");
   });
 
@@ -74,6 +77,33 @@ describe("tutorials", () => {
       },
     });
     expect(done).toBe(4);
+  });
+
+  it("completes 'Your first serverless API', including the 500 before add-permission", { timeout: 60_000 }, async () => {
+    const id = "serverless-api";
+    const link = async (step: string) => (await view(id)).steps.find((x) => x.id === step)!.link!;
+    const fnOf = async () => (await engine.list(ACCOUNT, { service: "lambda", type: "function", region: REGION }))[0];
+    const apiOf = async () => (await engine.list(ACCOUNT, { service: "apigateway", type: "api", region: REGION }))[0];
+    const call = async () => handleApiRequest(engine, { apiId: (await apiOf()).id, method: "GET", path: "/hello", query: "name=Ada", headers: {}, body: "", sourceIp: "198.51.100.1" });
+    const steps = await play(id, {
+      test: async () => {
+        await invokeFunction(engine, ACCOUNT, await fnOf(), { queryStringParameters: { name: "Test" } }, "console");
+      },
+      "first-call": async () => {
+        expect((await call()).status).toBe(500);
+      },
+      permission: async () => {
+        const fn = await fnOf();
+        const l = await link("permission");
+        expect(l.id).toBe(fn.id);
+        await addPermission(engine, ACCOUNT, fn, { statementId: "apigw", action: "lambda:InvokeFunction", principal: "apigateway.amazonaws.com" });
+      },
+      success: async () => {
+        const res = await call();
+        expect(res.body).toBe('{"message":"Hello, Ada!"}');
+      },
+    });
+    expect(steps).toBe(10);
   });
 
   it("completes 'A managed database for your web app': private, chained, backed up, Multi-AZ", async () => {

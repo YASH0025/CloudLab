@@ -211,3 +211,22 @@ describe("advisor: databases", () => {
     expect(explainError("DBSubnetGroupDoesNotCoverEnoughAZs")?.fix).toContain("another");
   });
 });
+
+describe("advisor: serverless", () => {
+  it("points at the missing permission when an API returns 500", { timeout: 30_000 }, async () => {
+    const { handleApiRequest } = await import("@/engine/apigw/handle");
+    const create = (service: string, type: string, config: Record<string, unknown>, region = REGION) => engine.create(ACCOUNT, { service, type, region, config });
+    const trust = JSON.stringify({ Version: "2012-10-17", Statement: [{ Effect: "Allow", Principal: { Service: "lambda.amazonaws.com" }, Action: "sts:AssumeRole" }] });
+    await create("iam", "role", { name: "r", trustPolicy: trust }, "global");
+    const fn = await create("lambda", "function", { name: "hello", role: "r" });
+    clock = new Date(clock.getTime() + 2_000);
+    const api = await create("apigateway", "api", { name: "hello-api" });
+    await create("apigateway", "stage", { apiId: api.id, name: "$default" });
+    const integ = await create("apigateway", "integration", { apiId: api.id, functionName: "hello" });
+    await create("apigateway", "route", { apiId: api.id, routeKey: "$default", integrationId: integ.id });
+    await handleApiRequest(engine, { apiId: api.id, method: "GET", path: "/", query: "", headers: {}, body: "", sourceIp: "198.51.100.1" });
+    const s = await next();
+    expect(s.id).toBe(`api-permission-${api.id}`);
+    expect(s.link).toMatchObject({ service: "lambda", id: fn.id });
+  });
+});

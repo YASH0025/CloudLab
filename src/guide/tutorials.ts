@@ -21,6 +21,7 @@ import {
 import type { GuideLink, Level, TutorialInfo, TutorialView } from "./types";
 import { activityCauses, healthySpread, loadHa, type HaState } from "./ha";
 import { loadDb, type DbState } from "./db";
+import { loadServerless, type ServerlessState } from "./serverless";
 import { listenersOf } from "@/engine/services/loadbalancing";
 
 /**
@@ -96,6 +97,10 @@ interface Ctx {
   db(): Promise<DbState>;
   /** The same, preloaded for tutorials that declare `needsDb`. */
   dbState?: DbState;
+  /** Lambda and API Gateway (loaded once, on demand). */
+  sls(): Promise<ServerlessState>;
+  /** The same, preloaded for tutorials that declare `needsServerless`. */
+  slsState?: ServerlessState;
   /** Runs a reachability check (memoised per instance and input). */
   check(instance: Resource | undefined, input: ReachabilityInput): Promise<ReachabilityResult | null>;
 }
@@ -123,6 +128,8 @@ interface TutorialDef {
   needsHa?: boolean;
   /** Load the RDS state before resolving links and text. */
   needsDb?: boolean;
+  /** Load the Lambda and API Gateway state before resolving links and text. */
+  needsServerless?: boolean;
   steps: StepDef[];
 }
 
@@ -179,6 +186,7 @@ async function buildCtx(engine: Engine, accountId: string, region: string, ident
   let iamData: ReturnType<Ctx["iam"]> | null = null;
   let haData: Promise<HaState> | null = null;
   let dbData: Promise<DbState> | null = null;
+  let slsData: Promise<ServerlessState> | null = null;
   const iamList = (type: string) => engine.list(accountId, { service: "iam", type, region: "global" });
   return {
     identity,
@@ -189,6 +197,10 @@ async function buildCtx(engine: Engine, accountId: string, region: string, ident
     db() {
       dbData ??= loadDb(engine, accountId, region, s, vpc, group);
       return dbData;
+    },
+    sls() {
+      slsData ??= loadServerless(engine, accountId, region);
+      return slsData;
     },
     iam() {
       iamData ??= Promise.all([iamList("user"), iamList("group"), iamList("policy")]).then(([users, groups, policies]) => ({ users, groups, policies }));
@@ -1083,7 +1095,7 @@ const LEAST_PRIVILEGE: TutorialDef = {
   level: "intermediate",
   summary: "Give a teammate exactly the access they need: a user in a group, a read-only policy, a policy you write yourself, and AccessDenied when they go further.",
   minutes: 12,
-  nextId: "managed-database",
+  nextId: "serverless-api",
   steps: [
     {
       id: "group",
@@ -1599,7 +1611,171 @@ const MANAGED_DATABASE: TutorialDef = {
   ],
 };
 
-TUTORIALS.push(MANAGED_DATABASE, HIGHLY_AVAILABLE);
+// ---------- intermediate: serverless ----------
+
+const LAMBDA_TRUST = JSON.stringify(
+  { Version: "2012-10-17", Statement: [{ Effect: "Allow", Principal: { Service: "lambda.amazonaws.com" }, Action: "sts:AssumeRole" }] },
+  null,
+  2,
+);
+
+const HELLO_CODE = `export const handler = async (event) => {
+  const name = event.queryStringParameters?.name ?? "world";
+  console.log("Saying hello to", name);
+  return {
+    statusCode: 200,
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ message: \`Hello, \${name}!\` }),
+  };
+};
+`;
+
+const SERVERLESS_API: TutorialDef = {
+  id: "serverless-api",
+  title: "Your first serverless API",
+  level: "intermediate",
+  summary:
+    "Write a Lambda function, put an HTTP API in front of it, and call it from your browser. No servers, no network setup: and you'll meet (and fix) the error almost everyone hits first.",
+  minutes: 12,
+  nextId: "managed-database",
+  needsServerless: true,
+  steps: [
+    {
+      id: "role",
+      title: "Create an execution role for Lambda",
+      why: "Every function runs as an IAM role. Its trust policy lets Lambda assume it; AWSLambdaBasicExecutionRole lets the function write its logs. Nothing else, until it needs more.",
+      instructions: ["Click Take me there.", "Pre-filled: name lambda-basic, a trust policy for lambda.amazonaws.com, and AWSLambdaBasicExecutionRole.", "Click Create role."],
+      link: () => ({
+        service: "iam",
+        type: "role",
+        mode: "create",
+        prefill: {
+          name: "lambda-basic",
+          description: "Lets Lambda functions run and write logs",
+          trustPolicy: LAMBDA_TRUST,
+          policyArns: ["arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"],
+        },
+      }),
+      cli: () =>
+        `aws iam create-role --role-name lambda-basic --assume-role-policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"lambda.amazonaws.com"},"Action":"sts:AssumeRole"}]}'`,
+      check: async (c) => !!(await c.sls()).role,
+    },
+    {
+      id: "function",
+      title: "Create the function",
+      why: "A Lambda function is just your code plus settings. It runs only when something calls it, and you pay only for those milliseconds.",
+      instructions: (c) => [
+        "Click Take me there.",
+        `Pre-filled: name hello, Node.js 22, role ${c.slsState?.role?.name ?? "lambda-basic"}, and code that greets ?name= from the URL.`,
+        "Read the code, then click Create function. It's Pending for a second, then Active.",
+      ],
+      link: (c) =>
+        c.slsState?.fn
+          ? { service: "lambda", type: "function", mode: "detail", id: c.slsState.fn.id }
+          : {
+              service: "lambda",
+              type: "function",
+              mode: "create",
+              prefill: { name: "hello", runtime: "nodejs22.x", handler: "index.handler", role: c.slsState?.role?.name, files: { "index.mjs": HELLO_CODE } },
+            },
+      check: async (c) => (await c.sls()).fn?.state === "Active",
+    },
+    {
+      id: "test",
+      title: "Test it",
+      why: "Before wiring anything to it, run the function on its own with a sample event. You see its answer, its log lines and how long it took, including the cold start.",
+      instructions: [
+        "On the function's page, under Test, choose the API Gateway HTTP API (GET /hello?name=Ada) template.",
+        "Click Test. You should see Execution result: succeeded, the response, and your console.log line in the log output.",
+        "Click Test again: no Init Duration this time. The function is warm.",
+      ],
+      link: (c) => (c.slsState?.fn ? { service: "lambda", type: "function", mode: "detail", id: c.slsState.fn.id } : undefined),
+      check: async (c) => (((await c.sls()).fn?.attributes.invocations as { status: string }[] | undefined) ?? []).some((i) => i.status === "Succeeded"),
+    },
+    {
+      id: "api",
+      title: "Create an HTTP API",
+      why: "API Gateway gives your function a public web address. An HTTP API is the simple, cheap kind.",
+      instructions: ["Click Take me there.", "Pre-filled: name hello-api.", "Click Create API."],
+      link: (c) => (c.slsState?.api ? { service: "apigateway", type: "api", mode: "detail", id: c.slsState.api.id } : { service: "apigateway", type: "api", mode: "create", prefill: { name: "hello-api" } }),
+      cli: () => "aws apigatewayv2 create-api --name hello-api --protocol-type HTTP",
+      check: async (c) => !!(await c.sls()).api,
+    },
+    {
+      id: "stage",
+      title: "Deploy it: the $default stage",
+      why: "An API answers only once it has a stage. $default serves it at the root of its address, and deploys every change automatically.",
+      instructions: ["Click Take me there (or Create $default stage on the API's page).", "Click Create stage."],
+      link: (c) => (c.slsState?.api ? { service: "apigateway", type: "stage", mode: "create", prefill: { apiId: c.slsState.api.id, name: "$default" } } : undefined),
+      check: async (c) => !!(await c.sls()).stage,
+    },
+    {
+      id: "integration",
+      title: "Connect the API to the function",
+      why: "An integration says where requests go: here, the hello function. It passes the whole request in, and the function's answer back out.",
+      instructions: ["Click Take me there.", "Pre-filled: your API and the hello function, payload format 2.0.", "Click Create integration."],
+      link: (c) =>
+        c.slsState?.api
+          ? { service: "apigateway", type: "integration", mode: "create", prefill: { apiId: c.slsState.api.id, functionName: c.slsState.fn?.name ?? "hello" } }
+          : undefined,
+      check: async (c) => !!(await c.sls()).integration,
+    },
+    {
+      id: "route",
+      title: "Add the route GET /hello",
+      why: "A route picks which requests go to the integration. GET /hello means: GET requests to /hello.",
+      instructions: ["Click Take me there.", "Pre-filled: GET /hello and your integration.", "Click Create route."],
+      link: (c) =>
+        c.slsState?.api
+          ? { service: "apigateway", type: "route", mode: "create", prefill: { apiId: c.slsState.api.id, routeKey: "GET /hello", integrationId: c.slsState.integration?.id } }
+          : undefined,
+      check: async (c) => !!(await c.sls()).route,
+    },
+    {
+      id: "first-call",
+      title: "Call it… and get a 500",
+      why: "Everything looks connected, yet the call fails with Internal Server Error. This is the most common first serverless bug: API Gateway isn't allowed to invoke the function.",
+      instructions: [
+        "Open the API's page. Under Try it, the path is /hello?name=Ada: click Send.",
+        "You get 500 {\"message\":\"Internal Server Error\"}. Read the Why line under it.",
+      ],
+      link: (c) => (c.slsState?.api ? { service: "apigateway", type: "api", mode: "detail", id: c.slsState.api.id } : undefined),
+      check: async (c) => {
+        const s = await c.sls();
+        return s.permitted || s.requests.some((r) => r.status === 500);
+      },
+    },
+    {
+      id: "permission",
+      title: "Let API Gateway invoke the function",
+      why: "Two policies are involved. The execution role says what the function may do; the function's resource-based policy says who may call it. API Gateway needs a statement there. (The AWS console adds it for you; the CLI doesn't.)",
+      instructions: [
+        "Open the hello function. Under Resource-based policy, choose hello-api and click Add permission.",
+        "Or from the terminal, the command below.",
+      ],
+      link: (c) => (c.slsState?.fn ? { service: "lambda", type: "function", mode: "detail", id: c.slsState.fn.id } : undefined),
+      cli: (c) =>
+        c.slsState?.api
+          ? `aws lambda add-permission --function-name hello --statement-id apigateway-invoke --action lambda:InvokeFunction --principal apigateway.amazonaws.com --source-arn "arn:aws:execute-api:${c.region}:<account-id>:${c.slsState.api.id}/*"`
+          : undefined,
+      check: async (c) => (await c.sls()).permitted,
+    },
+    {
+      id: "success",
+      title: "Call it again: it works",
+      why: "Your function now has a real public address. Open it in a new tab, change ?name=, and call it with curl from the terminal too.",
+      instructions: (c) => [
+        "On the API's page, click Send again: 200 and {\"message\":\"Hello, Ada!\"}.",
+        "Open the invoke URL in a new browser tab with /hello?name=YourName at the end.",
+        c.slsState?.api ? `In the terminal: curl "https://${c.slsState.api.id}.execute-api.${c.region}.cloudlab.local/hello?name=CLI"` : "In the terminal: curl <your API's endpoint>/hello?name=CLI",
+      ],
+      link: (c) => (c.slsState?.api ? { service: "apigateway", type: "api", mode: "detail", id: c.slsState.api.id } : undefined),
+      check: async (c) => (await c.sls()).requests.some((r) => r.status === 200),
+    },
+  ],
+};
+
+TUTORIALS.push(SERVERLESS_API, MANAGED_DATABASE, HIGHLY_AVAILABLE);
 
 const info = (t: TutorialDef): TutorialInfo => ({
   id: t.id,
@@ -1630,6 +1806,7 @@ export async function viewTutorial(
   const c = await buildCtx(engine, accountId, region, identity);
   if (t.needsHa) c.haState = await c.ha();
   if (t.needsDb) c.dbState = await c.db();
+  if (t.needsServerless) c.slsState = await c.sls();
   const steps = await Promise.all(
     t.steps.map(async (st) => ({
       id: st.id,

@@ -270,6 +270,47 @@ const EXPLANATIONS: Record<string, ErrorExplanation> = {
     meaning: "No launch template with that name exists in this region.",
     fix: "List them with aws ec2 describe-launch-templates.",
   },
+  ResourceNotFoundException: {
+    meaning: "That function (or policy statement) doesn't exist in this region.",
+    fix: "Check the name and region: aws lambda list-functions. Functions live in one region.",
+  },
+  ResourceConflictException: {
+    meaning: "The function is busy or already exists: still Pending after creation, a name that's taken, or a statement ID already in its policy.",
+    fix: "Wait a second and retry, or pick another name or statement ID.",
+  },
+  InvalidParameterValueException: {
+    meaning:
+      "Lambda rejected a setting. Common ones: a role whose trust policy doesn't allow lambda.amazonaws.com, a reserved environment variable like AWS_REGION, an old runtime, or a zip without code.",
+    fix: "Read the message: it names the setting. For roles, add lambda.amazonaws.com as a trusted service.",
+  },
+  TooManyRequestsException: {
+    meaning: "Too many invocations in a short time (CloudLab allows 60 a minute per account, like a small concurrency limit on AWS).",
+    fix: "Wait a minute and try again.",
+  },
+  ValidationException: {
+    meaning: "A value doesn't match the format AWS expects, e.g. a function name with spaces or a timeout over 900 seconds.",
+    fix: "The message quotes the rule (often a regular expression); adjust the value to match it.",
+  },
+  InvalidRequestContentException: {
+    meaning: "The payload isn't valid JSON.",
+    fix: "Check quotes and commas. In the terminal, wrap the JSON in single quotes and add --cli-binary-format raw-in-base64-out.",
+  },
+  RequestTooLargeException: {
+    meaning: "The event you sent is too big.",
+    fix: "Send less data, or store it in S3 and pass its key instead.",
+  },
+  NotFoundException: {
+    meaning: "API Gateway can't find that API, route, integration or stage. IDs are short codes like a1b2c3d4e5, specific to a region.",
+    fix: "List them: aws apigatewayv2 get-apis, then get-routes / get-integrations / get-stages --api-id <id>.",
+  },
+  BadRequestException: {
+    meaning: "API Gateway rejected the request: e.g. a route key that isn't 'METHOD /path' or $default, or an integration without a payload format version.",
+    fix: "Read the message; route keys look like GET /hello or ANY /{proxy+}.",
+  },
+  ConflictException: {
+    meaning: "Something with that key already exists, e.g. a second GET /hello route or a stage name that's taken.",
+    fix: "Change the existing one instead, or use another key.",
+  },
   ValidationError: {
     meaning: "One of the values you entered isn't valid.",
     fix: "Check the highlighted field's message.",

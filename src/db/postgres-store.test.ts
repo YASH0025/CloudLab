@@ -270,4 +270,31 @@ describe("PostgresStore on real Postgres", () => {
     const left = (await run("aws rds describe-db-instances")).DBInstances.map((d: { DBInstanceIdentifier: string }) => d.DBInstanceIdentifier);
     expect(left).toEqual(["pgdb-copy"]);
   });
+
+  it("runs Lambda and API Gateway on Postgres: rate counters, invocation records, public requests", { timeout: 60_000 }, async () => {
+    const accountId = account();
+    const ctx = { engine, accountId, region: REGION };
+    const run = async (line: string) => {
+      const r = await executeCli(line, ctx);
+      if (r.exitCode !== 0) throw new Error(`'${line}' failed: ${r.output}`);
+      return r.output;
+    };
+    const trust = `'{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"lambda.amazonaws.com"},"Action":"sts:AssumeRole"}]}'`;
+    await run(`aws iam create-role --role-name fn --assume-role-policy-document ${trust}`);
+    const fn = await engine.create(accountId, {
+      service: "lambda",
+      type: "function",
+      region: REGION,
+      config: { name: "pg", role: "fn", files: { "index.mjs": "export const handler = async (e) => ({ statusCode: 200, body: 'pg:' + (e.rawPath ?? 'direct') });" } },
+    });
+    advance(2_000);
+    expect((await run("aws lambda invoke --function-name pg /dev/stdout")).split("\n")[0]).toContain("pg:direct");
+    const api = JSON.parse(await run(`aws apigatewayv2 create-api --name pg-api --protocol-type HTTP --target ${fn.id}`));
+    await run(`aws lambda add-permission --function-name pg --statement-id apigw --action lambda:InvokeFunction --principal apigateway.amazonaws.com`);
+    expect(await run(`curl ${api.ApiEndpoint}/from/curl`)).toBe("pg:/from/curl");
+    const stored = await engine.get(accountId, fn.id);
+    expect((stored.attributes.invocations as unknown[]).length).toBe(2);
+    expect(await store.increment("test-counter", 60_000, clock)).toBe(1);
+    expect(await store.increment("test-counter", 60_000, clock)).toBe(2);
+  });
 });

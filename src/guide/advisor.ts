@@ -20,6 +20,7 @@ import {
 import type { Advice, Level, Milestone, Suggestion } from "./types";
 import { loadBalancingProblems } from "./advisor-elb";
 import { databaseAdvice } from "./advisor-rds";
+import { serverlessAdvice } from "./advisor-serverless";
 
 /**
  * The "What's next?" advisor. It looks at what the learner has built in a
@@ -505,10 +506,21 @@ export async function advise(engine: Engine, accountId: string, region: string):
   // ---------- load balancing and Auto Scaling: broken things come first ----------
   const elb = await loadBalancingProblems(engine, accountId, region);
   const rds = await databaseAdvice(engine, accountId, region);
-  out.unshift(...rds.problems, ...elb.problems);
-  out.push(...rds.suggestions);
+  const sls = await serverlessAdvice(engine, accountId, region);
+  out.unshift(...rds.problems, ...sls.problems, ...elb.problems);
+  out.push(...sls.suggestions, ...rds.suggestions);
 
   // ---------- advanced ----------
+  if (reachable && !sls.hasFunction) {
+    push({
+      id: "serverless",
+      level: "intermediate",
+      title: "Build an API without servers",
+      why: "With Lambda and API Gateway, your code runs only when someone calls it: no servers to patch, and nothing to pay while it's idle.",
+      steps: ["Open Guide me → Tutorials and start 'Your first serverless API'."],
+      link: { service: "lambda", type: "function", mode: "list" },
+    });
+  }
   if (reachable && vpc && instance && !rds.hasDatabase) {
     push({
       id: "managed-database",
