@@ -1,8 +1,8 @@
-import { and, arrayContains, desc, eq, like, sql, type SQL } from "drizzle-orm";
+import { and, arrayContains, desc, eq, like, lt, sql, type SQL } from "drizzle-orm";
 import type { PgDatabase } from "drizzle-orm/pg-core";
 import type { ListFilter, ResourceStore } from "@/engine/store";
 import type { Resource } from "@/engine/types";
-import { blobs, claims, resources, type ResourceRow } from "./schema";
+import { blobs, claims, counters, resources, type ResourceRow } from "./schema";
 
 function toResource(row: ResourceRow): Resource {
   return {
@@ -143,6 +143,17 @@ export class PostgresStore implements ResourceStore {
 
   async releaseClaim(key: string) {
     await this.db.delete(claims).where(eq(claims.key, key));
+  }
+
+  async increment(key: string, ttlMs: number, now: Date) {
+    // Now and then, clear out windows that have passed.
+    if (Math.random() < 0.02) await this.db.delete(counters).where(lt(counters.expiresAt, now));
+    const rows = await this.db
+      .insert(counters)
+      .values({ key, count: 1, expiresAt: new Date(now.getTime() + ttlMs) })
+      .onConflictDoUpdate({ target: counters.key, set: { count: sql`${counters.count} + 1` } })
+      .returning({ count: counters.count });
+    return rows[0]?.count ?? 1;
   }
 
   async transferAccount(from: string, to: string) {

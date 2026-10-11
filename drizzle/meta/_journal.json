@@ -36,6 +36,13 @@
       "when": 1791644565597,
       "tag": "0004_local_mode",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1791723859811,
+      "tag": "0005_counters",
+      "breakpoints": true
     }
   ]
 }

@@ -1,6 +1,7 @@
 import {
   boolean,
   index,
+  integer,
   jsonb,
   pgTable,
   text,
@@ -45,6 +46,16 @@ export type ResourceRow = typeof resources.$inferSelect;
 export const claims = pgTable("claims", {
   key: text("key").primaryKey(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
+ * Short-lived counters for rate limits (e.g. Lambda invocations per minute).
+ * Keys include their time window; expired rows are cleaned up opportunistically.
+ */
+export const counters = pgTable("counters", {
+  key: text("key").primaryKey(),
+  count: integer("count").notNull().default(0),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
 });
 
 /**

@@ -21,7 +21,9 @@ export type FieldType =
   /** A JSON document edited as text, e.g. an IAM policy. */
   | "json"
   /** IAM policy ARNs to attach (AWS managed and the account's own). */
-  | "policies";
+  | "policies"
+  /** Source files, as { "path": "contents" } (a Lambda function's code). */
+  | "files";
 
 export interface FieldOption {
   value: string;
@@ -71,6 +73,8 @@ export interface FieldDef {
    * Such references are checked when set but never tracked as dependencies.
    */
   ref?: { service: string; type: string; multiple?: boolean; weak?: boolean; by?: "name" };
+  /** The error when a reference names nothing, if the service words it differently from the target's own "not found". */
+  refNotFound?: (value: string) => { code: string; message: string };
   /**
    * A secret the user types (a database password). Validated, handed to `validate`
    * and `derive`, then dropped: it is never stored or shown again. The console uses
@@ -159,6 +163,8 @@ export interface SystemApi {
   runAction(id: string, action: string): Promise<Resource>;
   /** Merges platform-assigned attributes (e.g. an instance's public IP) without re-validating. */
   setAttributes(id: string, patch: Record<string, unknown>): Promise<void>;
+  /** Deletes a resource, e.g. an API's routes when the API is deleted. */
+  remove(id: string): Promise<void>;
 }
 
 /**
@@ -249,7 +255,7 @@ export interface ResourceTypeDef {
   /** Global service (IAM): not tied to a region. Stored under the region "global". */
   global?: boolean;
   /** Builds the resource ID when the real API's format isn't "<prefix>-<hex>" (IAM's AIDA…, load balancer ARNs). */
-  makeId?: (input: { name: string; region: string; accountId: string }) => string;
+  makeId?: (input: { name: string; region: string; accountId: string; config: Record<string, unknown> }) => string;
   /** What a well-formed ID looks like, when it isn't "<prefix>-<hex>". */
   idPattern?: RegExp;
   /** IAM actions and ARNs for the console's operations, used to check permissions. */

@@ -22,6 +22,8 @@ export interface ResourceStore {
   /** Claims a one-off key; true only for the first caller. Guards one-time setup such as default VPCs. */
   tryClaim(key: string): Promise<boolean>;
   releaseClaim(key: string): Promise<void>;
+  /** Adds one to a short-lived counter and returns the new count (rate limits). */
+  increment(key: string, ttlMs: number, now: Date): Promise<number>;
   /**
    * Moves every resource and claim from one account to another, but only if the
    * target account has nothing yet. Returns how many resources moved.
@@ -72,6 +74,17 @@ export class MemoryStore implements ResourceStore {
 
   async releaseClaim(key: string) {
     this.claims.delete(key);
+  }
+
+  private counters = new Map<string, { count: number; expiresAt: number }>();
+
+  async increment(key: string, ttlMs: number, now: Date) {
+    const t = now.getTime();
+    for (const [k, v] of this.counters) if (v.expiresAt < t) this.counters.delete(k);
+    const c = this.counters.get(key) ?? { count: 0, expiresAt: t + ttlMs };
+    c.count++;
+    this.counters.set(key, c);
+    return c.count;
   }
 
   async transferAccount(from: string, to: string) {

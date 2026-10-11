@@ -6,6 +6,8 @@ import { iamService } from "./services/iam";
 import { loadBalancingService } from "./services/loadbalancing";
 import { networkingService } from "./services/networking";
 import { rdsService } from "./services/rds";
+import { lambdaService } from "./services/lambda";
+import { apiGatewayService } from "./services/apigateway";
 import { objectType, storageService } from "./services/storage";
 import type { FieldDef, ResolvedServiceDef, ResolvedTypeDef, ResourceTypeDef, ServiceDef } from "./types";
 
@@ -16,6 +18,8 @@ export const SERVICES: ServiceDef[] = [
   loadBalancingService,
   autoScalingService,
   rdsService,
+  lambdaService,
+  apiGatewayService,
   storageService,
   iamService,
 ];

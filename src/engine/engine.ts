@@ -190,7 +190,11 @@ export class Engine {
         if (names.length === 0) continue;
         const targets = await ctx.list(field.ref.service, field.ref.type);
         const target = getTypeDef(field.ref.service, field.ref.type);
-        for (const n of names) if (!targets.some((t) => t.name === n)) throw notFoundByNameError(target, n);
+        for (const n of names) {
+          if (targets.some((t) => t.name === n)) continue;
+          const custom = field.refNotFound?.(n);
+          throw custom ? new EngineError(custom.code, custom.message) : notFoundByNameError(target, n);
+        }
         continue;
       }
       const ids = Array.isArray(value) ? (value as string[]) : typeof value === "string" ? [value] : [];
@@ -226,6 +230,7 @@ export class Engine {
       create: (service, type, config, system) => this.create(accountId, { service, type, region, config }, { system, settled: true }),
       update: (id, patch) => this.update(accountId, id, patch),
       runAction: (id, action) => this.runAction(accountId, id, action),
+      remove: (id) => this.remove(accountId, id),
       setAttributes: async (id, patch) => {
         const r = await this.store.get(accountId, id);
         if (!r) return;
@@ -251,6 +256,12 @@ export class Engine {
       throw new EngineError("InvalidID", `The ID '${id}' is not valid`);
     }
     return this.settleAndSave(r);
+  }
+
+  /** A resource by ID in whichever account owns it (public endpoints such as an API's address). */
+  async findAnywhere(id: string): Promise<Resource | null> {
+    const r = await this.store.getAny(id);
+    return r ? this.settleAndSave(r) : null;
   }
 
   /**
@@ -282,7 +293,7 @@ export class Engine {
     const config = await this.validateConfig(def, input.region, input.config ?? {}, null, ctx);
 
     const name = typeof config.name === "string" ? config.name : "";
-    const id = options.id ?? (def.idFromName ? name : def.makeId ? def.makeId({ name, region: input.region, accountId }) : generateId(def.idPrefix));
+    const id = options.id ?? (def.idFromName ? name : def.makeId ? def.makeId({ name, region: input.region, accountId, config }) : generateId(def.idPrefix));
     if (def.idFromName && (await this.store.getAny(id))) {
       throw new EngineError("BucketAlreadyExists", "The requested bucket name is not available.", 409);
     }
@@ -391,6 +402,13 @@ export class Engine {
   async setAttributes(accountId: string, id: string, patch: Record<string, unknown>): Promise<void> {
     const r = await this.store.get(accountId, id);
     if (r) await this.store.update({ ...r, attributes: { ...r.attributes, ...patch }, updatedAt: this.now().toISOString() });
+  }
+
+  /** Counts an event in a time window (rate limits). Returns how many happened in this window, this one included. */
+  countInWindow(key: string, windowMs: number): Promise<number> {
+    const now = this.now();
+    const bucket = Math.floor(now.getTime() / windowMs);
+    return this.store.increment(`${key}:${bucket}`, windowMs * 2, now);
   }
 
   /** Short-lived locks (e.g. one Auto Scaling pass per group at a time). True if acquired. */

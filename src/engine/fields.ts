@@ -10,7 +10,7 @@ import type { FieldDef } from "./types";
  * code the real API would return (MissingParameter, InvalidVpc.Range...).
  */
 
-export type IssueKind = "missing" | "enum" | "cidr-format" | "cidr-range" | "cidr-host-bits";
+export type IssueKind = "missing" | "enum" | "cidr-format" | "cidr-range" | "cidr-host-bits" | "files-size";
 const kind = (k: IssueKind) => ({ kind: k });
 
 // Empty strings and nulls both mean "not set" (null is how a form clears a field over JSON).
@@ -102,6 +102,20 @@ function fieldSchema(field: FieldDef): z.ZodType {
     }
     case "policies":
       return z.array(z.string()).default([]);
+    case "files": {
+      const files = z
+        .record(
+          z.string().regex(/^(?!\/)(?!.*\.\.)[\w.\-/]{1,200}$/, "File names may use letters, numbers, . _ - and / for folders."),
+          z.string(),
+        )
+        .refine((f) => Object.keys(f).length <= MAX_FILES, { message: `At most ${MAX_FILES} files.` })
+        .refine((f) => Object.values(f).reduce((n, c) => n + c.length, 0) <= MAX_CODE_BYTES, {
+          message: `The code is too large: CloudLab allows ${MAX_CODE_BYTES / 1024} KB of source in total.`,
+          params: kind("files-size"),
+        });
+      if (!required) return files.optional();
+      return files.refine((f) => Object.keys(f).length > 0, { message: `${field.label} is required.`, params: kind("missing") });
+    }
     case "json": {
       schema = z.string().refine(
         (v) => {
@@ -139,6 +153,10 @@ function fieldSchema(field: FieldDef): z.ZodType {
   );
 }
 
+/** Limits for "files" fields (a function's source code). */
+export const MAX_FILES = 50;
+export const MAX_CODE_BYTES = 256 * 1024;
+
 export function buildSchema(fields: FieldDef[]) {
   const shape: Record<string, z.ZodType> = {};
   for (const field of fields) {
@@ -158,6 +176,7 @@ export function defaultValues(fields: FieldDef[]): Record<string, unknown> {
     if (field.default !== undefined) values[field.key] = field.default;
     else if (field.type === "boolean") values[field.key] = false;
     else if (field.type === "list" || field.type === "policies" || (field.type === "ref" && field.ref?.multiple)) values[field.key] = [];
+    else if (field.type === "files") values[field.key] = {};
     else if (field.type === "enum" && field.required && field.options?.length) values[field.key] = field.options[0].value;
     else values[field.key] = "";
   }
