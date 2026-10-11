@@ -23,6 +23,7 @@ import { activityCauses, healthySpread, loadHa, type HaState } from "./ha";
 import { loadDb, type DbState } from "./db";
 import { loadServerless, type ServerlessState } from "./serverless";
 import { loadWatch, WATCHED_FUNCTION, type WatchState } from "./watch";
+import { loadDns, TUTORIAL_DOMAIN, type DnsState } from "./dns";
 import { listenersOf } from "@/engine/services/loadbalancing";
 
 /**
@@ -106,6 +107,10 @@ interface Ctx {
   watch(): Promise<WatchState>;
   /** The same, preloaded for tutorials that declare `needsWatch`. */
   watchState?: WatchState;
+  /** The Route 53 tutorial's zone, records and health check (loaded once, on demand). */
+  dns(): Promise<DnsState>;
+  /** The same, preloaded for tutorials that declare `needsDns`. */
+  dnsState?: DnsState;
   /** Runs a reachability check (memoised per instance and input). */
   check(instance: Resource | undefined, input: ReachabilityInput): Promise<ReachabilityResult | null>;
 }
@@ -137,6 +142,8 @@ interface TutorialDef {
   needsServerless?: boolean;
   /** Load the monitoring state before resolving links and text. */
   needsWatch?: boolean;
+  /** Load the Route 53 state before resolving links and text. */
+  needsDns?: boolean;
   steps: StepDef[];
 }
 
@@ -195,6 +202,7 @@ async function buildCtx(engine: Engine, accountId: string, region: string, ident
   let dbData: Promise<DbState> | null = null;
   let slsData: Promise<ServerlessState> | null = null;
   let watchData: Promise<WatchState> | null = null;
+  let dnsData: Promise<DnsState> | null = null;
   const iamList = (type: string) => engine.list(accountId, { service: "iam", type, region: "global" });
   return {
     identity,
@@ -213,6 +221,10 @@ async function buildCtx(engine: Engine, accountId: string, region: string, ident
     watch() {
       watchData ??= loadWatch(engine, accountId, region);
       return watchData;
+    },
+    dns() {
+      dnsData ??= loadDns(engine, accountId, instance?.attributes.publicIp as string | undefined);
+      return dnsData;
     },
     iam() {
       iamData ??= Promise.all([iamList("user"), iamList("group"), iamList("policy")]).then(([users, groups, policies]) => ({ users, groups, policies }));
@@ -1977,7 +1989,113 @@ const WATCH_YOUR_APP: TutorialDef = {
   ],
 };
 
-TUTORIALS.push(SERVERLESS_API, WATCH_YOUR_APP, MANAGED_DATABASE, HIGHLY_AVAILABLE);
+
+const serverIp = (c: Ctx) => (c.instance?.attributes.publicIp as string | undefined) ?? undefined;
+const zoneName = (c: Ctx) => c.dnsState?.zone?.name ?? TUTORIAL_DOMAIN;
+const zoneLink = (c: Ctx): GuideLink | undefined => (c.dnsState?.zone ? { service: "route53", type: "hosted-zone", mode: "detail", id: c.dnsState.zone.id } : undefined);
+
+const REAL_NAME: TutorialDef = {
+  id: "website-real-name",
+  title: "Give your website a real name",
+  level: "intermediate",
+  summary:
+    "Nobody remembers 3.91.12.7. Create a hosted zone for myshop.com, point www.myshop.com at your web server, make the bare domain work too (and meet the CNAME-at-apex rule), then add a health check that watches the site.",
+  minutes: 10,
+  nextId: "highly-available-website",
+  needsDns: true,
+  steps: [
+    {
+      id: "server",
+      title: "Have a web server to name",
+      why: "DNS only gives out addresses; something must answer at the address. This uses the web server from 'Launch your first web server'.",
+      instructions: (c) =>
+        c.instance
+          ? [`Your server ${label(c.instance)} needs a public IP and port 80 open to the internet.`, "If this step isn't ticked, open it and run the HTTP reachability check to see what's missing."]
+          : ["You don't have a web server yet. Do the tutorial 'Launch your first web server' first, then come back."],
+      link: (c) => (c.instance ? { service: "compute", type: "instance", mode: "detail", id: c.instance.id } : { service: "compute", type: "instance", mode: "list" }),
+      check: reachable,
+    },
+    {
+      id: "zone",
+      title: `Create a hosted zone for ${TUTORIAL_DOMAIN}`,
+      why: "A hosted zone is where a domain's records live. Route 53 adds two right away: NS (which name servers answer for the domain) and SOA (who's in charge, and for how long answers may be cached). On AWS you'd also buy the domain and give the registrar these name servers; in CloudLab it works straight away.",
+      instructions: ["Click Take me there.", `Pre-filled: ${TUTORIAL_DOMAIN}. Click Create hosted zone.`, "On its page, look at the NS and SOA records it came with."],
+      link: (c) => zoneLink(c) ?? { service: "route53", type: "hosted-zone", mode: "create", prefill: { name: TUTORIAL_DOMAIN } },
+      cli: () => `aws route53 create-hosted-zone --name ${TUTORIAL_DOMAIN} --caller-reference my-first-zone`,
+      check: async (c) => !!(await c.dns()).zone,
+    },
+    {
+      id: "www",
+      title: (c) => `Point www.${zoneName(c)} at your server`,
+      why: "An A record answers “what's the IPv4 address of this name?”. TTL is how long resolvers may remember the answer: 300 seconds means a change takes up to 5 minutes to reach everyone.",
+      instructions: (c) => ["Click Take me there.", `Pre-filled: name www, type A, value ${serverIp(c) ?? "your server's public IP"}, TTL 300.`, "Click Create record."],
+      link: (c) =>
+        c.dnsState?.www
+          ? { service: "route53", type: "record-set", mode: "detail", id: c.dnsState.www.id }
+          : c.dnsState?.zone
+            ? {
+                service: "route53",
+                type: "record-set",
+                mode: "create",
+                prefill: { zoneId: c.dnsState.zone.id, name: "www", type: "A", ttl: 300, values: [{ value: serverIp(c) ?? "" }], routingPolicy: "simple" },
+              }
+            : undefined,
+      cli: (c) =>
+        c.dnsState?.zone
+          ? `aws route53 change-resource-record-sets --hosted-zone-id ${c.dnsState.zone.id} --change-batch '{"Changes":[{"Action":"CREATE","ResourceRecordSet":{"Name":"www.${zoneName(c)}","Type":"A","TTL":300,"ResourceRecords":[{"Value":"${serverIp(c) ?? "<ip>"}"}]}}]}'`
+          : undefined,
+      check: async (c) => !!(await c.dns()).www,
+    },
+    {
+      id: "visit",
+      title: (c) => `Open www.${zoneName(c)}`,
+      why: "This is what a browser does: ask DNS for the address, then connect to it. If it fails, the test shows which half went wrong: the name or the server.",
+      instructions: (c) => [
+        `On the hosted zone's page, under Test a name, test www.${zoneName(c)}: the DNS answer, then HTTP 200 from your server.`,
+        `Or in the terminal: dig www.${zoneName(c)}, then curl -i http://www.${zoneName(c)}`,
+      ],
+      link: zoneLink,
+      cli: (c) => `curl -i http://www.${zoneName(c)}`,
+      check: async (c) => (await c.dns()).visited,
+    },
+    {
+      id: "apex",
+      title: (c) => `Make ${zoneName(c)} work too`,
+      why: "People also type the bare domain. A CNAME (“this name is really that name”) isn't allowed there: the apex already has NS and SOA records, and a CNAME can't share a name with anything. Route 53's alias records solve it: an A record that copies another name's addresses.",
+      instructions: (c) => [
+        `First, see the rule: create a record with an empty name, type CNAME, value www.${zoneName(c)}. Route 53 refuses: “not permitted at apex”.`,
+        `Now click Take me there: an A record with Alias on, target www.${zoneName(c)}. Create it.`,
+        `Test ${zoneName(c)}: the answer is an A record (TTL 60), no CNAME in sight.`,
+      ],
+      link: (c) =>
+        c.dnsState?.apex
+          ? { service: "route53", type: "record-set", mode: "detail", id: c.dnsState.apex.id }
+          : c.dnsState?.zone
+            ? { service: "route53", type: "record-set", mode: "create", prefill: { zoneId: c.dnsState.zone.id, name: "", type: "A", alias: true, aliasTarget: `www.${zoneName(c)}`, routingPolicy: "simple" } }
+            : undefined,
+      cli: (c) => `dig ${zoneName(c)}`,
+      check: async (c) => !!(await c.dns()).apex,
+    },
+    {
+      id: "health",
+      title: "Watch the site with a health check",
+      why: "A health check calls your server from the internet every 30 seconds. Attached to failover or weighted records, it makes Route 53 stop sending people to a server that's down.",
+      instructions: (c) => [
+        "Click Take me there.",
+        `Pre-filled: HTTP to ${serverIp(c) ?? "your server's IP"} port 80, path /. Click Create health check.`,
+        "Its page shows Healthy. Try closing port 80 in the server's security group: it turns Unhealthy within seconds. (Open it again afterwards.)",
+      ],
+      link: (c) =>
+        c.dnsState?.healthCheck
+          ? { service: "route53", type: "health-check", mode: "detail", id: c.dnsState.healthCheck.id }
+          : { service: "route53", type: "health-check", mode: "create", prefill: { name: "web", type: "HTTP", ipAddress: serverIp(c), port: 80, resourcePath: "/" } },
+      cli: (c) => `aws route53 create-health-check --caller-reference web-check --health-check-config Type=HTTP,IPAddress=${serverIp(c) ?? "<ip>"},Port=80,ResourcePath=/`,
+      check: async (c) => (await c.dns()).healthy,
+    },
+  ],
+};
+
+TUTORIALS.push(SERVERLESS_API, WATCH_YOUR_APP, MANAGED_DATABASE, REAL_NAME, HIGHLY_AVAILABLE);
 
 const info = (t: TutorialDef): TutorialInfo => ({
   id: t.id,
@@ -2009,6 +2127,7 @@ export async function viewTutorial(
   if (t.needsHa) c.haState = await c.ha();
   if (t.needsDb) c.dbState = await c.db();
   if (t.needsServerless) c.slsState = await c.sls();
+  if (t.needsDns) c.dnsState = await c.dns();
   if (t.needsWatch) {
     c.slsState = await c.sls();
     c.watchState = await c.watch();

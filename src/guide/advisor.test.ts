@@ -269,3 +269,23 @@ describe("advisor: monitoring", () => {
     expect(explainError("InvalidParameterInput")?.fix).toContain("Add to dashboard");
   });
 });
+
+describe("advisor: Route 53", () => {
+  it("flags a record pointing at an IP no server has, and a failing health check", { timeout: 30_000 }, async () => {
+    const zone = await engine.create(ACCOUNT, { service: "route53", type: "hosted-zone", region: "global", config: { name: "myshop.com" } });
+    expect((await advise(engine, ACCOUNT, REGION)).more.map((s) => s.id).concat((await next()).id)).toContain(`dns-empty-zone-${zone.id}`);
+    const www = await engine.create(ACCOUNT, {
+      service: "route53",
+      type: "record-set",
+      region: "global",
+      config: { zoneId: zone.id, name: "www", type: "A", ttl: 300, values: [{ value: "203.0.113.77" }], routingPolicy: "simple" },
+    });
+    const s = await next();
+    expect(s.id).toBe(`dns-stale-ip-${www.id}`);
+    expect(s.steps[1]).toContain("Elastic IP");
+    await engine.create(ACCOUNT, { service: "route53", type: "health-check", region: "global", config: { type: "HTTP", ipAddress: "203.0.113.77", port: 80 } });
+    const ids = [(await next()).id, ...(await advise(engine, ACCOUNT, REGION)).more.map((x) => x.id)];
+    expect(ids.some((id) => id.startsWith("health-check-failing-"))).toBe(true);
+    expect(explainError("InvalidChangeBatch")?.fix).toContain("Alias");
+  });
+});

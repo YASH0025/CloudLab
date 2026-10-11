@@ -274,6 +274,39 @@ const EXPLANATIONS: Record<string, ErrorExplanation> = {
     meaning: "That function, policy statement, log group or log stream doesn't exist in this region.",
     fix: "Check the name and region: aws lambda list-functions or aws logs describe-log-groups. Both live in one region. A function's log group appears after its first run.",
   },
+  InvalidChangeBatch: {
+    meaning:
+      "Route 53 refused a record change. Common reasons: a CNAME at the domain itself (the apex), a CNAME next to other records with the same name, a record that already exists, a value that isn't an IP address, or a name outside the zone.",
+    fix: "Read the message in brackets: it names the record. At the apex, use an A record with Alias on instead of a CNAME. To change an existing record, edit it (UPSERT) rather than creating it again.",
+  },
+  NoSuchHostedZone: {
+    meaning: "There's no hosted zone with that ID in your account. Zone IDs look like Z0123456789ABCDEFGHIJ (the /hostedzone/ prefix is optional).",
+    fix: "List your zones with aws route53 list-hosted-zones and copy the ID.",
+  },
+  HostedZoneNotEmpty: {
+    meaning: "A hosted zone can only be deleted once it holds nothing but its own NS and SOA records.",
+    fix: "Delete your other records first (in the console, or with a DELETE change batch), then delete the zone.",
+  },
+  HostedZoneAlreadyExists: {
+    meaning: "Another hosted zone was already created with this caller reference. It's a unique string that stops the same request creating two zones by accident.",
+    fix: "Use a new value for --caller-reference, e.g. the date and time: --caller-reference $(date +%s).",
+  },
+  InvalidDomainName: {
+    meaning: "That isn't a domain Route 53 can host: it has characters not allowed in DNS names, or it's reserved (like example.com, or a bare top-level domain such as com).",
+    fix: "Use letters, digits and hyphens, with dots between parts, e.g. myshop.com.",
+  },
+  NoSuchHealthCheck: {
+    meaning: "There's no health check with that ID. Health check IDs look like a UUID: 1a2b3c4d-….",
+    fix: "List them with aws route53 list-health-checks.",
+  },
+  HealthCheckInUse: {
+    meaning: "A record still uses this health check, so it can't be deleted.",
+    fix: "Edit the record to remove the health check (or delete the record) first.",
+  },
+  InvalidInput: {
+    meaning: "Route 53 rejected a value or a missing field: e.g. a weighted record without a Record ID (SetIdentifier), a record with both an alias and a TTL, or a health check aimed at a private IP.",
+    fix: "Read the message: it names the field. Health checks run on the internet, so they need a public IP or a domain name.",
+  },
   ResourceNotFound: {
     meaning: "CloudWatch can't find that alarm or dashboard. Alarms belong to one region; dashboards are global.",
     fix: "List them: aws cloudwatch describe-alarms or aws cloudwatch list-dashboards, and check the name's spelling and case.",

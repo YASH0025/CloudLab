@@ -22,6 +22,7 @@ import { loadBalancingProblems } from "./advisor-elb";
 import { databaseAdvice } from "./advisor-rds";
 import { serverlessAdvice } from "./advisor-serverless";
 import { monitoringAdvice } from "./advisor-cloudwatch";
+import { dnsAdvice } from "./advisor-route53";
 
 /**
  * The "What's next?" advisor. It looks at what the learner has built in a
@@ -509,8 +510,9 @@ export async function advise(engine: Engine, accountId: string, region: string):
   const rds = await databaseAdvice(engine, accountId, region);
   const sls = await serverlessAdvice(engine, accountId, region);
   const cw = await monitoringAdvice(engine, accountId, region);
-  out.unshift(...rds.problems, ...sls.problems, ...cw.problems, ...elb.problems);
-  out.push(...sls.suggestions, ...rds.suggestions);
+  const dns = await dnsAdvice(engine, accountId);
+  out.unshift(...rds.problems, ...sls.problems, ...cw.problems, ...dns.problems, ...elb.problems);
+  out.push(...sls.suggestions, ...rds.suggestions, ...dns.suggestions);
   if (sls.hasFunction && !cw.hasAlarm) {
     out.push({
       id: "watch-your-app",
@@ -531,6 +533,16 @@ export async function advise(engine: Engine, accountId: string, region: string):
       why: "With Lambda and API Gateway, your code runs only when someone calls it: no servers to patch, and nothing to pay while it's idle.",
       steps: ["Open Guide me → Tutorials and start 'Your first serverless API'."],
       link: { service: "lambda", type: "function", mode: "list" },
+    });
+  }
+  if (reachable && vpc && instance && !dns.hasZone) {
+    push({
+      id: "website-real-name",
+      level: "intermediate",
+      title: "Give your website a real name",
+      why: `People can't remember ${String(instance.attributes.publicIp)}. With Route 53, www.myshop.com can point at your server, and keep working when you move it.`,
+      steps: ["Open Guide me → Tutorials and start 'Give your website a real name'."],
+      link: { service: "route53", type: "hosted-zone", mode: "create", prefill: { name: "myshop.com" } },
     });
   }
   if (reachable && vpc && instance && !rds.hasDatabase) {

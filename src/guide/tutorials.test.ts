@@ -64,9 +64,10 @@ describe("tutorials", () => {
       "serverless-api",
       "watch-your-app",
       "managed-database",
+      "website-real-name",
       "highly-available-website",
     ]);
-    expect(listTutorials().filter((t) => t.level === "intermediate")).toHaveLength(7);
+    expect(listTutorials().filter((t) => t.level === "intermediate")).toHaveLength(8);
     expect(listTutorials().find((t) => t.id === "troubleshoot-reachability")?.nextId).toBe("static-website");
   });
 
@@ -126,6 +127,20 @@ describe("tutorials", () => {
     expect(steps).toBe(8);
     const t = await view(id);
     expect(t.steps.find((s) => s.id === "fire")!.link).toMatchObject({ service: "cloudwatch", type: "alarm", mode: "detail" });
+  });
+
+  it("completes 'Give your website a real name': zone, A record, a visit, an apex alias, a health check", { timeout: 60_000 }, async () => {
+    const { request } = await import("@/engine/route53/dns");
+    await play("first-web-server");
+    const steps = await play("website-real-name", {
+      visit: async () => {
+        const res = await request(engine, ACCOUNT, "http://www.myshop.com/");
+        expect(res).toMatchObject({ kind: "response", status: 200 });
+      },
+    });
+    expect(steps).toBe(6);
+    const apex = (await engine.list(ACCOUNT, { service: "route53", type: "record-set", region: "global" })).find((r) => r.name === "myshop.com" && r.config.type === "A");
+    expect(apex?.config).toMatchObject({ alias: true, aliasTarget: "www.myshop.com" });
   });
 
   it("completes 'A managed database for your web app': private, chained, backed up, Multi-AZ", async () => {
