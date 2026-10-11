@@ -28,7 +28,7 @@ export const MANAGED_POLICIES: ManagedPolicy[] = [
     allow(["iam:CreateServiceLinkedRole", "iam:DeleteServiceLinkedRole", "iam:ListRoles", "organizations:DescribeOrganization", "account:ListRegions"]),
   ]),
   managed("ReadOnlyAccess", "Provides read-only access to AWS services and resources.", [
-    allow(["ec2:Describe*", "ec2:Get*", "s3:Get*", "s3:List*", "iam:Get*", "iam:List*", "iam:Simulate*", "elasticloadbalancing:Describe*", "autoscaling:Describe*", "rds:Describe*", "lambda:Get*", "lambda:List*", "apigateway:GET", "cloudwatch:Describe*", "cloudwatch:Get*", "cloudwatch:List*"]),
+    allow(["ec2:Describe*", "ec2:Get*", "s3:Get*", "s3:List*", "iam:Get*", "iam:List*", "iam:Simulate*", "elasticloadbalancing:Describe*", "autoscaling:Describe*", "rds:Describe*", "lambda:Get*", "lambda:List*", "apigateway:GET", "logs:Describe*", "logs:Get*", "logs:FilterLogEvents", "cloudwatch:Describe*", "cloudwatch:Get*", "cloudwatch:List*"]),
   ]),
   managed("AmazonEC2FullAccess", "Provides full access to Amazon EC2.", [
     allow(["ec2:*", "elasticloadbalancing:*", "cloudwatch:*", "autoscaling:*"]),
@@ -78,6 +78,11 @@ export const MANAGED_POLICIES: ManagedPolicy[] = [
     allow(["apigateway:*"]),
   ]),
   managed("AmazonAPIGatewayInvokeFullAccess", "Provides full access to invoke APIs in Amazon API Gateway.", [allow(["execute-api:Invoke", "execute-api:ManageConnections"])]),
+  managed("CloudWatchFullAccess", "Provides full access to CloudWatch.", [allow(["cloudwatch:*", "logs:*", "autoscaling:Describe*", "sns:*"])]),
+  managed("CloudWatchReadOnlyAccess", "Provides read only access to CloudWatch.", [
+    allow(["cloudwatch:Describe*", "cloudwatch:Get*", "cloudwatch:List*", "logs:Get*", "logs:List*", "logs:Describe*", "logs:FilterLogEvents", "logs:StartQuery", "autoscaling:Describe*"]),
+  ]),
+  managed("CloudWatchLogsFullAccess", "Provides full access to CloudWatch Logs.", [allow(["logs:*", "cloudwatch:GenerateQuery"])]),
   managed("IAMFullAccess", "Provides full access to IAM.", [allow(["iam:*"])]),
   managed("IAMReadOnlyAccess", "Provides read only access to IAM.", [
     allow(["iam:GenerateCredentialReport", "iam:Get*", "iam:List*", "iam:SimulateCustomPolicy", "iam:SimulatePrincipalPolicy"]),

@@ -94,6 +94,16 @@ export function cliChecks(command: Command, args: Args, ctx: CliContext): Check[
     }
   }
 
+  if (command.service === "logs") {
+    const group = args.one("log-group-name") ?? args.positionals[0];
+    if (group && !/^Describe/.test(command.apiName)) return [{ action, resource: `arn:aws:logs:${ctx.region}:${account}:log-group:${group}` }];
+  }
+
+  if (command.service === "cloudwatch" && /Alarm/.test(command.apiName)) {
+    const name = args.one("alarm-name") ?? args.list("alarm-names")[0];
+    if (name) return [{ action, resource: `arn:aws:cloudwatch:${ctx.region}:${account}:alarm:${name}` }];
+  }
+
   if (command.service === "lambda" && command.apiName !== "ListFunctions") {
     const name = args.one("function-name");
     if (name) {
