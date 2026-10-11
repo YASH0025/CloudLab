@@ -2,7 +2,7 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { api, ApiError } from "@/lib/api-client";
+import { api, ApiError, type MetricQuery } from "@/lib/api-client";
 import { queryKeys } from "@/lib/query-keys";
 import { REGIONS } from "@/engine/catalog";
 import { resolveServices } from "@/engine/registry";
@@ -76,6 +76,36 @@ export function useTargetHealth(id: string) {
     queryKey: ["target-health", id],
     queryFn: async () => (await api.targetHealth(id)).targets,
     refetchInterval: 2500,
+  });
+}
+
+/** Metric series for the console's graphs, refreshed every 15 seconds. */
+export function useMetricSeries(queries: MetricQuery[], minutes: number) {
+  const region = useConsoleStore((s) => s.region);
+  return useQuery({
+    queryKey: ["metrics", region, minutes, queries],
+    queryFn: () => api.metrics({ region, minutes, queries }),
+    enabled: queries.length > 0,
+    refetchInterval: 15_000,
+  });
+}
+
+/** A log group's recent events (optionally filtered), refreshed every 5 seconds. */
+export function useLogEvents(group: string, pattern: string, stream: string | null, minutes: number) {
+  const region = useConsoleStore((s) => s.region);
+  return useQuery({
+    queryKey: ["log-events", region, group, pattern, stream, minutes],
+    queryFn: async () => (await api.logEvents({ region, group, pattern, stream: stream ?? undefined, minutes })).events,
+    refetchInterval: 5_000,
+  });
+}
+
+export function useLogStreams(group: string) {
+  const region = useConsoleStore((s) => s.region);
+  return useQuery({
+    queryKey: ["log-streams", region, group],
+    queryFn: async () => (await api.logStreams(region, group)).streams,
+    refetchInterval: 5_000,
   });
 }
 

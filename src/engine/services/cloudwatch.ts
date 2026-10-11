@@ -38,7 +38,7 @@ const alarm: ResourceTypeDef = {
   malformedCode: "ResourceNotFound",
   malformedMessage: (id) => `Alarm ${id} does not exist.`,
   apiNoun: "alarm",
-  panelAttributes: ["history", "stateReasonData", "manualUntil", "alarmActions", "evaluatedAt"],
+  panelAttributes: ["history", "stateReasonData", "manualUntil", "alarmActions", "evaluatedAt", "stateValue", "stateReason", "stateUpdatedTimestamp"],
   fields: [
     { key: "name", label: "Alarm name", type: "string", required: true, immutable: true, maxLength: 255, placeholder: "hello-errors", param: "AlarmName" },
     { key: "description", label: "Description", type: "string", maxLength: 1024, param: "AlarmDescription" },

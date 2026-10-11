@@ -18,6 +18,7 @@ import { ConfirmDialog } from "./confirm-dialog";
 import { AutoScalingPanel, LoadBalancerPanel, TargetHealthPanel } from "./load-balancing-panels";
 import { DatabasePanel, SnapshotPanel } from "./database-panels";
 import { ApiPanel, FunctionPanel } from "./serverless-panels";
+import { AlarmPanel, AlarmStateBadge, DashboardPanel, FunctionLogsCard, LogGroupPanel, MonitoringCard } from "./monitoring-panels";
 import { ObjectsPanel, WebsiteCard } from "./objects-panel";
 import { PermissionChecker } from "./permission-checker";
 import { ReachabilityPanel } from "./reachability-panel";
@@ -183,7 +184,8 @@ export function ResourceDetailView() {
         <div className="mt-1 flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-3">
             <h1 className="text-2xl font-semibold tracking-tight">{item.name || item.id}</h1>
-            <StateBadge state={item.state} pending={item.pendingState} />
+            {item.state && <StateBadge state={item.state} pending={item.pendingState} />}
+            {item.type === "alarm" && typeof item.attributes.stateValue === "string" && <AlarmStateBadge state={item.attributes.stateValue} />}
             {systemBadge && (
               <Badge variant="secondary" title="Created by the platform, as in a real AWS account">
                 {systemBadge}
@@ -209,6 +211,11 @@ export function ResourceDetailView() {
         </div>
         <p className="font-mono text-xs text-muted-foreground">{item.id}</p>
       </div>
+
+      {/* For CloudWatch resources the graphs and logs are the point of the page, so they come first. */}
+      {item.service === "cloudwatch" && item.type === "alarm" && <AlarmPanel alarm={item} />}
+      {item.service === "cloudwatch" && item.type === "dashboard" && <DashboardPanel dashboard={item} />}
+      {item.service === "logs" && item.type === "log-group" && <LogGroupPanel group={item} />}
 
       <div className="grid gap-5 lg:grid-cols-2">
         <Card>
@@ -285,6 +292,8 @@ export function ResourceDetailView() {
       {item.type === "db-snapshot" && <SnapshotPanel snapshot={item} />}
       {item.service === "lambda" && item.type === "function" && <FunctionPanel fn={item} />}
       {item.service === "apigateway" && item.type === "api" && <ApiPanel api={item} />}
+      {item.service === "lambda" && item.type === "function" && <FunctionLogsCard fn={item} />}
+      <MonitoringCard item={item} />
       {item.service === "iam" && (item.type === "user" || item.type === "group" || item.type === "role") && (
         <PermissionChecker kind={item.type} name={item.name} />
       )}

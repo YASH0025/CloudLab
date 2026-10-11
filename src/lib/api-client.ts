@@ -5,6 +5,23 @@ import type { Advice, TutorialInfo, TutorialView } from "@/guide/types";
 import type { Evaluation } from "@/engine/iam/policy";
 import { useConsoleStore } from "@/stores/console-store";
 
+export interface MetricQuery {
+  id: string;
+  namespace: string;
+  name: string;
+  dimensions: { Name: string; Value: string }[];
+  stat: "Average" | "Sum" | "Minimum" | "Maximum" | "SampleCount";
+  period?: number;
+}
+
+export interface MetricSeries {
+  id: string;
+  period: number;
+  unit: string | null;
+  simulated: boolean;
+  points: { t: number; v: number }[];
+}
+
 export interface IamPolicyOption {
   name: string;
   arn: string;
@@ -118,6 +135,19 @@ export const api = {
       method: "POST",
       body: JSON.stringify(input),
     }),
+
+  metrics: (input: { region: string; minutes: number; queries: MetricQuery[] }) =>
+    request<{ series: MetricSeries[]; from: number; to: number; account: string }>(`/api/metrics/query`, { method: "POST", body: JSON.stringify(input) }),
+
+  logEvents: (q: { region: string; group: string; pattern?: string; stream?: string; minutes?: number }) =>
+    request<{ events: { id: number; stream: string; timestamp: number; ingestedAt: number; message: string }[] }>(
+      `/api/logs/events?${new URLSearchParams(Object.entries(q).filter(([, v]) => v !== undefined && v !== "").map(([k, v]) => [k, String(v)]))}`,
+    ),
+
+  logStreams: (region: string, group: string) =>
+    request<{ streams: { stream: string; firstEventTimestamp: number; lastEventTimestamp: number; storedBytes: number }[] }>(
+      `/api/logs/streams?region=${encodeURIComponent(region)}&group=${encodeURIComponent(group)}`,
+    ),
 
   invoke: (id: string, event: unknown) =>
     request<{ result: InvokeResult }>(`/api/resources/${encodeURIComponent(id)}/invoke`, { method: "POST", body: JSON.stringify({ event }) }),
