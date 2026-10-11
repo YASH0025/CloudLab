@@ -9,7 +9,7 @@ export interface LastError {
   at: number;
 }
 
-export type GuideTab = "tutorials" | "next";
+export type GuideTab = "tutorials" | "challenges" | "next";
 
 interface GuideState {
   open: boolean;

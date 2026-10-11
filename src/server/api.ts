@@ -36,6 +36,19 @@ export const userAccountId = (userId: string) => `u_${userId}`;
  * were using moves into their account.
  */
 export async function getAccountId(): Promise<string> {
+  const lab = await getLabAccountId();
+  // Challenges run in a separate account of their own, so they can't touch the learner's lab.
+  return (await headers()).get(WORKSPACE_HEADER) === "challenge" ? challengeAccountId(lab) : lab;
+}
+
+/** The console and terminal say which workspace they're in: the learner's lab, or the current challenge. */
+export const WORKSPACE_HEADER = "x-cloudlab-workspace";
+
+/** The account a learner's challenges are built in. */
+export const challengeAccountId = (labAccountId: string) => `${labAccountId}~challenge`;
+
+/** The learner's own lab account, whatever workspace the console is in. */
+export async function getLabAccountId(): Promise<string> {
   const jar = await cookies();
   const anonymous = jar.get(ACCOUNT_COOKIE)?.value;
 

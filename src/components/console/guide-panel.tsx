@@ -14,6 +14,7 @@ import {
   RefreshCwIcon,
   RotateCcwIcon,
   SquareTerminalIcon,
+  SwordsIcon,
   TriangleAlertIcon,
   XIcon,
 } from "lucide-react";
@@ -32,6 +33,8 @@ import { useGuide, useTutorial, useTutorials } from "@/hooks/use-cloud";
 import { routes } from "@/lib/routes";
 import { cn } from "@/lib/utils";
 import { useGuideStore, type GuideTab } from "@/stores/guide-store";
+import { useConsoleStore } from "@/stores/console-store";
+import { ChallengesTab } from "./challenge-panel";
 
 const levelLabel: Record<Level, string> = {
   beginner: "Beginner",
@@ -418,7 +421,10 @@ function TutorialsTab() {
 export function GuidePanel() {
   const open = useGuideStore((s) => s.open);
   const setOpen = useGuideStore((s) => s.setOpen);
-  const tab = useGuideStore((s) => s.tab);
+  const storedTab = useGuideStore((s) => s.tab);
+  const inChallenge = useConsoleStore((s) => s.workspace === "challenge");
+  // "Next step" would give a challenge's answer away, so it's hidden while one is being played.
+  const tab = inChallenge && storedTab === "next" ? "challenges" : storedTab;
   const setTab = useGuideStore((s) => s.setTab);
   const queryClient = useQueryClient();
   // Spins only for a manual refresh, not for the background polling.
@@ -460,15 +466,23 @@ export function GuidePanel() {
             <TabsTrigger value="tutorials">
               <BookOpenIcon /> Tutorials
             </TabsTrigger>
-            <TabsTrigger value="next">
-              <CompassIcon /> Next step
+            <TabsTrigger value="challenges">
+              <SwordsIcon /> Challenges
             </TabsTrigger>
+            {!inChallenge && (
+              <TabsTrigger value="next">
+                <CompassIcon /> Next step
+              </TabsTrigger>
+            )}
           </TabsList>
         </div>
         <div className="relative min-h-0 flex-1 space-y-5 overflow-y-auto p-4">
           <LastErrorCard />
           <TabsContent value="tutorials">
             <TutorialsTab />
+          </TabsContent>
+          <TabsContent value="challenges">
+            <ChallengesTab />
           </TabsContent>
           <TabsContent value="next">
             <NextStepTab />

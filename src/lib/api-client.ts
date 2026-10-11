@@ -34,6 +34,27 @@ export interface DnsTestResult {
   http?: { ok: true; status: number; statusText: string; servedBy: string; contentType: string | null; body: string } | { ok: false; error: string; reason: string };
 }
 
+export interface ChallengeInfo {
+  id: string;
+  title: string;
+  level: "beginner" | "intermediate" | "advanced";
+  minutes: number;
+  summary: string;
+}
+
+export interface ChallengeView extends ChallengeInfo {
+  region: string;
+  story: string;
+  goal: string;
+  facts: string[];
+  tools: string[];
+  hints: string[];
+  hintCount: number;
+  solved: boolean;
+  explanation?: string;
+  status?: string;
+}
+
 export interface IamPolicyOption {
   name: string;
   arn: string;
@@ -69,7 +90,8 @@ export class ApiError extends Error {
 
 /** The IAM identity the console is acting as, sent with every request so permissions apply. */
 export function identityHeader(): Record<string, string> {
-  return { "x-cloudlab-identity": useConsoleStore.getState().identity || "root" };
+  const { identity, workspace } = useConsoleStore.getState();
+  return { "x-cloudlab-identity": identity || "root", "x-cloudlab-workspace": workspace ?? "lab" };
 }
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
@@ -147,6 +169,10 @@ export const api = {
       method: "POST",
       body: JSON.stringify(input),
     }),
+
+  challenges: () => request<{ challenges: ChallengeInfo[] }>(`/api/challenges`),
+  challenge: (id: string, hints: number) => request<{ challenge: ChallengeView }>(`/api/challenges/${encodeURIComponent(id)}?hints=${hints}`),
+  startChallenge: (id: string) => request<{ challenge: ChallengeView }>(`/api/challenges/${encodeURIComponent(id)}`, { method: "POST" }),
 
   dnsTest: (input: { name: string; type: string; http: boolean; path?: string }) =>
     request<DnsTestResult>(`/api/route53/test`, { method: "POST", body: JSON.stringify(input) }),

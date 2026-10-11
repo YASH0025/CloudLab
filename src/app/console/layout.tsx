@@ -1,4 +1,5 @@
 import { Suspense } from "react";
+import { ChallengeBanner } from "@/components/console/challenge-panel";
 import { GuidePanel } from "@/components/console/guide-panel";
 import { Sidebar } from "@/components/console/sidebar";
 import { Topbar } from "@/components/console/topbar";
@@ -14,6 +15,7 @@ export default function ConsoleLayout({ children }: LayoutProps<"/console">) {
       </Suspense>
       <div className="flex min-w-0 flex-1 flex-col">
         <Topbar />
+        <ChallengeBanner />
         {/* relative + min-h-0: hidden form controls (Radix checkboxes, selects) are positioned inside the
             scroll area instead of stretching the whole page and adding a second scrollbar. */}
         <main className="relative min-h-0 flex-1 overflow-y-auto">

@@ -535,6 +535,15 @@ export async function advise(engine: Engine, accountId: string, region: string):
       link: { service: "lambda", type: "function", mode: "list" },
     });
   }
+  if (reachable && vpc && instance) {
+    push({
+      id: "challenges",
+      level: "beginner",
+      title: "Test yourself: fix a broken setup",
+      why: "Following steps is the easy part. Challenges give you a broken setup and a symptom, like a real support ticket, and you find the cause yourself. They run in a separate account, so your lab stays as it is.",
+      steps: ["Open Guide me → Challenges and start 'The shop is down'."],
+    });
+  }
   if (reachable && vpc && instance && !dns.hasZone) {
     push({
       id: "website-real-name",

@@ -45,7 +45,7 @@ async function serve(request: NextRequest, ctx: RouteContext<"/apigw/[apiId]/[[.
       if (theirs) headers.cookie = theirs;
       return;
     }
-    if (key.startsWith("x-vercel") || key === "x-cloudlab-identity") return;
+    if (key.startsWith("x-vercel") || key === "x-cloudlab-identity" || key === "x-cloudlab-workspace") return;
     headers[key] = value;
   });
 

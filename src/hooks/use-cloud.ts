@@ -90,6 +90,36 @@ export function useMetricSeries(queries: MetricQuery[], minutes: number) {
   });
 }
 
+export function useChallenges() {
+  return useQuery({ queryKey: ["challenges"], queryFn: async () => (await api.challenges()).challenges, staleTime: Infinity });
+}
+
+/** The current challenge, re-checked every 5 seconds until it's solved. */
+export function useChallenge(id: string, hints: number) {
+  return useQuery({
+    queryKey: ["challenge", id, hints],
+    queryFn: async () => (await api.challenge(id, hints)).challenge,
+    refetchInterval: (q) => (q.state.data?.solved ? false : 5_000),
+  });
+}
+
+/** Builds a challenge's broken setup in the challenge account and switches the console to it. */
+export function useStartChallenge() {
+  const qc = useQueryClient();
+  const setChallenge = useConsoleStore((s) => s.setChallenge);
+  const setRegion = useConsoleStore((s) => s.setRegion);
+  return useMutation({
+    mutationFn: (id: string) => api.startChallenge(id),
+    onSuccess: ({ challenge }) => {
+      setChallenge({ id: challenge.id, startedAt: Date.now(), hintsUsed: 0 });
+      setRegion(challenge.region);
+      // Everything cached so far belongs to the other workspace.
+      qc.resetQueries();
+    },
+    onError,
+  });
+}
+
 /** Asks the resolver about a name (and optionally fetches it like curl). Errors show inline. */
 export function useDnsTest() {
   const qc = useQueryClient();
