@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { targetHealth } from "./analysis/health";
 import type { Engine } from "./engine";
 import { EngineError } from "./errors";
@@ -25,6 +26,48 @@ export interface Activity {
 
 /** Scale-in waits this long after the last change, so the group doesn't flap. */
 export const SCALE_IN_COOLDOWN_MS = 20_000;
+
+/**
+ * A target tracking policy comes with two CloudWatch alarms, as in AWS:
+ * AlarmHigh (CPU above the target for 3 minutes) and AlarmLow (below 90% of it
+ * for 15 minutes). CloudLab scales straight away, so these are there to watch.
+ */
+export async function syncTargetTrackingAlarms(engine: Engine, accountId: string, group: Resource) {
+  const existing = (await engine.list(accountId, { service: "cloudwatch", type: "alarm", region: group.region })).filter(
+    (a) => systemOf(a).managedBy === group.id,
+  );
+  const target = group.config.targetCpu ? Number(group.config.targetCpu) : null;
+  if (!target) {
+    for (const a of existing) await engine.remove(accountId, a.id);
+    return;
+  }
+  const suffix = createHash("sha1").update(group.id).digest("hex");
+  const id = `${suffix.slice(0, 8)}-${suffix.slice(8, 12)}-${suffix.slice(12, 16)}-${suffix.slice(16, 20)}-${suffix.slice(20, 32)}`;
+  const specs = [
+    { kind: "AlarmHigh", threshold: target, comparisonOperator: "GreaterThanThreshold", evaluationPeriods: 3 },
+    { kind: "AlarmLow", threshold: +(target * 0.9).toFixed(2), comparisonOperator: "LessThanThreshold", evaluationPeriods: 15 },
+  ];
+  for (const spec of specs) {
+    const name = `TargetTracking-${group.name}-${spec.kind}-${id}`;
+    const config = {
+      name,
+      description: `DO NOT EDIT OR DELETE. For TargetTrackingScaling policy ${String(group.attributes.policyName ?? "cpu-target-tracking")} on ${group.name}.`,
+      namespace: "AWS/EC2",
+      metricName: "CPUUtilization",
+      dimensions: [{ name: "AutoScalingGroupName", value: group.name }],
+      statistic: "Average",
+      period: 60,
+      evaluationPeriods: spec.evaluationPeriods,
+      comparisonOperator: spec.comparisonOperator,
+      threshold: spec.threshold,
+      treatMissingData: "missing",
+      actionsEnabled: true,
+    };
+    const found = existing.find((a) => a.name === name);
+    if (!found) await engine.create(accountId, { service: "cloudwatch", type: "alarm", region: group.region, config }, { system: { managedBy: group.id } });
+    else if (Number(found.config.threshold) !== spec.threshold) await engine.update(accountId, found.id, { threshold: spec.threshold });
+  }
+}
 
 export async function reconcileScaling(engine: Engine, accountId: string, region: string, now: Date): Promise<void> {
   const groups = await engine.list(accountId, { service: "autoscaling", type: "auto-scaling-group", region });
@@ -178,6 +221,7 @@ async function reconcileGroup(engine: Engine, accountId: string, group: Resource
   }
 
   await engine.metrics.autoScalingCpu(group, await members(), averageCpu);
+  await syncTargetTrackingAlarms(engine, accountId, await engine.get(accountId, group.id));
   const previous = (group.attributes.activities as Activity[] | undefined) ?? [];
   await engine.setAttributes(accountId, group.id, {
     instanceCount: alive.length,

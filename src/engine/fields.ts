@@ -34,7 +34,8 @@ function fieldSchema(field: FieldDef): z.ZodType {
       break;
     }
     case "number": {
-      let n = z.number({ error: `${field.label} must be a number.` }).int(`${field.label} must be a whole number.`);
+      let n = z.number({ error: `${field.label} must be a number.` });
+      if (!field.decimal) n = n.int(`${field.label} must be a whole number.`);
       if (field.min !== undefined) n = n.min(field.min, `${field.label} must be at least ${field.min}.`);
       if (field.max !== undefined) n = n.max(field.max, `${field.label} must be at most ${field.max}.`);
       const toNumber = (v: unknown) => {

@@ -254,6 +254,8 @@ const autoScalingGroup: ResourceTypeDef = {
     const members = (await ctx.list("compute", "instance")).filter(
       (i) => systemOf(i).managedBy === resource.id && i.state !== "terminated" && i.state !== "shutting-down",
     );
+    // Its target tracking alarms go with it.
+    for (const a of (await ctx.list("cloudwatch", "alarm")).filter((x) => systemOf(x).managedBy === resource.id)) await system.remove(a.id);
     if (members.length === 0) return;
     if (!force) {
       throw new EngineError(

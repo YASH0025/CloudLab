@@ -132,6 +132,11 @@ describe("auto scaling", () => {
     await tick();
     await tick(10_000);
     expect(await instances()).toHaveLength(2);
+    // Target tracking comes with its two CloudWatch alarms, as in AWS.
+    const alarms = (await engine.list(A, { service: "cloudwatch", type: "alarm", region: R })).map((a) => a.name).sort();
+    expect(alarms).toHaveLength(2);
+    expect(alarms[0]).toMatch(/^TargetTracking-web-asg-AlarmHigh-[0-9a-f-]{36}$/);
+    expect(alarms[1]).toMatch(/^TargetTracking-web-asg-AlarmLow-/);
 
     await engine.update(A, asg.id, { simulatedTraffic: "spike" });
     await tick(1_000);

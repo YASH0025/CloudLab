@@ -53,6 +53,8 @@ export interface FieldDef {
   patternMessage?: string;
   /** number */
   min?: number;
+  /** number: allow decimals (e.g. an alarm threshold of 0.5). */
+  decimal?: boolean;
   max?: number;
   /** enum */
   options?: FieldOption[];

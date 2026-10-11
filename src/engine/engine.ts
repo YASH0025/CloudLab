@@ -8,6 +8,7 @@ import { ObjectStorage } from "./objects";
 import { Metrics } from "./telemetry/metrics";
 import { Logs } from "./telemetry/logs";
 import { reconcileScaling } from "./scaling";
+import { evaluateAlarms } from "./telemetry/alarms";
 import { allTypes, getTypeDef, resolveTypeDef } from "./registry";
 import type { ResourceStore } from "./store";
 import {
@@ -563,6 +564,8 @@ export class Engine {
     if (!isRegion(region)) return;
     // Auto Scaling looks after its groups whenever the region is used (there are no background jobs).
     await reconcileScaling(this, accountId, region, this.now());
+    // CloudWatch alarms are evaluated the same way.
+    await evaluateAlarms(this, accountId, region, this.now());
     if (!(await this.store.tryClaim(`default-vpc:${accountId}:${region}`))) return;
     if (!(await this.defaultVpc(accountId, region))) await this.createDefaultVpc(accountId, region);
   }
