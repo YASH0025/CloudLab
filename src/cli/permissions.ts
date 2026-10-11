@@ -28,6 +28,10 @@ const EC2_ID_OPTIONS: [string, string][] = [
   ["nat-gateway-id", "natgateway"],
   ["key-pair-id", "key-pair"],
   ["launch-template-id", "launch-template"],
+  ["volume-id", "volume"],
+  ["volume-ids", "volume"],
+  ["snapshot-id", "snapshot"],
+  ["snapshot-ids", "snapshot"],
 ];
 
 const IAM_PREFIX: Record<string, string> = { elbv2: "elasticloadbalancing" };
@@ -50,7 +54,8 @@ export function cliChecks(command: Command, args: Args, ctx: CliContext): Check[
     if (!COLLECTION.test(command.apiName)) {
       for (const [option, kind] of EC2_ID_OPTIONS) {
         const ids = args.list(option);
-        if (ids.length) return ids.map((id) => ({ action, resource: `arn:aws:ec2:${ctx.region}:${account}:${kind}/${id}` }));
+        // Snapshot ARNs have no account: arn:aws:ec2:<region>::snapshot/snap-….
+        if (ids.length) return ids.map((id) => ({ action, resource: `arn:aws:ec2:${ctx.region}:${kind === "snapshot" ? "" : account}:${kind}/${id}` }));
       }
     }
     return [{ action, resource: "*" }];

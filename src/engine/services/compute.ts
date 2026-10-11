@@ -5,6 +5,7 @@ import { generateId } from "../ids";
 import { generateKey, type KeyType } from "../keys";
 import type { Resource, ResourceTypeDef, ServiceDef, SystemApi } from "../types";
 import { launchTemplate } from "./autoscaling";
+import { createRootVolume, releaseVolumes, snapshot, volume } from "./ebs";
 import { freePublicIp, nextPrivateIp } from "./ips";
 
 /** Whether an instance gets an automatic public IP when it runs (launch setting or subnet default). */
@@ -258,9 +259,14 @@ const instance: ResourceTypeDef = {
    * instance stops and a new one is assigned when it starts. An Elastic IP stays
    * through stop and start, and is disassociated when the instance terminates.
    */
+  /** Every instance boots from its own root volume (EBS). */
+  async afterCreate({ resource, system }) {
+    await createRootVolume(system, resource);
+  },
   async onSettled({ resource, system }) {
     const elasticIp = resource.attributes.elasticIp as string | null | undefined;
     if (resource.state === "terminated") {
+      await releaseVolumes(system, resource.id);
       for (const eip of await system.list("compute", "elastic-ip")) {
         if (eip.config.instanceId === resource.id) await system.update(eip.id, { instanceId: null });
       }
@@ -394,7 +400,7 @@ export const computeService: ServiceDef = {
   id: "compute",
   label: "Compute",
   modelledOn: "EC2",
-  description: "Virtual servers you launch, stop, start and terminate, with their key pairs and Elastic IPs.",
+  description: "Virtual servers you launch, stop, start and terminate, with their disks (EBS volumes and snapshots), key pairs and Elastic IPs.",
   category: "Compute",
-  types: [instance, keyPair, elasticIp, launchTemplate],
+  types: [instance, volume, snapshot, keyPair, elasticIp, launchTemplate],
 };

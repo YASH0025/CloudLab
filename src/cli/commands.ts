@@ -13,6 +13,7 @@ import { LAMBDA_COMMANDS } from "./lambda";
 import { APIGATEWAY_COMMANDS } from "./apigateway";
 import { CLOUDWATCH_COMMANDS, LOGS_COMMANDS } from "./cloudwatch";
 import { ROUTE53_COMMANDS } from "./route53";
+import { EBS_COMMANDS } from "./ebs";
 
 export interface CliContext {
   engine: Engine;
@@ -1003,6 +1004,9 @@ export const COMMANDS: Command[] = [
       await ctx.engine.remove(ctx.accountId, eip.id);
     },
   }),
+
+  // --- EBS volumes and snapshots ---
+  ...EBS_COMMANDS,
 
   // --- Load balancing, launch templates and Auto Scaling ---
   ...ELB_COMMANDS,
