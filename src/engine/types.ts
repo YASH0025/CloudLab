@@ -83,6 +83,8 @@ export interface FieldDef {
    * a password input. Empty on update means "unchanged".
    */
   secret?: boolean;
+  /** Only shown in the console form while another field has one of these values (e.g. TTL only when not an alias). */
+  showWhen?: { field: string; in: unknown[] };
   /** list: shape of each item */
   item?: FieldDef[];
   maxItems?: number;
@@ -284,6 +286,11 @@ export interface ResourceTypeDef {
   dependencyError?: (id: string) => EngineError;
   /** Message when deletion is blocked by dependents. Defaults to "The <noun> '<id>' has dependencies and cannot be deleted." */
   dependencyMessage?: (id: string) => string;
+  /**
+   * Rewrites validated settings into their canonical form before `validate` and
+   * storage, e.g. a DNS record name "www" → "www.example.com".
+   */
+  normalize?: (input: { config: Record<string, unknown>; ctx: HookContext }) => Promise<Record<string, unknown>>;
   /** Extra checks beyond field validation. Throw EngineError to reject. */
   validate?: (input: {
     config: Record<string, unknown>;
@@ -349,6 +356,7 @@ export type ResolvedTypeDef = Omit<
   | "malformedMessage"
   | "notFoundByNameMessage"
   | "beforeAction"
+  | "normalize"
 >;
 
 export interface ResolvedServiceDef extends Omit<ServiceDef, "types"> {

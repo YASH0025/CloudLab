@@ -185,7 +185,8 @@ export class Engine {
       const details = parsed.error.issues.map((i) => ({ field: i.path.join("."), message: i.message }));
       throw issueToError(def, parsed.error.issues[0], config, region, details);
     }
-    const clean = parsed.data as Record<string, unknown>;
+    let clean = parsed.data as Record<string, unknown>;
+    if (def.normalize) clean = await def.normalize({ config: clean, ctx });
 
     // Referenced resources must be well-formed IDs of the right type, in this region and still in use.
     for (const field of def.fields) {

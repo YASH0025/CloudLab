@@ -1,13 +1,13 @@
-import type { Engine } from "@/engine/engine";
-import { handleApiRequest } from "@/engine/apigw/handle";
+import { request } from "@/engine/route53/dns";
+import type { CliContext } from "./commands";
 import type { CliResult } from "./execute";
 
 /**
- * A small `curl` for the terminal, so you can call your HTTP APIs without
- * leaving it. It reaches API Gateway addresses only
- * (https://<api-id>.execute-api.<region>.cloudlab.local/…, or CloudLab's
- * /apigw/<api-id>/… form); anything else "can't be resolved", since the
- * terminal has no internet access.
+ * A small `curl` for the terminal. Names are looked up like on the internet
+ * (your Route 53 hosted zones, plus the names AWS gives your resources), so it
+ * reaches API Gateway endpoints, load balancers, S3 websites and servers'
+ * public IPs, directly or through your own domain. Anything else "can't be
+ * resolved", since the terminal has no internet access.
  */
 
 const STATUS: Record<number, string> = {
@@ -27,7 +27,7 @@ const STATUS: Record<number, string> = {
   503: "Service Unavailable",
 };
 
-export async function runCurl(tokens: string[], engine: Engine): Promise<CliResult> {
+export async function runCurl(tokens: string[], ctx: CliContext): Promise<CliResult> {
   let method: string | undefined;
   let body = "";
   let include = false;
@@ -60,42 +60,23 @@ export async function runCurl(tokens: string[], engine: Engine): Promise<CliResu
   }
   if (!url) return { output: "curl: no URL specified!\ncurl: try 'curl --help' for more information", exitCode: 2, changed: false };
 
-  let parsed: URL;
-  try {
-    parsed = new URL(/^https?:\/\//.test(url) ? url : `https://${url}`);
-  } catch {
-    return { output: `curl: (3) URL rejected: Malformed input to a URL function`, exitCode: 3, changed: false };
-  }
-  let apiId: string | undefined;
-  let path = parsed.pathname;
-  const host = /^([a-z0-9]{10})\.execute-api\.[a-z0-9-]+\.cloudlab\.local$/.exec(parsed.hostname);
-  if (host) apiId = host[1];
-  else {
-    const m = /^\/apigw\/([a-z0-9]{10})(\/.*)?$/.exec(parsed.pathname);
-    if (m) {
-      apiId = m[1];
-      path = m[2] ?? "/";
-    }
-  }
-  if (!apiId) {
-    return {
-      output: `curl: (6) Could not resolve host: ${parsed.hostname}\n(CloudLab's terminal can only reach your API Gateway endpoints, like https://<api-id>.execute-api.<region>.cloudlab.local/hello)`,
-      exitCode: 6,
-      changed: false,
-    };
+  // CloudLab's own form of an API's address: /apigw/<api-id>/… → the API's real name.
+  const apigw = /^(?:https?:\/\/[^/]+)?\/apigw\/([a-z0-9]{10})(\/[^?]*)?(\?.*)?$/.exec(url);
+  if (apigw) {
+    const api = await ctx.engine.findAnywhere(apigw[1]);
+    url = `https://${apigw[1]}.execute-api.${api?.region ?? ctx.region}.cloudlab.local${apigw[2] ?? "/"}${apigw[3] ?? ""}`;
   }
 
-  const res = await handleApiRequest(engine, {
-    apiId,
-    method: method ?? (body ? "POST" : "GET"),
-    path,
-    query: parsed.search.replace(/^\?/, ""),
-    headers: { host: parsed.host, ...headers },
-    body,
-    sourceIp: "198.51.100.23",
-  });
+  const res = await request(ctx.engine, ctx.accountId, url, { method: method ?? (body ? "POST" : "GET"), headers, body });
+  if (res.kind === "error") {
+    const hint =
+      res.exitCode === 6
+        ? "\n(CloudLab's terminal has no internet: it reaches your API Gateway endpoints, load balancers, S3 websites and servers, and names in your Route 53 hosted zones.)"
+        : "";
+    return { output: `${res.message}${hint}`, exitCode: res.exitCode, changed: false };
+  }
   const text = res.isBase64 ? `[${Buffer.from(res.body, "base64").length} bytes of binary data]` : res.body;
   if (!include) return { output: text, exitCode: 0, changed: true };
-  const head = [`HTTP/2 ${res.status} ${STATUS[res.status] ?? ""}`.trimEnd(), ...Object.entries(res.headers).map(([k, v]) => `${k}: ${v}`)];
+  const head = [`HTTP/${url.startsWith("https") ? "2" : "1.1"} ${res.status} ${STATUS[res.status] ?? res.statusText}`.trimEnd(), ...Object.entries(res.headers).map(([k, v]) => `${k}: ${v}`)];
   return { output: `${head.join("\n")}\n\n${text}`, exitCode: 0, changed: true };
 }

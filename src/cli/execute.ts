@@ -5,6 +5,7 @@ import { authorize } from "@/engine/iam/authorize";
 import { applyQuery, formatOutput, QueryError } from "./output";
 import { cliChecks } from "./permissions";
 import { runCurl } from "./curl";
+import { runDig, runNslookup } from "./dns";
 import { ClientSideError, LocalPathError, parseAws, tokenize, UsageError } from "./parse";
 
 export interface CliResult {
@@ -78,7 +79,8 @@ function helpText(service?: string): string {
     ...servicesList().map((s) => `  aws ${s} help`),
     "",
     "Global options: --region <region>, --query <jmespath>, --output json|text",
-    "Also: curl <your API's URL> to call an API Gateway endpoint (-X, -d, -H, -i).",
+    "Also: curl <url> (-X, -d, -H, -i) to call your APIs, load balancers, S3 websites and servers,",
+    "      dig <name> [type] and nslookup <name> to see what a name resolves to.",
     "Terminal keys: ↑/↓ history, Ctrl+C cancel line, Ctrl+L or 'clear' to clear.",
     "",
     "Try:",
@@ -107,12 +109,14 @@ export async function executeCli(line: string, ctx: CliContext): Promise<CliResu
       changed: false,
     };
   }
-  if (tokens[0] === "curl") return runCurl(tokens, ctx.engine);
+  if (tokens[0] === "curl") return runCurl(tokens, ctx);
+  if (tokens[0] === "dig") return runDig(tokens, ctx);
+  if (tokens[0] === "nslookup") return runNslookup(tokens, ctx);
   if (tokens[0] === "help" || (tokens[0] === "aws" && (tokens.length === 1 || tokens[1] === "help"))) {
     return { output: helpText(), exitCode: 0, changed: false };
   }
   if (tokens[0] !== "aws") {
-    return { output: `${tokens[0]}: command not found. Commands start with 'aws' (or curl, for your APIs). Try 'help'.`, exitCode: 127, changed: false };
+    return { output: `${tokens[0]}: command not found. Commands start with 'aws' (or curl, dig, nslookup). Try 'help'.`, exitCode: 127, changed: false };
   }
   if (tokens[2] === "help" && tokens.length === 3) {
     if (!servicesList().includes(tokens[1])) return usageError(`argument command: Invalid choice: '${tokens[1]}'`);

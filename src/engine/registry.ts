@@ -10,12 +10,14 @@ import { lambdaService } from "./services/lambda";
 import { apiGatewayService } from "./services/apigateway";
 import { logsService } from "./services/logs";
 import { cloudWatchService } from "./services/cloudwatch";
+import { route53Service } from "./services/route53";
 import { objectType, storageService } from "./services/storage";
 import type { FieldDef, ResolvedServiceDef, ResolvedTypeDef, ResourceTypeDef, ServiceDef } from "./types";
 
 /** Every service the platform simulates. Add new service definitions here. */
 export const SERVICES: ServiceDef[] = [
   networkingService,
+  route53Service,
   computeService,
   loadBalancingService,
   autoScalingService,

@@ -12,6 +12,7 @@ import { RDS_COMMANDS } from "./rds";
 import { LAMBDA_COMMANDS } from "./lambda";
 import { APIGATEWAY_COMMANDS } from "./apigateway";
 import { CLOUDWATCH_COMMANDS, LOGS_COMMANDS } from "./cloudwatch";
+import { ROUTE53_COMMANDS } from "./route53";
 
 export interface CliContext {
   engine: Engine;
@@ -1012,6 +1013,9 @@ export const COMMANDS: Command[] = [
   // --- Lambda and API Gateway ---
   ...LAMBDA_COMMANDS,
   ...APIGATEWAY_COMMANDS,
+
+  // --- Route 53 ---
+  ...ROUTE53_COMMANDS,
 
   // --- CloudWatch and CloudWatch Logs ---
   ...CLOUDWATCH_COMMANDS,
