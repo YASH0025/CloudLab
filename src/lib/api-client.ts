@@ -6,6 +6,13 @@ import type { Diagram } from "@/guide/diagram";
 import type { Evaluation } from "@/engine/iam/policy";
 import { useConsoleStore } from "@/stores/console-store";
 
+export type QueueActionInput =
+  | { action: "send"; body: string; delaySeconds?: number; attributes: Record<string, { DataType: string; StringValue: string }> }
+  | { action: "receive"; maxNumberOfMessages: number; visibilityTimeout?: number }
+  | { action: "delete"; receiptHandle: string }
+  | { action: "purge" }
+  | { action: "subscribe"; topicArn: string };
+
 export interface MetricQuery {
   id: string;
   namespace: string;
@@ -78,6 +85,7 @@ import type { LoadTestResult } from "@/engine/analysis/loadtest";
 import type { DbConnectInput, DbConnectResult } from "@/engine/analysis/dbconnect";
 import type { InvokeResult } from "@/engine/lambda/invoke";
 import type { PublishResult } from "@/engine/sns/publish";
+import type { QueueCounts, ReceivedMessage } from "@/engine/sqs/queue";
 
 export type { ObjectInfo };
 
@@ -211,6 +219,14 @@ export const api = {
 
   publish: (id: string, input: { message: string; subject?: string; messageStructure?: "json"; attributes: Record<string, { DataType: string; StringValue: string }> }) =>
     request<{ result: PublishResult }>(`/api/resources/${encodeURIComponent(id)}/publish`, { method: "POST", body: JSON.stringify(input) }),
+
+  queueCounts: (id: string) => request<{ counts: QueueCounts }>(`/api/resources/${encodeURIComponent(id)}/messages`),
+
+  queueAction: (id: string, input: QueueActionInput) =>
+    request<{ sent?: { MessageId: string }; messages?: ReceivedMessage[]; movedToDlq?: number; subscriptionArn?: string }>(`/api/resources/${encodeURIComponent(id)}/messages`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
 
   confirmSubscription: (id: string) => request<{ subscriptionArn: string }>(`/api/resources/${encodeURIComponent(id)}/confirm`, { method: "POST" }),
 

@@ -15,6 +15,7 @@ export const TOPIC_OF: Record<string, Topic> = {
   "serverless-api": "Serverless",
   "watch-your-app": "Monitoring",
   "get-alerted": "Messaging",
+  "decouple-with-a-queue": "Messaging",
   "managed-database": "Databases",
   "website-real-name": "DNS",
   "disks-and-backups": "Storage",
@@ -31,4 +32,5 @@ export const TOPIC_OF: Record<string, Topic> = {
   "acl-replies": "Networking",
   "unhealthy-targets": "Compute",
   "silent-orders": "Messaging",
+  "double-charged": "Messaging",
 };

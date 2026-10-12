@@ -425,6 +425,38 @@ const EXPLANATIONS: Record<string, ErrorExplanation> = {
     meaning: "A message attribute is incomplete or has the wrong type, e.g. a Number attribute whose value isn't a number.",
     fix: "Each attribute needs DataType (String, Number or String.Array) and a StringValue.",
   },
+  "AWS.SimpleQueueService.NonExistentQueue": {
+    meaning: "No queue with that URL (or name) exists in this region and account.",
+    fix: "Get the exact URL with aws sqs get-queue-url --queue-name <name>, and check the region: the URL contains it.",
+  },
+  QueueAlreadyExists: {
+    meaning: "A queue with this name exists with different settings. CreateQueue only returns the existing queue when every setting matches.",
+    fix: "Use the existing queue (get-queue-url), change it with set-queue-attributes, or pick another name.",
+  },
+  ReceiptHandleIsInvalid: {
+    meaning: "That isn't a receipt handle. Deleting a message needs the ReceiptHandle from receive-message, not the MessageId.",
+    fix: "Receive the message and copy its ReceiptHandle (the long string), then delete with it.",
+  },
+  MessageNotInflight: {
+    meaning: "The message isn't hidden any more: its visibility timeout already ran out (or it was deleted), so its visibility can't be changed.",
+    fix: "Receive it again and use the new receipt handle. If this keeps happening, raise the queue's visibility timeout.",
+  },
+  InvalidAttributeValue: {
+    meaning: "A queue setting is out of range, e.g. VisibilityTimeout above 43200 or MessageRetentionPeriod below 60.",
+    fix: "Check the allowed range in the message, or the field's description in the console.",
+  },
+  InvalidAttributeName: {
+    meaning: "SQS doesn't know that attribute name, or it's read-only (like QueueArn or ApproximateNumberOfMessages).",
+    fix: "Attribute names are case-sensitive: VisibilityTimeout, DelaySeconds, RedrivePolicy, Policy…",
+  },
+  "AWS.SimpleQueueService.PurgeQueueInProgress": {
+    meaning: "A queue can be purged only once every 60 seconds.",
+    fix: "Wait a minute. The previous purge already removed what was there.",
+  },
+  OverLimit: {
+    meaning: "The queue has reached a limit (in CloudLab: 1,000 messages or 4 MB).",
+    fix: "Receive and delete messages, or purge the queue.",
+  },
   SubscriptionLimitExceeded: {
     meaning: "The topic has as many subscriptions as it's allowed.",
     fix: "Remove subscriptions you no longer use (CloudLab allows 100 per topic).",

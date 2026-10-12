@@ -2,10 +2,12 @@
 
 import {
   ArrowLeftRightIcon,
+  BellRingIcon,
   BoxIcon,
   CloudIcon,
   DatabaseIcon,
   GlobeIcon,
+  InboxIcon,
   LinkIcon,
   LockIcon,
   NetworkIcon,
@@ -31,7 +33,7 @@ const KIND: Record<DiagramSubnet["kind"], { label: string; Icon: LucideIcon; bor
   isolated: { label: "Isolated", Icon: LockIcon, border: "border-l-muted-foreground/40", hint: "No route out of the VPC (except peering or endpoints)." },
 };
 
-const ICONS: Record<string, LucideIcon> = { instance: ServerIcon, "db-instance": DatabaseIcon, "nat-gateway": ArrowLeftRightIcon, bucket: BoxIcon, function: CloudIcon, api: RouteIcon };
+const ICONS: Record<string, LucideIcon> = { instance: ServerIcon, "db-instance": DatabaseIcon, "nat-gateway": ArrowLeftRightIcon, bucket: BoxIcon, function: CloudIcon, api: RouteIcon, topic: BellRingIcon, queue: InboxIcon };
 
 const href = (r: DiagramRef) => routes.detail(r.service, r.type, r.id);
 const display = (r: DiagramRef) => r.name || r.id;
@@ -237,11 +239,11 @@ export function DiagramView() {
           <Card>
             <CardHeader>
               <CardTitle>Outside your VPCs</CardTitle>
-              <CardDescription>Regional services you reach over AWS&apos;s network or the internet, not through a subnet.</CardDescription>
+              <CardDescription>Regional services you reach over AWS&apos;s network or the internet, not through a subnet: storage, functions, APIs, topics and queues.</CardDescription>
             </CardHeader>
             <CardContent className="pb-5">
               {d.regional.length === 0 ? (
-                <p className="text-sm text-muted-foreground">No S3 buckets, Lambda functions or APIs in this region.</p>
+                <p className="text-sm text-muted-foreground">No S3 buckets, Lambda functions, APIs, topics or queues in this region.</p>
               ) : (
                 <ul className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
                   {d.regional.map((n) => (

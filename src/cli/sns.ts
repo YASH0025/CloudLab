@@ -28,7 +28,7 @@ async function subByArn(ctx: CliContext, arn: string): Promise<Resource> {
 const shownArn = (s: Resource) => (s.state === "confirmed" ? s.id : "PendingConfirmation");
 
 /** file://message.txt or the text itself. */
-function textArg(ctx: CliContext, value: string): string {
+export function textArg(ctx: CliContext, value: string): string {
   const m = /^file:\/\/(.+)$/.exec(value);
   if (!m) return value;
   const data = ctx.files?.[m[1]];
@@ -64,7 +64,7 @@ function attributesArg(ctx: CliContext, args: Args): Record<string, string> {
  * --message-attributes '{"type":{"DataType":"String","StringValue":"order"}}'
  * or shorthand type={DataType=String,StringValue=order},amount={DataType=Number,StringValue=12}
  */
-function messageAttributesArg(ctx: CliContext, args: Args): Record<string, MessageAttribute> {
+export function messageAttributesArg(ctx: CliContext, args: Args): Record<string, MessageAttribute> {
   const raw = args.raw("message-attributes").join(" ").trim();
   if (!raw) return {};
   const text = textArg(ctx, raw);
@@ -207,8 +207,8 @@ export const SNS_COMMANDS: Command[] = [
     service: "sns",
     operation: "subscribe",
     apiName: "Subscribe",
-    summary: "Subscribe an email address or Lambda function to a topic",
-    usage: "--topic-arn <arn> --protocol <email|email-json|lambda> --notification-endpoint <address-or-arn> [--attributes FilterPolicy=<json>] [--return-subscription-arn]",
+    summary: "Subscribe an email address, Lambda function or SQS queue to a topic",
+    usage: "--topic-arn <arn> --protocol <email|email-json|lambda|sqs> --notification-endpoint <address-or-arn> [--attributes FilterPolicy=<json>,RawMessageDelivery=true] [--return-subscription-arn]",
     mutates: true,
     async run(args, ctx) {
       const t = await topicByArn(ctx, args.required("topic-arn"));
@@ -221,7 +221,7 @@ export const SNS_COMMANDS: Command[] = [
       if (!endpoint) throw invalid("Endpoint");
       const attrs = attributesArg(ctx, args);
       for (const k of Object.keys(attrs)) {
-        if (k !== "FilterPolicy" && k !== "FilterPolicyScope") throw invalid(`Attributes Reason: Unknown attribute ${k} (CloudLab supports FilterPolicy)`);
+        if (!["FilterPolicy", "FilterPolicyScope", "RawMessageDelivery"].includes(k)) throw invalid(`Attributes Reason: Unknown attribute ${k} (CloudLab supports FilterPolicy and RawMessageDelivery)`);
       }
       if (attrs.FilterPolicyScope && attrs.FilterPolicyScope !== "MessageAttributes") throw invalid("FilterPolicyScope: CloudLab filters on MessageAttributes only");
       const existing = (await listOf(ctx, "subscription")).find((s) => s.config.topicArn === t.id && s.config.protocol === protocol && s.config.endpoint === endpoint.trim());
@@ -231,9 +231,9 @@ export const SNS_COMMANDS: Command[] = [
         service: "sns",
         type: "subscription",
         region: ctx.region,
-        config: { topicArn: t.id, protocol, endpoint, filterPolicy: attrs.FilterPolicy },
+        config: { topicArn: t.id, protocol, endpoint, filterPolicy: attrs.FilterPolicy, rawMessageDelivery: attrs.RawMessageDelivery === "true" },
       });
-      return { SubscriptionArn: protocol === "lambda" || returnArn ? s.id : "pending confirmation" };
+      return { SubscriptionArn: protocol === "lambda" || protocol === "sqs" || returnArn ? s.id : "pending confirmation" };
     },
   }),
   cmd({
@@ -298,7 +298,7 @@ export const SNS_COMMANDS: Command[] = [
           PendingConfirmation: String(s.state !== "confirmed"),
           TopicArn: s.config.topicArn,
           Owner: accountNumber(ctx.accountId),
-          RawMessageDelivery: "false",
+          RawMessageDelivery: String(s.config.rawMessageDelivery === true),
           SubscriptionArn: s.id,
           Protocol: s.config.protocol,
           Endpoint: s.config.endpoint,
@@ -318,8 +318,14 @@ export const SNS_COMMANDS: Command[] = [
     async run(args, ctx) {
       const s = await subByArn(ctx, args.required("subscription-arn"));
       const name = args.required("attribute-name");
-      if (name !== "FilterPolicy") throw invalid("AttributeName (CloudLab supports FilterPolicy)");
       const value = textArg(ctx, args.one("attribute-value") ?? "").trim();
+      if (name === "RawMessageDelivery") {
+        if (value !== "true" && value !== "false") throw invalid("Attributes Reason: RawMessageDelivery: Invalid value [" + value + "]. Must be true or false.");
+        if (s.config.protocol !== "sqs") throw invalid("Attributes Reason: Delivery protocol [" + String(s.config.protocol) + "] does not support raw message delivery.");
+        await ctx.engine.update(ctx.accountId, s.id, { rawMessageDelivery: value === "true" });
+        return;
+      }
+      if (name !== "FilterPolicy") throw invalid("AttributeName (CloudLab supports FilterPolicy and RawMessageDelivery)");
       // An empty policy removes it.
       if (value && value !== "{}") checkFilterPolicy(value);
       await ctx.engine.update(ctx.accountId, s.id, { filterPolicy: value && value !== "{}" ? value : undefined });

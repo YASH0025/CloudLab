@@ -76,7 +76,7 @@ const queue: ResourceTypeDef = {
     setting("receiveMessageWaitTimeSeconds", "Receive message wait time (seconds)", "Long polling: a receive waits up to this long for a message instead of returning empty straight away (0 to 20)."),
     setting("maximumMessageSize", "Maximum message size (bytes)", "From 1,024 to 262,144 (256 KB)."),
     {
-      key: "deadLetterTargetArn",
+      key: "deadLetterQueue",
       label: "Dead-letter queue",
       type: "ref",
       ref: { service: "sqs", type: "queue", weak: true },
@@ -130,7 +130,7 @@ const queue: ResourceTypeDef = {
     if (!existing && (await ctx.list("sqs", "queue")).some((q) => q.name === config.name)) {
       throw new EngineError("QueueAlreadyExists", "A queue already exists with the same name and a different value for an attribute.", 400);
     }
-    if (config.deadLetterTargetArn && existing && config.deadLetterTargetArn === existing.id) {
+    if (config.deadLetterQueue && existing && config.deadLetterQueue === existing.id) {
       throw new EngineError("InvalidParameterValue", "Value for parameter RedrivePolicy is invalid. Reason: A queue can't be its own dead-letter queue.");
     }
     if (config.policy) {
@@ -148,7 +148,7 @@ const queue: ResourceTypeDef = {
   },
   async derive({ id, config, existing, ctx }) {
     const name = String(config.name);
-    const dlq = config.deadLetterTargetArn ? String(config.deadLetterTargetArn) : null;
+    const dlq = config.deadLetterQueue ? String(config.deadLetterQueue) : null;
     return {
       ...(existing?.attributes ?? {}),
       arn: queueArn(ctx.region, ctx.accountId, name),

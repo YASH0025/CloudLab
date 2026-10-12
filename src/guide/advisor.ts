@@ -24,6 +24,7 @@ import { serverlessAdvice } from "./advisor-serverless";
 import { monitoringAdvice } from "./advisor-cloudwatch";
 import { dnsAdvice } from "./advisor-route53";
 import { snsAdvice } from "./advisor-sns";
+import { sqsAdvice } from "./advisor-sqs";
 import { storageAdvice } from "./advisor-ebs";
 import { vpcxAdvice } from "./advisor-vpcx";
 
@@ -516,10 +517,11 @@ export async function advise(engine: Engine, accountId: string, region: string):
   const dns = await dnsAdvice(engine, accountId);
   const vpcx = await vpcxAdvice(engine, accountId, region);
   const sns = await snsAdvice(engine, accountId, region);
-  out.unshift(...vpcx.problems, ...rds.problems, ...sls.problems, ...sns.problems, ...cw.problems, ...dns.problems, ...elb.problems);
+  const sqs = await sqsAdvice(engine, accountId, region);
+  out.unshift(...vpcx.problems, ...rds.problems, ...sls.problems, ...sns.problems, ...sqs.problems, ...cw.problems, ...dns.problems, ...elb.problems);
   out.push(...vpcx.suggestions);
   const ebs = await storageAdvice(engine, accountId, region);
-  out.push(...sls.suggestions, ...sns.suggestions, ...rds.suggestions, ...dns.suggestions, ...ebs.suggestions);
+  out.push(...sls.suggestions, ...sns.suggestions, ...sqs.suggestions, ...rds.suggestions, ...dns.suggestions, ...ebs.suggestions);
   if (sls.hasFunction && !cw.hasAlarm) {
     out.push({
       id: "watch-your-app",

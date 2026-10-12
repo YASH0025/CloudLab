@@ -2,7 +2,7 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { api, ApiError, type MetricQuery } from "@/lib/api-client";
+import { api, ApiError, type MetricQuery, type QueueActionInput } from "@/lib/api-client";
 import { queryKeys } from "@/lib/query-keys";
 import { REGIONS } from "@/engine/catalog";
 import { resolveServices } from "@/engine/registry";
@@ -190,6 +190,24 @@ export function usePublish(id: string) {
     mutationFn: (input: Parameters<typeof api.publish>[1]) => api.publish(id, input).then((r) => r.result),
     // Deliveries change the topic, its subscriptions' inboxes and maybe a function.
     onSettled: () => qc.invalidateQueries({ queryKey: ["resource"] }),
+  });
+}
+
+/** A queue's message counts, kept live while its page is open. */
+export function useQueueCounts(id: string) {
+  return useQuery({ queryKey: ["queue-counts", id], queryFn: () => api.queueCounts(id).then((r) => r.counts), refetchInterval: 3_000 });
+}
+
+/** Send, poll, delete, purge or subscribe-to-topic on a queue. Errors show inline. */
+export function useQueueAction(id: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: QueueActionInput) => api.queueAction(id, input),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ["queue-counts"] });
+      qc.invalidateQueries({ queryKey: ["resource"] });
+      qc.invalidateQueries({ queryKey: ["resources"] });
+    },
   });
 }
 

@@ -1,3 +1,4 @@
+import { createHash, randomUUID } from "node:crypto";
 import { analyzeDbConnection } from "@/engine/analysis/dbconnect";
 import { targetHealth } from "@/engine/analysis/health";
 import { analyzeReachability } from "@/engine/analysis/reachability";
@@ -474,6 +475,60 @@ const SILENT_ORDERS: ChallengeDef = {
   },
 };
 
+const DOUBLE_CHARGED: ChallengeDef = {
+  id: "double-charged",
+  title: "Customers are being charged twice",
+  level: "intermediate",
+  minutes: 10,
+  summary: "A worker takes payments off a queue. Some customers are charged two or three times, and one payment is retried forever.",
+  story:
+    "Support: “Three customers were charged twice for the same order today, one of them three times.” The website puts each payment job in the SQS queue payments; a worker takes them one at a time, calls the bank (about 45 seconds per payment, the bank is slow), then deletes the message. The worker's logs also show the same broken payment (order 9001, card number missing) failing again and again since this morning.",
+  goal: "Each payment is processed once, and a message that keeps failing is set aside after at most 5 tries instead of being retried forever. Don't delete the queue.",
+  tools: ["The queue payments: its settings, and Receive messages (look at received N×)", "aws sqs get-queue-attributes --queue-url <url> --attribute-names All", "aws sqs receive-message … --attribute-names ApproximateReceiveCount"],
+  hints: [
+    "A received message is only hidden for the queue's visibility timeout. If the worker hasn't deleted it by then, it becomes visible again and gets processed again.",
+    "Compare the visibility timeout of payments with how long one payment takes. And for the broken message: what moves a message aside after N failed receives?",
+    "Edit payments: set the visibility timeout above 45 seconds (60 or more), set its dead-letter queue to payments-dlq, and Maximum receives to 5 or less.",
+  ],
+  explanation:
+    "The queue's visibility timeout was 5 seconds, but a payment takes about 45. Five seconds after the worker took a message, the queue assumed it had failed and handed it out again, so slow payments were charged twice or three times. The fix is a visibility timeout longer than the work takes (AWS suggests several times longer; workers can also extend it with ChangeMessageVisibility). Separately, order 9001 can never succeed; with no redrive policy it was retried forever. A dead-letter queue with maxReceiveCount takes it out of the line after a few tries so someone can look at it. Standard queues can still deliver a message twice in rare cases, so a payment worker should also be idempotent (skip an order it has already charged).",
+  async setup(b) {
+    await b.make("sqs", "queue", { name: "payments-dlq" });
+    const q = await b.make("sqs", "queue", { name: "payments", visibilityTimeout: 5 });
+    const now = b.engine.now().getTime();
+    const msg = (order: number, receiveCount: number, ageMin: number) => {
+      const body = JSON.stringify({ orderId: order, amount: 499, card: order === 9001 ? null : "tok_visa" });
+      return {
+        messageId: randomUUID(),
+        body,
+        md5: createHash("md5").update(body).digest("hex"),
+        attributes: {},
+        sentAt: now - ageMin * 60_000,
+        visibleAt: now,
+        receiveCount,
+        firstReceivedAt: now - ageMin * 60_000,
+        senderId: accountNumber(b.accountId),
+      };
+    };
+    await b.engine.setAttributes(b.accountId, q.id, { messages: [msg(9001, 37, 240), msg(1187, 2, 1), msg(1188, 3, 1)] });
+  },
+  async facts(engine, accountId) {
+    const q = await named(engine, accountId, "sqs", "queue", "payments");
+    return [`Queue: ${q?.id ?? "payments"}`, "One payment takes about 45 seconds (the bank's API is slow)."];
+  },
+  async check(engine, accountId) {
+    const q = await named(engine, accountId, "sqs", "queue", "payments");
+    if (!q) return { solved: false, status: "The queue payments is gone: the website has nowhere to send payments." };
+    const vt = Number(q.config.visibilityTimeout);
+    const dlq = q.config.deadLetterQueue ? await engine.get(accountId, String(q.config.deadLetterQueue)).catch(() => null) : null;
+    const max = Number(q.config.maxReceiveCount ?? 10);
+    if (vt <= 45) return { solved: false, status: "Payments are still handed out again before the worker can finish them." };
+    if (!dlq) return { solved: false, status: "No more double charges, but the broken payment is still retried forever." };
+    if (max > 5) return { solved: false, status: "Broken payments are set aside now, but only after more than 5 tries." };
+    return { solved: true };
+  },
+};
+
 const UNHEALTHY: ChallengeDef = {
   id: "unhealthy-targets",
   title: "Every server behind the load balancer is unhealthy",
@@ -677,7 +732,7 @@ const PEERING_ONE_WAY: ChallengeDef = {
   },
 };
 
-const CHALLENGES: ChallengeDef[] = [SITE_DOWN, NO_UPDATES, ACCESS_DENIED, DB_CONNECT, API_500, DISK_ZONE, PEERING_ONE_WAY, ACL_REPLIES, SILENT_ORDERS, UNHEALTHY];
+const CHALLENGES: ChallengeDef[] = [SITE_DOWN, NO_UPDATES, ACCESS_DENIED, DB_CONNECT, API_500, DISK_ZONE, PEERING_ONE_WAY, ACL_REPLIES, SILENT_ORDERS, DOUBLE_CHARGED, UNHEALTHY];
 
 const info = (c: ChallengeDef): ChallengeInfo => ({ id: c.id, title: c.title, level: c.level, minutes: c.minutes, summary: c.summary });
 

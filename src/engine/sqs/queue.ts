@@ -94,9 +94,28 @@ export function countsOf(q: Resource, now: number): QueueCounts {
   return { available: msgs.length - delayed - inFlight, inFlight, delayed, oldestAgeSeconds: Math.floor((now - oldest) / 1000) };
 }
 
-async function save(engine: Engine, q: Resource, msgs: StoredMessage[], extra: Record<string, unknown> = {}) {
-  await engine.setAttributes(q.accountId, q.id, { messages: msgs, ...extra });
+/** Running totals, for the console and the guide ("has a message ever come back?"). */
+export interface QueueStats {
+  sent: number;
+  received: number;
+  deleted: number;
+  /** Receives of a message that had been received before (its visibility timeout ran out). */
+  redelivered: number;
+  movedToDlq: number;
+  /** Messages an SNS topic delivered. */
+  fromSns: number;
 }
+
+export const statsOf = (q: Resource): QueueStats => ({ sent: 0, received: 0, deleted: 0, redelivered: 0, movedToDlq: 0, fromSns: 0, ...((q.attributes.stats as Partial<QueueStats> | undefined) ?? {}) });
+
+async function save(engine: Engine, q: Resource, msgs: StoredMessage[], extra: Record<string, unknown> = {}, add: Partial<QueueStats> = {}) {
+  const stats = statsOf(q);
+  for (const [k, v] of Object.entries(add)) stats[k as keyof QueueStats] += v ?? 0;
+  await engine.setAttributes(q.accountId, q.id, { messages: msgs, stats, ...extra });
+}
+
+/** SNS's sender ID on messages it delivers to queues. */
+export const SNS_SENDER = "AIDAIT2UOQQY3AUEKVGXU";
 
 function checkAttributes(attrs: Record<string, MessageAttribute>) {
   if (Object.keys(attrs).length > 10) throw new EngineError("InvalidParameterValue", "Number of message attributes [" + Object.keys(attrs).length + "] exceeds the allowed maximum [10].");
@@ -149,7 +168,7 @@ export async function sendMessage(engine: Engine, q: Resource, input: SendInput)
     senderId: input.senderId ?? accountNumber(q.accountId),
     deadLetterSourceArn: input.deadLetterSourceArn,
   };
-  await save(engine, fresh, [...msgs, m]);
+  await save(engine, fresh, [...msgs, m], {}, { sent: 1, fromSns: m.senderId === SNS_SENDER ? 1 : 0 });
   await engine.metrics.record(q.accountId, q.region, "AWS/SQS", "NumberOfMessagesSent", { QueueName: q.name }, 1, "Count");
   await engine.metrics.record(q.accountId, q.region, "AWS/SQS", "SentMessageSize", { QueueName: q.name }, size, "Bytes");
   return { MessageId: m.messageId, MD5OfMessageBody: m.md5, ...(Object.keys(attrs).length ? { MD5OfMessageAttributes: md5OfAttributes(attrs) } : {}) };
@@ -193,9 +212,9 @@ export async function receiveMessages(engine: Engine, q: Resource, input: Receiv
   const now = engine.now().getTime();
   const fresh = await engine.get(q.accountId, q.id);
   let msgs = retained(fresh, messagesOf(fresh), now);
-  const dlqArn = fresh.config.deadLetterTargetArn ? String(fresh.config.deadLetterTargetArn) : null;
+  const dlqUrl = fresh.config.deadLetterQueue ? String(fresh.config.deadLetterQueue) : null;
   const maxReceives = Number(fresh.config.maxReceiveCount ?? 10);
-  const dlq = dlqArn ? await engine.get(q.accountId, dlqArn).catch(() => null) : null;
+  const dlq = dlqUrl ? await engine.get(q.accountId, dlqUrl).catch(() => null) : null;
 
   const out: ReceivedMessage[] = [];
   const toDlq: StoredMessage[] = [];
@@ -225,7 +244,8 @@ export async function receiveMessages(engine: Engine, q: Resource, input: Receiv
     });
   }
   if (toDlq.length) msgs = msgs.filter((m) => !toDlq.includes(m));
-  await save(engine, fresh, msgs);
+  const again = out.filter((o) => (msgs.find((m) => m.messageId === o.MessageId)?.receiveCount ?? 0) > 1).length;
+  await save(engine, fresh, msgs, {}, { received: out.length, redelivered: again, movedToDlq: toDlq.length });
   for (const m of toDlq) {
     await sendMessage(engine, dlq!, { body: m.body, attributes: m.attributes, senderId: m.senderId, deadLetterSourceArn: arnOf(fresh), delaySeconds: 0 }).catch(() => undefined);
   }
@@ -246,7 +266,7 @@ export async function deleteMessage(engine: Engine, q: Resource, handle: string)
   const msgs = messagesOf(fresh);
   const m = byHandle(msgs, handle);
   if (!m) return;
-  await save(engine, fresh, msgs.filter((x) => x !== m));
+  await save(engine, fresh, msgs.filter((x) => x !== m), {}, { deleted: 1 });
   await engine.metrics.record(q.accountId, q.region, "AWS/SQS", "NumberOfMessagesDeleted", { QueueName: q.name }, 1, "Count");
 }
 

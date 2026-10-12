@@ -16,7 +16,7 @@ import {
   type InboxEmail,
   type MessageAttribute,
 } from "../services/sns";
-import { policyAllowsService, sendMessage } from "../sqs/queue";
+import { policyAllowsService, sendMessage, SNS_SENDER } from "../sqs/queue";
 import { urlFromArn } from "../services/sqs";
 import type { Resource } from "../types";
 
@@ -183,7 +183,7 @@ async function deliverOne(
       await sendMessage(engine, q, {
         body: raw ? text : JSON.stringify(envelope(topic, m.messageId, text, m.subject, m.attributes, m.at, sub), null, 2),
         attributes: raw ? Object.fromEntries(Object.entries(m.attributes).filter(([, a]) => a.DataType !== "String.Array")) : {},
-        senderId: "AIDAIT2UOQQY3AUEKVGXU",
+        senderId: SNS_SENDER,
         delaySeconds: undefined,
       });
       return { status: "delivered" };

@@ -64,13 +64,14 @@ describe("tutorials", () => {
       "serverless-api",
       "watch-your-app",
       "get-alerted",
+      "decouple-with-a-queue",
       "managed-database",
       "website-real-name",
       "disks-and-backups",
       "highly-available-website",
       "connect-and-protect",
     ]);
-    expect(listTutorials().filter((t) => t.level === "intermediate")).toHaveLength(10);
+    expect(listTutorials().filter((t) => t.level === "intermediate")).toHaveLength(11);
     expect(listTutorials().find((t) => t.id === "troubleshoot-reachability")?.nextId).toBe("static-website");
   });
 
@@ -177,6 +178,45 @@ describe("tutorials", () => {
         for (const severity of ["critical", "low"]) {
           await publish(engine, ACCOUNT, await topicOf(), { message: "x", attributes: { severity: { DataType: "String", StringValue: severity } } });
         }
+      },
+    });
+    expect(steps).toBe(7);
+  });
+
+  it("completes 'Never lose an order': send, receive, a message that comes back, a dead-letter queue, fan-out", { timeout: 60_000 }, async () => {
+    const q = await import("@/engine/sqs/queue");
+    const { publish } = await import("@/engine/sns/publish");
+    const list = (service: string, type: string) => engine.list(ACCOUNT, { service, type, region: REGION });
+    const queueOf = async () => (await list("sqs", "queue")).find((x) => x.name === "orders-queue")!;
+    let handle = "";
+    const steps = await play("decouple-with-a-queue", {
+      send: async () => q.sendMessage(engine, await queueOf(), { body: '{"orderId":1}' }),
+      receive: async () => {
+        handle = (await q.receiveMessages(engine, await queueOf())).messages[0].ReceiptHandle;
+      },
+      "comes-back": async () => {
+        tick(21_000);
+        handle = (await q.receiveMessages(engine, await queueOf())).messages[0].ReceiptHandle;
+      },
+      delete: async () => q.deleteMessage(engine, await queueOf(), handle),
+      dlq: async () => {
+        const link = (await view("decouple-with-a-queue")).steps.find((s) => s.id === "dlq")!.link!;
+        if (link.mode === "create") await engine.create(ACCOUNT, { service: "sqs", type: "queue", region: REGION, config: link.prefill! });
+        else {
+          const dlq = (await list("sqs", "queue")).find((x) => x.name === "orders-dlq")!;
+          await engine.update(ACCOUNT, (await queueOf()).id, { deadLetterQueue: dlq.id, maxReceiveCount: 3 });
+        }
+      },
+      "fan-out": async () => {
+        let topic = (await list("sns", "topic"))[0];
+        if (!topic) {
+          topic = await engine.create(ACCOUNT, { service: "sns", type: "topic", region: REGION, config: { name: "alerts" } });
+          return;
+        }
+        const queue = await queueOf();
+        await engine.update(ACCOUNT, queue.id, { policy: q.withStatement(queue, q.snsSendStatement(queue, topic.id)) });
+        await engine.create(ACCOUNT, { service: "sns", type: "subscription", region: REGION, config: { topicArn: topic.id, protocol: "sqs", endpoint: String(queue.attributes.arn) } });
+        await publish(engine, ACCOUNT, topic, { message: "order placed" });
       },
     });
     expect(steps).toBe(7);

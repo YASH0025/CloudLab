@@ -14,7 +14,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import type { Delivery, DeliveryStatus } from "@/engine/sns/publish";
 import type { InboxEmail } from "@/engine/services/sns";
 import type { ResourceDTO } from "@/engine/types";
-import { useConfirmSubscription, usePermission, usePublish, useResource, useResources } from "@/hooks/use-cloud";
+import { useConfirmSubscription, usePermission, usePublish, useQueueAction, useResource, useResources } from "@/hooks/use-cloud";
 import { ApiError } from "@/lib/api-client";
 import { routes } from "@/lib/routes";
 
@@ -340,6 +340,58 @@ function LambdaAccess({ sub }: { sub: ResourceDTO }) {
   );
 }
 
+function QueueAccess({ sub }: { sub: ResourceDTO }) {
+  const arn = String(sub.config.endpoint);
+  const [, , , region, account, name] = arn.split(":");
+  const url = `https://sqs.${region}.amazonaws.com/${account}/${name}`;
+  const q = useResource(url);
+  const { mutate, isPending } = useQueueAction(url);
+  if (q.isLoading) return null;
+  const queue = q.data?.item;
+  if (!queue) {
+    return (
+      <p className="flex items-start gap-2 text-sm text-destructive">
+        <ShieldAlertIcon className="mt-0.5 size-4 shrink-0" /> The queue {name} doesn&apos;t exist, so every delivery will fail.
+      </p>
+    );
+  }
+  const topic = String(sub.config.topicArn);
+  let allowed = false;
+  try {
+    const doc = JSON.parse(String(queue.config.policy ?? "{}")) as { Statement?: unknown };
+    const statements = (Array.isArray(doc.Statement) ? doc.Statement : doc.Statement ? [doc.Statement] : []) as { Effect?: string; Principal?: unknown; Condition?: Record<string, Record<string, string>> }[];
+    allowed = statements.some((s) => {
+      if (s.Effect !== "Allow" || !JSON.stringify(s.Principal ?? "").includes("sns.amazonaws.com")) return false;
+      const src = Object.values(s.Condition ?? {}).map((c) => c["aws:SourceArn"] ?? c["aws:sourcearn"] ?? c["AWS:SourceArn"]).find(Boolean);
+      return !src || src === topic || (src.endsWith("*") && topic.startsWith(src.slice(0, -1)));
+    });
+  } catch {
+    allowed = false;
+  }
+  return allowed ? (
+    <p className="flex items-center gap-2 text-sm">
+      <CheckCircle2Icon className="size-4 text-success" /> The queue&apos;s access policy lets this topic send to{" "}
+      <Link href={routes.detail("sqs", "queue", url)} className="font-mono text-xs text-primary hover:underline">
+        {name}
+      </Link>
+      .
+    </p>
+  ) : (
+    <div className="space-y-2">
+      <p className="flex items-start gap-2 text-sm">
+        <ShieldAlertIcon className="mt-0.5 size-4 shrink-0 text-destructive" />
+        <span>
+          The queue <span className="font-mono text-xs">{name}</span> doesn&apos;t let SNS send to it, so deliveries fail. A queue decides who may send in its access policy: it needs to allow
+          sns.amazonaws.com to sqs:SendMessage, with this topic as aws:SourceArn.
+        </span>
+      </p>
+      <Button size="sm" variant="outline" disabled={isPending} onClick={() => mutate({ action: "subscribe", topicArn: topic })}>
+        Allow this topic to send to the queue
+      </Button>
+    </div>
+  );
+}
+
 /** A subscription's page: the simulated inbox (email) or whether SNS can reach the function (Lambda). */
 export function SubscriptionPanel({ sub }: { sub: ResourceDTO }) {
   const inbox = (sub.attributes.inbox as InboxEmail[] | undefined) ?? [];
@@ -350,6 +402,8 @@ export function SubscriptionPanel({ sub }: { sub: ResourceDTO }) {
         <CardTitle className="flex items-center gap-2">
           {protocol === "lambda" ? (
             "Delivery to the function"
+          ) : protocol === "sqs" ? (
+            "Delivery to the queue"
           ) : (
             <>
               <InboxIcon className="size-4" /> Inbox of {String(sub.config.endpoint)}
@@ -359,12 +413,18 @@ export function SubscriptionPanel({ sub }: { sub: ResourceDTO }) {
         <CardDescription>
           {protocol === "lambda"
             ? "Each message runs the function with an event holding it (event.Records[0].Sns.Message)."
+            : protocol === "sqs"
+              ? sub.config.rawMessageDelivery
+                ? "Raw message delivery is on: the queue gets just the message text."
+                : "Each message arrives in the queue wrapped in SNS's JSON envelope (Type, MessageId, TopicArn, Message…). Turn on raw message delivery to get just the text."
             : "A pretend mailbox: CloudLab doesn't send real email, so messages for this address land here."}
         </CardDescription>
       </CardHeader>
       <CardContent className="pb-5">
         {protocol === "lambda" ? (
           <LambdaAccess sub={sub} />
+        ) : protocol === "sqs" ? (
+          <QueueAccess sub={sub} />
         ) : inbox.length === 0 ? (
           <p className="flex items-center gap-2 text-sm text-muted-foreground">
             <MailIcon className="size-4" /> No email yet.

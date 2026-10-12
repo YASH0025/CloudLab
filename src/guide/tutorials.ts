@@ -24,6 +24,7 @@ import { loadDb, type DbState } from "./db";
 import { loadServerless, type ServerlessState } from "./serverless";
 import { loadWatch, WATCHED_FUNCTION, type WatchState } from "./watch";
 import { ALERTS_EMAIL, ALERTS_TOPIC, loadAlerts, type AlertsState } from "./alerts";
+import { loadQueues, TUTORIAL_DLQ, TUTORIAL_QUEUE, type QueuesState } from "./queues";
 import { loadDns, TUTORIAL_DOMAIN, type DnsState } from "./dns";
 import { DATA_FILE, loadStorage, type StorageState } from "./storage";
 import { loadVpcx, type VpcxState } from "./vpcx";
@@ -110,6 +111,10 @@ interface Ctx {
   watch(): Promise<WatchState>;
   /** The same, preloaded for tutorials that declare `needsWatch`. */
   watchState?: WatchState;
+  /** The SQS tutorial's queue, dead-letter queue and topic (loaded once, on demand). */
+  queues(): Promise<QueuesState>;
+  /** The same, preloaded for tutorials that declare `needsQueues`. */
+  queuesState?: QueuesState;
   /** The SNS tutorial's topic, subscriptions and alarm (loaded once, on demand). */
   alerts(): Promise<AlertsState>;
   /** The same, preloaded for tutorials that declare `needsAlerts`. */
@@ -157,6 +162,8 @@ interface TutorialDef {
   needsServerless?: boolean;
   /** Load the monitoring state before resolving links and text. */
   needsWatch?: boolean;
+  /** Load the SQS state before resolving links and text. */
+  needsQueues?: boolean;
   /** Load the SNS state before resolving links and text. */
   needsAlerts?: boolean;
   /** Load the Route 53 state before resolving links and text. */
@@ -224,6 +231,7 @@ async function buildCtx(engine: Engine, accountId: string, region: string, ident
   let slsData: Promise<ServerlessState> | null = null;
   let watchData: Promise<WatchState> | null = null;
   let alertsData: Promise<AlertsState> | null = null;
+  let queuesData: Promise<QueuesState> | null = null;
   let dnsData: Promise<DnsState> | null = null;
   let storageData: Promise<StorageState> | null = null;
   let vpcxData: Promise<VpcxState> | null = null;
@@ -249,6 +257,10 @@ async function buildCtx(engine: Engine, accountId: string, region: string, ident
     alerts() {
       alertsData ??= loadAlerts(engine, accountId, region);
       return alertsData;
+    },
+    queues() {
+      queuesData ??= loadQueues(engine, accountId, region);
+      return queuesData;
     },
     vpcx() {
       vpcxData ??= loadVpcx(engine, accountId, region, vpc, instance);
@@ -2363,7 +2375,7 @@ const GET_ALERTED: TutorialDef = {
   summary:
     "An alarm nobody hears is useless. Create a topic, subscribe your email, confirm it, and make the alarm from Watch your app email you the moment errors start. Then use a filter policy so each person gets only what they care about.",
   minutes: 10,
-  nextId: "managed-database",
+  nextId: "decouple-with-a-queue",
   needsAlerts: true,
   steps: [
     {
@@ -2491,7 +2503,102 @@ const GET_ALERTED: TutorialDef = {
   ],
 };
 
-TUTORIALS.push(SERVERLESS_API, WATCH_YOUR_APP, GET_ALERTED, MANAGED_DATABASE, REAL_NAME, DISKS_AND_BACKUPS, HIGHLY_AVAILABLE, CONNECT_AND_PROTECT);
+// ---------- SQS: decouple with a queue ----------
+
+const queueLink = (c: Ctx): GuideLink | undefined => (c.queuesState?.queue ? { service: "sqs", type: "queue", mode: "detail", id: c.queuesState.queue.id } : undefined);
+const queueUrlText = (c: Ctx) => c.queuesState?.queue?.id ?? `https://sqs.${c.region}.amazonaws.com/<account-id>/${TUTORIAL_QUEUE}`;
+
+const DECOUPLE: TutorialDef = {
+  id: "decouple-with-a-queue",
+  title: "Never lose an order: SQS queues",
+  level: "intermediate",
+  summary:
+    "When your app hands slow work (emails, invoices, packing) to a queue, a crash or a traffic spike no longer loses anything. Send and receive messages, watch an unfinished one come back, catch a 'poison' message with a dead-letter queue, and fan out from SNS.",
+  minutes: 12,
+  nextId: "managed-database",
+  needsQueues: true,
+  steps: [
+    {
+      id: "queue",
+      title: `Create a queue: ${TUTORIAL_QUEUE}`,
+      why: "A queue sits between the part that creates work (the website taking an order) and the part that does it (a worker packing it). Each side runs at its own pace; if the worker is down, orders wait in the queue instead of being lost.",
+      instructions: ["Click Take me there.", `Pre-filled: name ${TUTORIAL_QUEUE}, visibility timeout 20 seconds (short, so you can watch it work).`, "Click Create queue."],
+      link: (c) => queueLink(c) ?? { service: "sqs", type: "queue", mode: "create", prefill: { name: TUTORIAL_QUEUE, visibilityTimeout: 20 } },
+      cli: () => `aws sqs create-queue --queue-name ${TUTORIAL_QUEUE} --attributes VisibilityTimeout=20`,
+      check: async (c) => !!(await c.queues()).queue,
+    },
+    {
+      id: "send",
+      title: "Send a message",
+      why: "This is what your website would do after taking an order: put a small JSON job in the queue and answer the customer straight away.",
+      instructions: ["Open the queue. Under Send message, keep the example order (or write your own) and click Send message.", "Available goes to 1."],
+      link: queueLink,
+      cli: (c) => `aws sqs send-message --queue-url ${queueUrlText(c)} --message-body '{"orderId":1042,"item":"book"}'`,
+      check: async (c) => (await c.queues()).stats.sent > 0,
+    },
+    {
+      id: "receive",
+      title: "Receive it, like a worker",
+      why: "A worker polls the queue and gets the message. It isn't removed: it's hidden (in flight) for the visibility timeout, so no other worker takes the same job.",
+      instructions: ["Click Poll for messages. Your message appears, received 1×.", "Look at the counts: Available 0, In flight 1."],
+      link: queueLink,
+      cli: (c) => `aws sqs receive-message --queue-url ${queueUrlText(c)} --attribute-names All`,
+      check: async (c) => (await c.queues()).stats.received > 0,
+    },
+    {
+      id: "comes-back",
+      title: "Don't delete it, and watch it come back",
+      why: "Pretend the worker crashed before finishing. Because nobody deleted the message, it becomes visible again when the visibility timeout ends, and another worker gets it. That's how queues make sure work is never silently dropped.",
+      instructions: (c) => [
+        `Wait ${String(c.queuesState?.queue?.config.visibilityTimeout ?? 20)} seconds: the message shows Back in the queue and In flight drops to 0.`,
+        "Click Poll for messages again: the same message, now received 2×. (So a worker must be able to handle the same job twice.)",
+      ],
+      link: queueLink,
+      check: async (c) => (await c.queues()).stats.redelivered > 0,
+    },
+    {
+      id: "delete",
+      title: "Finish the job: delete it",
+      why: "Deleting is how a worker says 'done'. It uses the receipt handle from its latest receive, which proves it's the one holding the message.",
+      instructions: ["Click Delete next to the message. The counts go back to 0."],
+      link: queueLink,
+      cli: (c) => `aws sqs delete-message --queue-url ${queueUrlText(c)} --receipt-handle <ReceiptHandle from receive-message>`,
+      check: async (c) => (await c.queues()).stats.deleted > 0,
+    },
+    {
+      id: "dlq",
+      title: "Catch poison messages: a dead-letter queue",
+      why: "A broken message (bad data) fails every time. Without a limit it's retried forever, wasting workers. A redrive policy moves a message to a dead-letter queue after N receives, so you can look at it later and the rest keep flowing.",
+      instructions: (c) =>
+        c.queuesState?.dlq
+          ? [`Open ${c.queuesState.queue?.name ?? TUTORIAL_QUEUE} and click Edit.`, `Set Dead-letter queue to ${c.queuesState.dlq.name} and Maximum receives to 3. Save.`]
+          : [`Click Take me there to create ${TUTORIAL_DLQ} (a plain queue).`, `Then edit ${TUTORIAL_QUEUE}: Dead-letter queue = ${TUTORIAL_DLQ}, Maximum receives = 3.`],
+      link: (c) => (c.queuesState?.dlq ? queueLink(c) : { service: "sqs", type: "queue", mode: "create", prefill: { name: TUTORIAL_DLQ } }),
+      cli: (c) =>
+        `aws sqs set-queue-attributes --queue-url ${queueUrlText(c)} --attributes '{"RedrivePolicy":"{\\"deadLetterTargetArn\\":\\"arn:aws:sqs:${c.region}:<account-id>:${TUTORIAL_DLQ}\\",\\"maxReceiveCount\\":\\"3\\"}"}'`,
+      check: async (c) => (await c.queues()).redrive,
+    },
+    {
+      id: "fan-out",
+      title: "Fan out: a topic feeds the queue",
+      why: "Usually it's not your code sending to the queue but an SNS topic: one 'order placed' message goes to the warehouse queue, the email service, analytics… each at its own pace. The queue must allow the topic in its access policy.",
+      instructions: (c) => [
+        c.queuesState?.topic ? `On the queue's page, under SNS subscriptions, choose ${c.queuesState.topic.name} and click Subscribe to topic.` : "Create an SNS topic first (e.g. alerts, from the Get alerted tutorial), then come back.",
+        "That also adds the access-policy statement letting the topic send. Open the topic and publish a message.",
+        "Poll the queue: the message arrives wrapped in SNS's JSON envelope.",
+      ],
+      link: (c) => (c.queuesState?.topic ? queueLink(c) : { service: "sns", type: "topic", mode: "create", prefill: { name: "alerts" } }),
+      cli: (c) =>
+        `aws sns subscribe --topic-arn ${c.queuesState?.topic?.id ?? "<topic ARN>"} --protocol sqs --notification-endpoint ${String(c.queuesState?.queue?.attributes.arn ?? "<queue ARN>")}  # then allow the topic in the queue's Policy`,
+      check: async (c) => {
+        const q = await c.queues();
+        return q.subscribed && q.topicAllowed && q.stats.fromSns > 0;
+      },
+    },
+  ],
+};
+
+TUTORIALS.push(SERVERLESS_API, WATCH_YOUR_APP, GET_ALERTED, DECOUPLE, MANAGED_DATABASE, REAL_NAME, DISKS_AND_BACKUPS, HIGHLY_AVAILABLE, CONNECT_AND_PROTECT);
 
 const info = (t: TutorialDef): TutorialInfo => ({
   id: t.id,
@@ -2531,6 +2638,7 @@ export async function viewTutorial(
     c.watchState = await c.watch();
   }
   if (t.needsAlerts) c.alertsState = await c.alerts();
+  if (t.needsQueues) c.queuesState = await c.queues();
   const steps = await Promise.all(
     t.steps.map(async (st) => ({
       id: st.id,

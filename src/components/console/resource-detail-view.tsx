@@ -24,6 +24,7 @@ import { DnsTestCard, HealthCheckPanel, HostedZonePanel } from "./route53-panels
 import { AlarmPanel, AlarmStateBadge, DashboardPanel, FunctionLogsCard, LogGroupPanel, MonitoringCard } from "./monitoring-panels";
 import { ObjectsPanel, WebsiteCard } from "./objects-panel";
 import { SubscriptionPanel, TopicPanel } from "./sns-panels";
+import { QueuePanel } from "./sqs-panels";
 import { PermissionChecker } from "./permission-checker";
 import { ReachabilityPanel } from "./reachability-panel";
 import { ResourceForm } from "./resource-form";
@@ -305,6 +306,7 @@ export function ResourceDetailView() {
       {item.service === "lambda" && item.type === "function" && <FunctionPanel fn={item} />}
       {item.service === "sns" && item.type === "topic" && <TopicPanel topic={item} />}
       {item.service === "sns" && item.type === "subscription" && <SubscriptionPanel sub={item} />}
+      {item.service === "sqs" && item.type === "queue" && <QueuePanel queue={item} />}
       {item.service === "apigateway" && item.type === "api" && <ApiPanel api={item} />}
       {item.service === "lambda" && item.type === "function" && <FunctionLogsCard fn={item} />}
       <MonitoringCard item={item} />

@@ -128,6 +128,14 @@ export function cliChecks(command: Command, args: Args, ctx: CliContext): Check[
     if (name && command.apiName === "CreateTopic") return [{ action, resource: `arn:aws:sns:${ctx.region}:${account}:${name}` }];
   }
 
+  if (command.service === "sqs") {
+    const url = args.one("queue-url");
+    const m = url ? /^https:\/\/sqs\.([a-z0-9-]+)\.amazonaws\.com\/(\d{12})\/(.+)$/.exec(url.trim()) : null;
+    if (m) return [{ action, resource: `arn:aws:sqs:${m[1]}:${m[2]}:${m[3]}` }];
+    const name = args.one("queue-name");
+    if (name) return [{ action, resource: `arn:aws:sqs:${ctx.region}:${account}:${name}` }];
+  }
+
   if (command.service === "autoscaling" && !COLLECTION.test(command.apiName)) {
     const name = args.one("auto-scaling-group-name");
     if (name) return [{ action, resource: `arn:aws:autoscaling:${ctx.region}:${account}:autoScalingGroup:*:autoScalingGroupName/${name}` }];

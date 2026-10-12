@@ -59,7 +59,7 @@ const node = (r: Resource, detail?: string, tags?: string[]): DiagramNode => ({ 
 
 export async function buildDiagram(engine: Engine, accountId: string, region: string): Promise<Diagram> {
   const list = (service: string, type: string) => engine.list(accountId, { service, type, region });
-  const [s, acls, peerings, endpoints, lbs, dbs, volumes, functions, apis] = await Promise.all([
+  const [s, acls, peerings, endpoints, lbs, dbs, volumes, functions, apis, topics, queues] = await Promise.all([
     takeSnapshot(engine, accountId, region),
     list("networking", "network-acl"),
     list("networking", "peering-connection"),
@@ -69,6 +69,8 @@ export async function buildDiagram(engine: Engine, accountId: string, region: st
     list("compute", "volume"),
     list("lambda", "function"),
     list("apigateway", "api"),
+    list("sns", "topic"),
+    list("sqs", "queue"),
   ]);
   const tgs = await list("loadbalancing", "target-group");
   const groupName = (id: string) => {
@@ -155,6 +157,8 @@ export async function buildDiagram(engine: Engine, accountId: string, region: st
     ...s.buckets.filter((b) => b.region === region).map((b) => node(b, b.config.websiteEnabled ? "S3 · website" : "S3 bucket")),
     ...functions.map((f) => node(f, `Lambda · ${String(f.config.runtime)}`)),
     ...apis.map((a) => node(a, "API Gateway · HTTP API")),
+    ...topics.map((t) => node(t, "SNS topic")),
+    ...queues.map((q) => node(q, q.config.deadLetterQueue ? `SQS queue · dead-letter → ${String(q.config.deadLetterQueue).split("/").pop()}` : "SQS queue")),
   ];
   return { region, vpcs, regional };
 }

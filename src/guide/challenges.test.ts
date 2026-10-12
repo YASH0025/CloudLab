@@ -42,8 +42,23 @@ beforeEach(() => {
 
 describe("challenges", { timeout: 60_000 }, () => {
   it("lists them, and scores fewer points per hint", () => {
-    expect(listChallenges().map((c) => c.id)).toEqual(["site-down", "no-updates", "access-denied", "db-connect", "api-500", "disk-wrong-zone", "peering-one-way", "acl-replies", "silent-orders", "unhealthy-targets"]);
+    expect(listChallenges().map((c) => c.id)).toEqual(["site-down", "no-updates", "access-denied", "db-connect", "api-500", "disk-wrong-zone", "peering-one-way", "acl-replies", "silent-orders", "double-charged", "unhealthy-targets"]);
     expect([0, 1, 2, 3].map(challengeScore)).toEqual([100, 90, 70, 40]);
+  });
+
+  it("double-charged: a longer visibility timeout and a dead-letter queue", async () => {
+    const q = () => find("sqs", "queue", "payments");
+    await play(
+      "double-charged",
+      async () => {
+        const dlq = await find("sqs", "queue", "payments-dlq");
+        await engine.update(ACCOUNT, (await q()).id, { deadLetterQueue: dlq.id, maxReceiveCount: 5 });
+      },
+      {
+        apply: async () => engine.update(ACCOUNT, (await q()).id, { visibilityTimeout: 120 }).then(() => undefined),
+        status: /retried forever/,
+      },
+    );
   });
 
   it("silent-orders: fix the filter's case and let only this topic invoke the function", async () => {
