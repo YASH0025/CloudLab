@@ -1,0 +1,524 @@
+"use client";
+
+import { formatDistanceToNowStrict } from "date-fns";
+import {
+  CheckIcon,
+  CopyIcon,
+  CpuIcon,
+  DownloadIcon,
+  ExternalLinkIcon,
+  FolderIcon,
+  GitBranchIcon,
+  LaptopIcon,
+  Loader2Icon,
+  PackageIcon,
+  PlugZapIcon,
+  RocketIcon,
+  TriangleAlertIcon,
+  UnplugIcon,
+} from "lucide-react";
+import { useState, useSyncExternalStore } from "react";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Skeleton } from "@/components/ui/skeleton";
+import { useDeployLocal, useDisconnectComputer, useLocal, useLocalAction, usePairComputer } from "@/hooks/use-cloud";
+import { ApiError } from "@/lib/api-client";
+import { AGENT_DOWNLOADS, AGENT_RELEASE, deployInput, SAMPLES, type AgentView, type AppAction, type LocalApp, type SampleId } from "@/local/types";
+import { cn } from "@/lib/utils";
+import { StateBadge } from "./state-badge";
+
+type Os = (typeof AGENT_DOWNLOADS)[number]["os"];
+
+/** The visitor's operating system, best guess, so the right download is offered first. */
+function guessOs(): Os {
+  const ua = navigator.userAgent;
+  if (/Windows/i.test(ua)) return "windows";
+  if (/Mac OS X|Macintosh/i.test(ua)) return "mac-arm";
+  if (/aarch64|arm64/i.test(ua) && /Linux/i.test(ua)) return "linux-arm";
+  if (/Linux/i.test(ua)) return "linux";
+  return "windows";
+}
+
+const noSubscribe = () => () => undefined;
+const useOs = () => useSyncExternalStore(noSubscribe, guessOs, () => "windows" as Os);
+const useOrigin = () => useSyncExternalStore(noSubscribe, () => window.location.origin, () => "");
+
+const gb = (bytes: number) => `${(bytes / 2 ** 30).toFixed(1)} GB`;
+
+function CopyText({ text, className }: { text: string; className?: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <div className={cn("relative min-w-0", className)}>
+      <pre className="overflow-x-auto rounded-md bg-muted py-2 pr-9 pl-3 font-mono text-xs leading-relaxed whitespace-pre-wrap break-all">{text}</pre>
+      <Button
+        type="button"
+        size="icon"
+        variant="ghost"
+        className="absolute top-1 right-1 size-6"
+        aria-label="Copy"
+        onClick={() =>
+          navigator.clipboard?.writeText(text).then(
+            () => {
+              setCopied(true);
+              setTimeout(() => setCopied(false), 1500);
+            },
+            () => undefined,
+          )
+        }
+      >
+        {copied ? <CheckIcon className="size-3.5" /> : <CopyIcon className="size-3.5" />}
+      </Button>
+    </div>
+  );
+}
+
+function ErrorLine({ error }: { error: unknown }) {
+  if (!error) return null;
+  return (
+    <p className="text-sm text-destructive" role="alert">
+      {error instanceof ApiError ? error.message : error instanceof Error ? error.message : "Something went wrong."}
+    </p>
+  );
+}
+
+// ---------- connecting the computer ----------
+
+/** How to start the agent with a connect code, per operating system. */
+function startCommand(os: Os, file: string, token: string, origin: string) {
+  const server = origin && !origin.includes("cloud-lab-livid.vercel.app") ? ` --server ${origin}` : "";
+  if (os === "windows") return `& "$env:USERPROFILE\\Downloads\\${file}" connect ${token}${server}`;
+  const mac = os.startsWith("mac") ? ` && xattr -d com.apple.quarantine ~/Downloads/${file} 2>/dev/null` : "";
+  return `chmod +x ~/Downloads/${file}${mac}; ~/Downloads/${file} connect ${token}${server}`;
+}
+
+function ConnectSteps({ token, agent }: { token: string | null; agent: AgentView | null }) {
+  const detected = useOs();
+  const origin = useOrigin();
+  const [os, setOs] = useState<Os | null>(null);
+  const chosen = os ?? detected;
+  const download = AGENT_DOWNLOADS.find((d) => d.os === chosen)!;
+  const pair = usePairComputer();
+  const code = token ?? pair.data?.token ?? null;
+
+  return (
+    <ol className="space-y-5 text-sm">
+      <li className="space-y-1.5">
+        <p className="font-medium">1. Install Docker</p>
+        <p className="text-muted-foreground">
+          Your apps run in Docker containers. Install{" "}
+          <a className="text-primary hover:underline" href="https://www.docker.com/products/docker-desktop/" target="_blank" rel="noreferrer">
+            Docker Desktop
+          </a>{" "}
+          (Windows, macOS) or Docker Engine (Linux), and start it.
+        </p>
+      </li>
+      <li className="space-y-2">
+        <p className="font-medium">2. Download the CloudLab agent</p>
+        <p className="text-muted-foreground">A small program that runs your apps and talks to CloudLab. It never lets CloudLab into your computer: it only asks CloudLab for work.</p>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button asChild size="sm">
+            <a href={`${AGENT_RELEASE}/${download.file}`}>
+              <DownloadIcon /> Download for {download.label}
+            </a>
+          </Button>
+          <Select value={chosen} onValueChange={(v) => setOs(v as Os)}>
+            <SelectTrigger className="h-8 w-56" aria-label="Operating system">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {AGENT_DOWNLOADS.map((d) => (
+                <SelectItem key={d.os} value={d.os}>
+                  {d.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          Have Node.js 18+? You can use{" "}
+          <a className="text-primary hover:underline" href="/agent/cloudlab-agent.mjs" download>
+            cloudlab-agent.mjs
+          </a>{" "}
+          instead: <span className="font-mono">node cloudlab-agent.mjs connect &lt;code&gt;</span>.
+        </p>
+      </li>
+      <li className="space-y-2">
+        <p className="font-medium">3. Connect it</p>
+        {!code ? (
+          <>
+            <p className="text-muted-foreground">Get a connect code for this computer. It works for this account only{agent ? ", and replaces the computer connected now" : ""}.</p>
+            <Button size="sm" variant={agent ? "outline" : "default"} onClick={() => pair.mutate()} disabled={pair.isPending}>
+              {pair.isPending ? <Loader2Icon className="animate-spin" /> : <PlugZapIcon />} {agent ? "Connect a different computer" : "Connect my computer"}
+            </Button>
+            <ErrorLine error={pair.error} />
+          </>
+        ) : (
+          <>
+            <p className="text-muted-foreground">
+              {chosen === "windows"
+                ? "Double-click the downloaded file and paste this code when it asks. (If Windows says it protected your PC: More info → Run anyway.)"
+                : "Open a terminal and run this (it makes the download runnable, then connects):"}
+            </p>
+            {chosen === "windows" ? <CopyText text={code} /> : <CopyText text={startCommand(chosen, download.file, code, origin)} />}
+            {chosen === "windows" && (
+              <p className="text-xs text-muted-foreground">
+                Or from PowerShell: <span className="font-mono break-all">{startCommand(chosen, download.file, code, origin)}</span>
+              </p>
+            )}
+            <p className="text-xs text-muted-foreground">The code is shown only once. Keep the agent&apos;s window open while you use Local mode; this page turns green when it&apos;s connected.</p>
+          </>
+        )}
+      </li>
+    </ol>
+  );
+}
+
+function ComputerCard() {
+  const { data } = useLocal();
+  const disconnect = useDisconnectComputer();
+  const [reconnect, setReconnect] = useState(false);
+  const agent = data?.agent ?? null;
+  const info = agent?.info;
+
+  if (!agent || !agent.lastSeenAt || reconnect) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <LaptopIcon className="size-4" /> Connect your computer
+          </CardTitle>
+          <CardDescription>Three steps, once. After that, open the agent whenever you want to use Local mode.</CardDescription>
+        </CardHeader>
+        <CardContent className="pb-5">
+          <ConnectSteps token={null} agent={agent} />
+          {reconnect && (
+            <Button variant="ghost" size="sm" className="mt-3" onClick={() => setReconnect(false)}>
+              Cancel
+            </Button>
+          )}
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <Card>
+      <CardHeader className="flex flex-row flex-wrap items-start justify-between gap-3">
+        <div className="space-y-1.5">
+          <CardTitle className="flex items-center gap-2">
+            <LaptopIcon className="size-4" /> {info?.hostname ?? agent.name}
+            <Badge variant={agent.online ? "success" : "secondary"}>
+              <span className="size-1.5 rounded-full bg-current" />
+              {agent.online ? "Online" : "Offline"}
+            </Badge>
+          </CardTitle>
+          <CardDescription>
+            {agent.online
+              ? "The agent is running on this computer and picks up work within a few seconds."
+              : `Last seen ${formatDistanceToNowStrict(new Date(agent.lastSeenAt!), { addSuffix: true })}. Open the CloudLab agent on the computer to bring it back.`}
+          </CardDescription>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button variant="outline" size="sm" onClick={() => setReconnect(true)}>
+            <PlugZapIcon /> Connect another
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => disconnect.mutate()} disabled={disconnect.isPending}>
+            <UnplugIcon /> Disconnect
+          </Button>
+        </div>
+      </CardHeader>
+      {info && (
+        <CardContent className="grid gap-4 pb-5 text-sm sm:grid-cols-2 lg:grid-cols-4">
+          <div>
+            <p className="text-xs text-muted-foreground">System</p>
+            <p>
+              {{ win32: "Windows", darwin: "macOS", linux: "Linux" }[info.platform] ?? info.platform} · {info.arch}
+            </p>
+          </div>
+          <div>
+            <p className="text-xs text-muted-foreground">Processor</p>
+            <p className="flex items-center gap-1.5">
+              <CpuIcon className="size-3.5 text-muted-foreground" /> {info.cpus} cores
+            </p>
+            <p className="truncate text-xs text-muted-foreground" title={info.cpuModel}>
+              {info.cpuModel}
+            </p>
+          </div>
+          <div>
+            <p className="text-xs text-muted-foreground">Memory</p>
+            <p>
+              {gb(info.memFree)} free of {gb(info.memTotal)}
+            </p>
+          </div>
+          <div>
+            <p className="text-xs text-muted-foreground">Docker</p>
+            {info.docker.ok ? (
+              <p className="text-success">Ready · {info.docker.version}</p>
+            ) : (
+              <p className="flex items-start gap-1.5 text-destructive">
+                <TriangleAlertIcon className="mt-0.5 size-3.5 shrink-0" /> {info.docker.error}
+              </p>
+            )}
+          </div>
+          {info.workspace && (
+            <div className="sm:col-span-2 lg:col-span-4">
+              <p className="text-xs text-muted-foreground">Your projects folder</p>
+              <p className="font-mono text-xs break-all">{info.workspace}</p>
+            </div>
+          )}
+        </CardContent>
+      )}
+    </Card>
+  );
+}
+
+// ---------- deploying ----------
+
+type SourceKind = "sample" | "github" | "folder";
+
+function DeployCard() {
+  const { data } = useLocal();
+  const deploy = useDeployLocal();
+  const [kind, setKind] = useState<SourceKind>("sample");
+  const [name, setName] = useState("");
+  const [sample, setSample] = useState<SampleId>("static-site");
+  const [repo, setRepo] = useState("");
+  const [branch, setBranch] = useState("");
+  const [folder, setFolder] = useState("");
+  const [port, setPort] = useState("");
+  const [invalid, setInvalid] = useState<string | null>(null);
+  const agent = data?.agent;
+  const folders = agent?.info?.folders ?? [];
+  const connected = !!agent?.lastSeenAt;
+
+  const submit = (e: React.FormEvent) => {
+    e.preventDefault();
+    setInvalid(null);
+    const source = kind === "sample" ? { type: "sample", sample } : kind === "github" ? { type: "github", repo, branch } : { type: "folder", folder };
+    const parsed = deployInput.safeParse({ name, source, hostPort: port || undefined });
+    if (!parsed.success) {
+      setInvalid(parsed.error.issues[0]?.message ?? "Check the form.");
+      return;
+    }
+    deploy.mutate(parsed.data, { onSuccess: () => setName("") });
+  };
+
+  const tabs: { kind: SourceKind; label: string; Icon: typeof PackageIcon }[] = [
+    { kind: "sample", label: "Sample app", Icon: PackageIcon },
+    { kind: "github", label: "GitHub repository", Icon: GitBranchIcon },
+    { kind: "folder", label: "A folder on my computer", Icon: FolderIcon },
+  ];
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <RocketIcon className="size-4" /> Deploy an app
+        </CardTitle>
+        <CardDescription>
+          The agent gets the code, builds a Docker image (with your Dockerfile, or one it writes for Node.js, Python or a static site) and runs it. Each app gets
+          its own port on your computer.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="pb-5">
+        <form onSubmit={submit} className="space-y-4">
+          <div className="flex flex-wrap gap-2" role="tablist" aria-label="Where the code comes from">
+            {tabs.map(({ kind: k, label, Icon }) => (
+              <Button key={k} type="button" role="tab" aria-selected={kind === k} size="sm" variant={kind === k ? "secondary" : "ghost"} onClick={() => setKind(k)}>
+                <Icon /> {label}
+              </Button>
+            ))}
+          </div>
+
+          <div className="grid gap-4 sm:grid-cols-2 [&>*]:min-w-0">
+            <div className="space-y-1.5">
+              <Label htmlFor="app-name">App name</Label>
+              <Input id="app-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="my-site" autoComplete="off" />
+              <p className="text-xs text-muted-foreground">Lowercase letters, numbers and hyphens.</p>
+            </div>
+
+            {kind === "sample" && (
+              <div className="space-y-1.5">
+                <Label htmlFor="app-sample">Sample</Label>
+                <Select value={sample} onValueChange={(v) => setSample(v as SampleId)}>
+                  <SelectTrigger id="app-sample" className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {SAMPLES.map((s) => (
+                      <SelectItem key={s.id} value={s.id}>
+                        {s.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">{SAMPLES.find((s) => s.id === sample)?.description}</p>
+              </div>
+            )}
+
+            {kind === "github" && (
+              <>
+                <div className="space-y-1.5">
+                  <Label htmlFor="app-repo">Public repository</Label>
+                  <Input id="app-repo" value={repo} onChange={(e) => setRepo(e.target.value)} placeholder="https://github.com/owner/repo" autoComplete="off" />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="app-branch">Branch (optional)</Label>
+                  <Input id="app-branch" value={branch} onChange={(e) => setBranch(e.target.value)} placeholder="main" autoComplete="off" />
+                </div>
+              </>
+            )}
+
+            {kind === "folder" && (
+              <div className="space-y-1.5">
+                <Label htmlFor="app-folder">Project folder</Label>
+                <Select value={folder} onValueChange={setFolder} disabled={folders.length === 0}>
+                  <SelectTrigger id="app-folder" className="w-full">
+                    <SelectValue placeholder={folders.length ? "Choose a folder" : "No folders yet"} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {folders.map((f) => (
+                      <SelectItem key={f} value={f}>
+                        {f}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  Folders inside <span className="font-mono">{agent?.info?.workspace ?? "CloudLab"}</span> on your computer. Copy a project there and it shows up here
+                  within a few seconds.
+                </p>
+              </div>
+            )}
+
+            <div className="space-y-1.5">
+              <Label htmlFor="app-port">Port (optional)</Label>
+              <Input id="app-port" inputMode="numeric" value={port} onChange={(e) => setPort(e.target.value.replace(/\D/g, ""))} placeholder="Picked for you, from 8080" />
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3">
+            <Button type="submit" disabled={!connected || deploy.isPending}>
+              {deploy.isPending ? <Loader2Icon className="animate-spin" /> : <RocketIcon />} Deploy
+            </Button>
+            {!connected && <span className="text-sm text-muted-foreground">Connect your computer first.</span>}
+          </div>
+          {invalid ? <p className="text-sm text-destructive">{invalid}</p> : <ErrorLine error={deploy.error} />}
+        </form>
+      </CardContent>
+    </Card>
+  );
+}
+
+// ---------- the apps ----------
+
+const ACTIONS: Record<LocalApp["status"], AppAction[]> = {
+  queued: ["delete"],
+  downloading: ["delete"],
+  building: ["delete"],
+  starting: ["delete"],
+  running: ["stop", "restart", "redeploy", "delete"],
+  stopped: ["start", "redeploy", "delete"],
+  failed: ["redeploy", "delete"],
+  missing: ["redeploy", "delete"],
+};
+
+const ACTION_LABEL: Record<AppAction, string> = { start: "Start", stop: "Stop", restart: "Restart", redeploy: "Redeploy", delete: "Delete" };
+const BUSY = ["queued", "downloading", "building", "starting"];
+
+function sourceLabel(app: LocalApp) {
+  const s = app.source;
+  if (s.type === "sample") return SAMPLES.find((x) => x.id === s.sample)?.label ?? s.sample;
+  if (s.type === "folder") return `Folder ${s.folder}`;
+  return `${s.repo.replace("https://github.com/", "")}${s.branch ? ` (${s.branch})` : ""}`;
+}
+
+function Logs({ title, text }: { title: string; text: string }) {
+  if (!text) return null;
+  return (
+    <details className="group">
+      <summary className="cursor-pointer text-xs font-medium text-muted-foreground select-none hover:text-foreground">{title}</summary>
+      <pre className="mt-2 max-h-72 overflow-auto rounded-md bg-[#0d1117] p-3 font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-[#c9d1d9]">{text}</pre>
+    </details>
+  );
+}
+
+function AppCard({ app }: { app: LocalApp }) {
+  const action = useLocalAction();
+  const busy = BUSY.includes(app.status);
+  return (
+    <Card className="gap-3 py-4">
+      <CardContent className="space-y-3 px-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0 space-y-1">
+            <p className="flex flex-wrap items-center gap-2 font-medium">
+              {app.name}
+              <StateBadge state={app.status} pending={busy ? app.status : null} />
+            </p>
+            <p className="text-xs text-muted-foreground">
+              {sourceLabel(app)}
+              {app.runtime ? ` · ${app.runtime}` : ""}
+              {app.hostPort ? ` · port ${app.hostPort}` : ""}
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {app.url && (
+              <Button asChild size="sm">
+                <a href={app.url} target="_blank" rel="noreferrer">
+                  Open <ExternalLinkIcon />
+                </a>
+              </Button>
+            )}
+            {ACTIONS[app.status].map((a) => (
+              <Button key={a} size="sm" variant={a === "delete" ? "ghost" : "outline"} disabled={action.isPending} onClick={() => action.mutate({ id: app.id, action: a })}>
+                {ACTION_LABEL[a]}
+              </Button>
+            ))}
+          </div>
+        </div>
+        {app.detail && <p className={cn("text-sm", app.status === "failed" ? "text-destructive" : "text-muted-foreground")}>{app.detail}</p>}
+        {app.url && <p className="text-xs text-muted-foreground">{app.url} opens on the computer running the agent.</p>}
+        <div className="space-y-2">
+          <Logs title="App logs" text={app.logs} />
+          <Logs title="Build log" text={app.buildLog} />
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+/** Local mode: run real apps on the learner's own computer, with CloudLab as the remote control. */
+export function LocalView() {
+  const { data, isLoading } = useLocal();
+  return (
+    <div className="space-y-5">
+      <div>
+        <h1 className="text-2xl font-semibold tracking-tight">Local mode</h1>
+        <p className="text-sm text-muted-foreground">
+          Run real apps on your own computer with Docker, using its CPU, memory and disk. CloudLab is the remote control: nothing is billed, and nothing leaves your
+          computer except status and logs.
+        </p>
+      </div>
+      {isLoading ? (
+        <Skeleton className="h-48 w-full" />
+      ) : (
+        <>
+          <ComputerCard />
+          <DeployCard />
+          {data && data.apps.length > 0 && (
+            <section className="space-y-3">
+              <h2 className="font-medium">Your apps ({data.apps.length})</h2>
+              {data.apps.map((a) => (
+                <AppCard key={a.id} app={a} />
+              ))}
+            </section>
+          )}
+        </>
+      )}
+    </div>
+  );
+}

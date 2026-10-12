@@ -497,3 +497,35 @@ export function useIdentities() {
 export function useSimulate() {
   return useMutation({ mutationFn: api.simulate });
 }
+
+// ---------- Local mode ----------
+
+/** The connected computer and its apps. Polls while anything could change. */
+export function useLocal() {
+  return useQuery({ queryKey: ["local"], queryFn: api.localStatus, refetchInterval: 3_000 });
+}
+
+export function usePairComputer() {
+  const qc = useQueryClient();
+  return useMutation({ mutationFn: api.localPair, onSettled: () => qc.invalidateQueries({ queryKey: ["local"] }) });
+}
+
+export function useDisconnectComputer() {
+  const qc = useQueryClient();
+  return useMutation({ mutationFn: api.localDisconnect, onSettled: () => qc.invalidateQueries({ queryKey: ["local"] }) });
+}
+
+/** Deploy to the computer. Errors show inline. */
+export function useDeployLocal() {
+  const qc = useQueryClient();
+  return useMutation({ mutationFn: api.localDeploy, onSettled: () => qc.invalidateQueries({ queryKey: ["local"] }) });
+}
+
+export function useLocalAction() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, action }: { id: string; action: Parameters<typeof api.localAction>[1] }) => api.localAction(id, action),
+    onError: (e) => toast.error(e instanceof ApiError ? e.message : "Something went wrong."),
+    onSettled: () => qc.invalidateQueries({ queryKey: ["local"] }),
+  });
+}

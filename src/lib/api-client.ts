@@ -4,6 +4,7 @@ import type { ReachabilityInput, ReachabilityResult } from "@/engine/analysis/re
 import type { Advice, TutorialInfo, TutorialView } from "@/guide/types";
 import type { Diagram } from "@/guide/diagram";
 import type { Evaluation } from "@/engine/iam/policy";
+import type { AgentView, AppAction, DeployInput, LocalApp, LocalStatus } from "@/local/types";
 import { useConsoleStore } from "@/stores/console-store";
 
 export type QueueActionInput =
@@ -160,6 +161,12 @@ export interface MeResponse {
 }
 
 export const api = {
+  localStatus: () => request<LocalStatus>(`/api/local`),
+  localPair: () => request<{ agent: AgentView; token: string }>(`/api/local/pair`, { method: "POST" }),
+  localDisconnect: () => request<void>(`/api/local/pair`, { method: "DELETE" }),
+  localDeploy: (input: DeployInput) => request<LocalApp>(`/api/local/apps`, { method: "POST", body: JSON.stringify(input) }),
+  localAction: (id: string, action: AppAction) =>
+    request<LocalApp | void>(`/api/local/apps/${encodeURIComponent(id)}`, { method: "POST", body: JSON.stringify({ action }) }),
   me: () => request<MeResponse>(`/api/me`),
 
   services: (region: string) => request<ServicesResponse>(`/api/services?region=${encodeURIComponent(region)}`),

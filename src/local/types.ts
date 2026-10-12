@@ -183,5 +183,16 @@ export type SyncBody = z.infer<typeof syncBody>;
 
 export const taskResult = z.object({ status: z.enum(["done", "failed"]), error: z.string().max(1000).optional() });
 
+/** Where the agent downloads live (built by .github/workflows/agent.yml). */
+export const AGENT_RELEASE = "https://github.com/YASH0025/CloudLab/releases/download/agent-latest";
+
+export const AGENT_DOWNLOADS = [
+  { os: "windows", label: "Windows", file: "cloudlab-agent-windows-x64.exe" },
+  { os: "mac-arm", label: "macOS (Apple silicon)", file: "cloudlab-agent-darwin-arm64" },
+  { os: "mac-intel", label: "macOS (Intel)", file: "cloudlab-agent-darwin-x64" },
+  { os: "linux", label: "Linux (x64)", file: "cloudlab-agent-linux-x64" },
+  { os: "linux-arm", label: "Linux (ARM)", file: "cloudlab-agent-linux-arm64" },
+] as const;
+
 /** The agent counts as online if it checked in within this many milliseconds. */
 export const ONLINE_WINDOW_MS = 20_000;

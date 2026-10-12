@@ -8,6 +8,7 @@ import {
   DatabaseIcon,
   DatabaseZapIcon,
   ActivityIcon,
+  LaptopIcon,
   LayoutDashboardIcon,
   MenuIcon,
   NetworkIcon,
@@ -74,6 +75,7 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
         </Link>
         {[
           { href: routes.diagram(), label: "Network diagram", Icon: WaypointsIcon },
+          { href: routes.local(), label: "Local mode", Icon: LaptopIcon },
           { href: routes.progress(), label: "My progress", Icon: TrophyIcon },
         ].map(({ href, label, Icon }) => (
           <Link
