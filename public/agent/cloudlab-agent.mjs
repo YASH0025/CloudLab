@@ -24,16 +24,17 @@
  * Needs Node.js 18 or newer and Docker. No npm packages.
  */
 
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import readline from "node:readline";
+import http from "node:http";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-export const AGENT_VERSION = "0.2.1";
+export const AGENT_VERSION = "0.3.0";
 const DEFAULT_SERVER = "https://cloud-lab-livid.vercel.app";
 const HOME = path.join(os.homedir(), ".cloudlab");
 const CONFIG = path.join(HOME, "agent.json");
@@ -57,12 +58,12 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const tail = (text, n = MAX_LOG) => (text.length > n ? text.slice(-n) : text);
 
 /** Runs a program without a shell (arguments are never interpreted), collecting its output. */
-export function run(cmd, args, { cwd, onOutput, timeoutMs = 15 * 60_000, input } = {}) {
+export function run(cmd, args, { cwd, onOutput, timeoutMs = 15 * 60_000, input, env, shell = false } = {}) {
   return new Promise((resolve) => {
     let out = "";
     let child;
     try {
-      child = spawn(cmd, args, { cwd, windowsHide: true });
+      child = spawn(cmd, args, { cwd, windowsHide: true, shell, env: env ? { ...process.env, ...env } : process.env });
     } catch (e) {
       resolve({ code: -1, out: String(e.message ?? e) });
       return;
@@ -111,9 +112,22 @@ export function dockerDesktopCommand(platform = process.platform, env = process.
   return null;
 }
 
-/** Starts Docker Desktop in the background (at most every few minutes). True if it tried. */
+let dockerGaveUp = false;
+
+/**
+ * Starts Docker Desktop in the background, once per run of the agent. True while it's
+ * starting. If it isn't up within a few minutes (virtualization off, WSL broken…) the
+ * agent stops trying, so Docker Desktop's error doesn't pop up again and again, and
+ * apps run without Docker.
+ */
 function startDockerDesktop() {
-  if (Date.now() - dockerStartedAt < START_RETRY_MS) return dockerStartedAt > 0;
+  if (dockerGaveUp) return false;
+  if (dockerStartedAt) {
+    if (Date.now() - dockerStartedAt < START_RETRY_MS) return true;
+    dockerGaveUp = true;
+    log("Docker didn't start (Docker Desktop shows why). Apps will run without Docker.");
+    return false;
+  }
   const c = dockerDesktopCommand();
   if (!c) return false;
   try {
@@ -131,12 +145,13 @@ function startDockerDesktop() {
 async function dockerInfo() {
   const r = await docker(["version", "--format", "{{.Server.Version}}"], { timeoutMs: 15000 });
   if (r.code === 0) {
-    if (dockerStartedAt) log("Docker is ready.");
+    if (dockerStartedAt || dockerGaveUp) log("Docker is ready.");
     dockerStartedAt = 0;
+    dockerGaveUp = false;
     return { ok: true, version: r.out.trim() };
   }
   if (/isn't installed/.test(r.out)) {
-    return { ok: false, error: "Docker isn't installed. Install Docker Desktop (or Docker Engine on Linux), start it, then restart the agent." };
+    return { ok: false, error: "Docker isn't installed, so apps run without Docker. Install Docker Desktop for the full Local mode (GitHub apps, your own Dockerfiles)." };
   }
   const starting = startDockerDesktop();
   const detail = tail(r.out.trim().split("\n").pop() ?? "", 200);
@@ -144,7 +159,9 @@ async function dockerInfo() {
     ok: false,
     error: starting
       ? "Docker wasn't running, so the agent is starting Docker Desktop. Give it a minute or two."
-      : `Docker is installed but not running. Start Docker Desktop (or the docker service) and wait until it's ready.${detail ? ` (Docker said: ${detail})` : ""}`,
+      : dockerGaveUp
+        ? "Docker Desktop didn't start (it says why: often virtualization is turned off). Apps run without Docker meanwhile."
+        : `Docker is installed but not running. Start Docker Desktop (or the docker service) and wait until it's ready.${detail ? ` (Docker said: ${detail})` : ""}`,
   };
 }
 
@@ -152,7 +169,7 @@ async function dockerInfo() {
 async function waitForDocker(ms = 120_000) {
   const until = Date.now() + ms;
   let info = await dockerInfo();
-  while (!info.ok && dockerStartedAt && Date.now() < until) {
+  while (!info.ok && dockerStartedAt && !dockerGaveUp && Date.now() < until) {
     await sleep(5000);
     info = await dockerInfo();
   }
@@ -549,7 +566,7 @@ const net = require("net");
 
 let config = { lanIp: null, routes: {} };
 const load = () => {
-  try { config = JSON.parse(fs.readFileSync("/routes/routes.json", "utf8")); } catch {}
+  try { config = JSON.parse(fs.readFileSync(process.env.ROUTES_FILE || "/routes/routes.json", "utf8")); } catch {}
 };
 load();
 setInterval(load, 2000);
@@ -611,8 +628,9 @@ dns.on("message", (msg, rinfo) => {
   up.on("error", () => { clearInterval(timer); try { up.close(); } catch {} });
   ask();
 });
-dns.on("error", (e) => console.error("DNS:", e.message));
-if (process.env.DNS !== "off") dns.bind(53, () => console.log("DNS on port 53"));
+let dnsUp = false;
+dns.on("error", (e) => { console.error("DNS_FAILED " + (e.code || e.message)); try { dns.close(); } catch {} });
+if (process.env.DNS !== "off") dns.bind({ port: 53, address: process.env.DNS_HOST || "0.0.0.0" }, () => { dnsUp = true; console.log("DNS on port 53"); });
 
 // ---- HTTP ----
 const page = (domains) =>
@@ -643,7 +661,13 @@ server.on("upgrade", (req, socket, head) => {
   });
   up.on("error", () => socket.destroy());
 });
-server.listen(80, () => console.log("HTTP on port 80"));
+const httpPort = Number(process.env.HTTP_PORT || 80);
+server.on("error", (e) => { console.error("HTTP_FAILED " + (e.code || e.message)); process.exit(3); });
+server.listen(httpPort, () => {
+  console.log("HTTP on port " + httpPort);
+  // Give the DNS socket a moment, then say what's up (the agent reads this line).
+  setTimeout(() => console.log("READY dns=" + dnsUp + " http=" + httpPort), 500);
+});
 `;
 
 const GATEWAY_DOCKERFILE = `FROM node:22-alpine
@@ -763,6 +787,385 @@ export class Gateway {
   }
 }
 
+// ---------- without Docker ----------
+
+const NATIVE_FILE = path.join(HOME, "native.json");
+const IS_WINDOWS = process.platform === "win32";
+/** The downloaded agent carries a JavaScript runtime (Bun) that can also install packages and run apps. */
+const BUNDLED = typeof process.versions.bun === "string";
+
+/** A JavaScript command: the agent's own runtime when it's the downloaded app, else Node.js and npm. */
+export function jsCommand(kind, extra = [], bundled = BUNDLED) {
+  if (bundled) {
+    const args = kind === "install" ? ["install"] : kind === "script" ? ["run", "--bun", ...extra] : extra;
+    return { cmd: process.execPath, args, env: { BUN_BE_BUN: "1" }, shell: false };
+  }
+  if (kind === "file") return { cmd: process.execPath, args: extra, env: {}, shell: false };
+  // npm is a .cmd script on Windows, which Node can only start through a shell (the arguments are fixed, never user input).
+  return { cmd: IS_WINDOWS ? "npm.cmd" : "npm", args: kind === "install" ? ["install"] : ["run", ...extra], env: {}, shell: IS_WINDOWS };
+}
+
+async function findPython() {
+  for (const [cmd, args] of IS_WINDOWS ? [["python", []], ["py", ["-3"]], ["python3", []]] : [["python3", []], ["python", []]]) {
+    const r = await run(cmd, [...args, "--version"], { timeoutMs: 10000 });
+    if (r.code === 0 && /Python 3\./.test(r.out)) return { cmd, args };
+  }
+  return null;
+}
+
+/** Serves a folder's files, the way the nginx image would. Only files inside the folder. */
+function staticServer(dir, port, onLog) {
+  const types = { ".html": "text/html; charset=utf-8", ".css": "text/css", ".js": "text/javascript", ".json": "application/json", ".svg": "image/svg+xml", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".ico": "image/x-icon", ".webp": "image/webp", ".txt": "text/plain; charset=utf-8", ".woff2": "font/woff2" };
+  return new Promise((resolve, reject) => {
+    const server = http.createServer((req, res) => {
+      let rel;
+      try {
+        rel = decodeURIComponent((req.url ?? "/").split("?")[0]);
+      } catch {
+        rel = "/";
+      }
+      let file = path.join(dir, path.normalize(rel).replace(/^([/\\])+/, ""));
+      if (!file.startsWith(dir)) file = dir;
+      try {
+        if (lstatSync(file).isDirectory()) file = path.join(file, "index.html");
+      } catch {
+        // missing: 404 below
+      }
+      try {
+        const body = readFileSync(file);
+        res.writeHead(200, { "content-type": types[path.extname(file).toLowerCase()] ?? "application/octet-stream" });
+        res.end(body);
+        onLog(`${req.method} ${req.url} 200`);
+      } catch {
+        res.writeHead(404, { "content-type": "text/html" });
+        res.end("<h1>404 Not Found</h1>");
+        onLog(`${req.method} ${req.url} 404`);
+      }
+    });
+    server.once("error", reject);
+    server.listen(port, "0.0.0.0", () => resolve(server));
+  });
+}
+
+function killTree(child) {
+  if (!child?.pid) return;
+  if (IS_WINDOWS) {
+    // taskkill also ends the app's own child processes (npm → node). Synchronous, so it works while the agent exits.
+    try {
+      spawnSync("taskkill", ["/pid", String(child.pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" });
+    } catch {
+      // already gone
+    }
+    return;
+  }
+  try {
+    process.kill(-child.pid, "SIGTERM");
+  } catch {
+    try {
+      child.kill("SIGKILL");
+    } catch {
+      // already gone
+    }
+  }
+}
+
+/**
+ * Apps run straight on this computer, for when Docker isn't available: static sites
+ * served by the agent itself, Node.js apps with the agent's own runtime, Python apps
+ * with the computer's Python. They run as long as the agent does, and start again
+ * with it. Remembered in ~/.cloudlab/native.json.
+ */
+export class NativeApps {
+  constructor(file = NATIVE_FILE) {
+    this.file = file;
+    this.running = new Map();
+    try {
+      this.registry = JSON.parse(readFileSync(file, "utf8"));
+    } catch {
+      this.registry = {};
+    }
+  }
+
+  save() {
+    mkdirSync(path.dirname(this.file), { recursive: true });
+    writeFileSync(this.file, JSON.stringify(this.registry, null, 2));
+  }
+
+  has(appId) {
+    return !!this.registry[appId];
+  }
+
+  /** Sets an app up from its code in `dir` (install, build) and starts it. Returns the port. */
+  async deploy(appId, name, plan, dir, hostPort, taken, progress) {
+    await this.stop(appId);
+    const port = hostPort ?? (await freePort(8080, taken));
+    let start;
+    if (plan.kind === "static") {
+      start = { static: true };
+    } else if (plan.kind === "node") {
+      const pkg = JSON.parse(readFileSync(path.join(dir, "package.json"), "utf8"));
+      if (Object.keys({ ...pkg.dependencies, ...pkg.devDependencies }).length) {
+        progress("Installing dependencies…");
+        const c = jsCommand("install");
+        const r = await run(c.cmd, c.args, { cwd: dir, env: c.env, shell: c.shell, onOutput: (o) => progress(null, o) });
+        if (r.code !== 0) throw new Error("Installing the dependencies failed. The build log says why.");
+      }
+      if (pkg.scripts?.build) {
+        progress("Building…");
+        const c = jsCommand("script", ["build"]);
+        const r = await run(c.cmd, c.args, { cwd: dir, env: c.env, shell: c.shell, onOutput: (o) => progress(null, o) });
+        if (r.code !== 0) throw new Error("npm run build failed. The build log says why.");
+      }
+      start = pkg.scripts?.start ? jsCommand("script", ["start"]) : jsCommand("file", [pkg.main || "index.js"]);
+    } else if (plan.kind === "python") {
+      const py = await findPython();
+      if (!py) throw new Error("This is a Python app, and Python isn't installed on this computer. Install Python 3 (python.org), or use Docker.");
+      progress("Creating a virtual environment…");
+      let r = await run(py.cmd, [...py.args, "-m", "venv", ".venv"], { cwd: dir, onOutput: (o) => progress(null, o) });
+      if (r.code !== 0) throw new Error("Couldn't create a Python virtual environment. The build log says why.");
+      const venvPy = path.join(dir, ".venv", IS_WINDOWS ? "Scripts" : "bin", IS_WINDOWS ? "python.exe" : "python");
+      progress("Installing requirements…");
+      r = await run(venvPy, ["-m", "pip", "install", "-r", "requirements.txt"], { cwd: dir, onOutput: (o) => progress(null, o) });
+      if (r.code !== 0) throw new Error("pip install failed. The build log says why.");
+      start = { cmd: venvPy, args: [plan.entry], env: { PYTHONUNBUFFERED: "1" }, shell: false };
+    } else {
+      throw new Error("This project has its own Dockerfile, so it needs Docker to run.");
+    }
+    this.registry[appId] = { name, dir, port, runtime: plan.runtime, start, wanted: "running" };
+    this.save();
+    return port;
+  }
+
+  /** Starts a registered app. Resolves once it has had a moment to crash (or not). */
+  async start(appId) {
+    const app = this.registry[appId];
+    if (!app) return false;
+    await this.stop(appId, false);
+    const entry = { logs: "", status: "running", exitCode: null, stopping: false };
+    const add = (line) => (entry.logs = tail(entry.logs + line + (line.endsWith("\n") ? "" : "\n")));
+    this.running.set(appId, entry);
+    app.wanted = "running";
+    this.save();
+    if (app.start.static) {
+      try {
+        entry.server = await staticServer(app.dir, app.port, add);
+        add(`Serving ${app.dir} on port ${app.port}`);
+      } catch (e) {
+        entry.status = "failed";
+        add(e.code === "EADDRINUSE" ? `Port ${app.port} is already used by another program.` : String(e.message));
+      }
+      return entry.status === "running";
+    }
+    const { cmd, args, env, shell } = app.start;
+    const child = spawn(cmd, args, {
+      cwd: app.dir,
+      env: { ...process.env, ...env, PORT: String(app.port), HOST: "0.0.0.0", NODE_ENV: "production" },
+      shell,
+      windowsHide: true,
+      detached: !IS_WINDOWS,
+    });
+    entry.child = child;
+    app.pid = child.pid ?? null;
+    this.save();
+    child.stdout.on("data", (d) => add(d.toString()));
+    child.stderr.on("data", (d) => add(d.toString()));
+    child.on("error", (e) => {
+      entry.status = "failed";
+      add(String(e.message));
+    });
+    child.on("exit", (code) => {
+      entry.exitCode = code;
+      entry.status = entry.stopping || code === 0 ? "stopped" : "failed";
+    });
+    await sleep(3000);
+    return entry.status === "running";
+  }
+
+  async stop(appId, remember = true) {
+    const entry = this.running.get(appId);
+    if (entry) {
+      entry.stopping = true;
+      entry.status = "stopped";
+      if (entry.server) await new Promise((r) => entry.server.close(() => r()));
+      if (entry.child && entry.child.exitCode === null) killTree(entry.child);
+    }
+    if (remember && this.registry[appId]) {
+      this.registry[appId].wanted = "stopped";
+      this.save();
+    }
+  }
+
+  async remove(appId) {
+    await this.stop(appId, false);
+    this.running.delete(appId);
+    delete this.registry[appId];
+    this.save();
+    rmSync(path.join(APPS_DIR, appId), { recursive: true, force: true });
+  }
+
+  /** Ends every app the agent started (when the agent itself is closing). */
+  stopAll() {
+    for (const e of this.running.values()) {
+      e.stopping = true;
+      if (e.child && e.child.exitCode === null) killTree(e.child);
+      e.server?.close();
+    }
+  }
+
+  /** After the agent starts: clear out processes left from a previous run that ended abruptly, then bring back the apps that were running. */
+  async restore() {
+    for (const a of Object.values(this.registry)) {
+      if (!a.pid) continue;
+      try {
+        process.kill(a.pid, 0);
+        killTree({ pid: a.pid });
+      } catch {
+        // not running any more
+      }
+      a.pid = null;
+    }
+    this.save();
+    await sleep(500);
+    const wanted = Object.entries(this.registry).filter(([, a]) => a.wanted === "running");
+    if (wanted.length) log(`Starting your apps again: ${wanted.map(([, a]) => a.name).join(", ")}`);
+    for (const [id] of wanted) await this.start(id);
+  }
+
+  /** What CloudLab should show for each app. */
+  report(withLogs) {
+    return Object.entries(this.registry).map(([id, a]) => {
+      const e = this.running.get(id);
+      const status = e?.status ?? "stopped";
+      return {
+        id,
+        status,
+        detail:
+          status === "running"
+            ? `Running on port ${a.port}, without Docker.`
+            : status === "failed"
+              ? "The app stopped with an error. Its logs say why."
+              : "Stopped. Start it again whenever you like.",
+        hostPort: a.port,
+        containerPort: null,
+        runtime: a.runtime,
+        ...(withLogs && e ? { logs: e.logs } : {}),
+      };
+    });
+  }
+
+  logs(appId) {
+    return this.running.get(appId)?.logs ?? "";
+  }
+
+  ports() {
+    return Object.values(this.registry).map((a) => a.port);
+  }
+
+  targets() {
+    return Object.fromEntries(Object.entries(this.registry).map(([id, a]) => [id, `127.0.0.1:${a.port}`]));
+  }
+}
+
+/** How to run a project without Docker, from what `detect` found. */
+export function nativePlan(plan, dir) {
+  if (!plan) return null;
+  if (plan.runtime.startsWith("nginx")) return { kind: "static", runtime: "Static site (no Docker)" };
+  if (plan.runtime.startsWith("Node")) return { kind: "node", runtime: "Node.js (no Docker)" };
+  if (plan.runtime.startsWith("Python")) {
+    const entry = ["app.py", "main.py", "server.py", "wsgi.py"].find((f) => existsSync(path.join(dir, f))) ?? "app.py";
+    return { kind: "python", runtime: "Python (no Docker)", entry };
+  }
+  return { kind: "docker", runtime: plan.runtime };
+}
+
+/** The gateway as a plain process, for when Docker isn't there: same code, same routes file. */
+export class NativeGateway {
+  constructor() {
+    this.state = null;
+    this.child = null;
+    this.retryAt = 0;
+    // A gateway left running by an agent that ended abruptly would hold ports 53 and 80.
+    try {
+      const pid = Number(readFileSync(path.join(GATEWAY_DIR, "native", "pid"), "utf8"));
+      if (pid) {
+        process.kill(pid, 0);
+        killTree({ pid });
+      }
+    } catch {
+      // none left
+    }
+  }
+
+  async update(routes, targets) {
+    const lanIp = lanAddress();
+    const table = {};
+    for (const r of routes) if (targets[r.appId]) table[r.domain] = targets[r.appId];
+    const dir = path.join(GATEWAY_DIR, "native");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path.join(dir, "routes.json"), JSON.stringify({ lanIp, routes: table }, null, 2));
+    if (routes.length === 0) {
+      if (this.child) {
+        killTree(this.child);
+        this.child = null;
+        log("No app has a domain any more: stopped the gateway.");
+      }
+      this.state = null;
+      return;
+    }
+    if (this.child && this.child.exitCode === null) return;
+    if (Date.now() < this.retryAt) return;
+    writeFileSync(path.join(dir, "gateway.js"), GATEWAY_JS);
+    for (const httpPort of [80, 8000]) {
+      const r = await this.launch(dir, lanIp, httpPort);
+      if (r) {
+        this.state = r;
+        return;
+      }
+    }
+    this.state = { running: false, dns: false, httpPort: null, error: "The gateway couldn't start: ports 80 and 8000 are both in use." };
+    this.retryAt = Date.now() + 60_000;
+  }
+
+  stop() {
+    if (this.child) killTree(this.child);
+    this.child = null;
+  }
+
+  launch(dir, lanIp, httpPort) {
+    return new Promise((resolve) => {
+      const c = jsCommand("file", [path.join(dir, "gateway.js")]);
+      const child = spawn(c.cmd, c.args, {
+        cwd: dir,
+        env: { ...process.env, ...c.env, ROUTES_FILE: path.join(dir, "routes.json"), HTTP_PORT: String(httpPort), DNS_HOST: lanIp ?? "0.0.0.0" },
+        windowsHide: true,
+        detached: !IS_WINDOWS,
+      });
+      let out = "";
+      const done = (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      };
+      const timer = setTimeout(() => done(null), 8000);
+      child.stdout.on("data", (d) => {
+        out += d;
+        const m = /READY dns=(true|false) http=(\d+)/.exec(out);
+        if (!m) return;
+        this.child = child;
+        writeFileSync(path.join(dir, "pid"), String(child.pid ?? ""));
+        const dns = m[1] === "true";
+        const notes = [];
+        if (!dns) notes.push("Port 53 is in use (or Windows asked to allow the agent through the firewall and it wasn't allowed), so other devices can't use this computer for DNS yet.");
+        if (httpPort !== 80) notes.push(`Port 80 is busy, so the gateway uses ${httpPort}: open http://<name>:${httpPort}.`);
+        log(`Gateway running without Docker: DNS ${dns ? `on ${lanIp}:53` : "off"}, web on port ${httpPort}.`);
+        done({ running: true, dns, httpPort, error: notes.join(" ") || null });
+      });
+      child.stderr.on("data", (d) => (out += d));
+      child.on("exit", () => done(null));
+      child.on("error", () => done(null));
+    });
+  }
+}
+
 // ---------- tasks ----------
 
 /**
@@ -782,6 +1185,32 @@ export class Agent {
     this.busy = new Set();
     this.lastLogs = 0;
     this.gateway = new Gateway();
+    this.native = new NativeApps();
+    this.nativeGateway = new NativeGateway();
+  }
+
+  /** Sets up and starts an app without Docker. Returns an error message, or null. */
+  async deployNative({ appId, name, source, hostPort, plan, dir, report, progress, getBuildLog }) {
+    const np = nativePlan(plan, dir);
+    if (np.kind === "docker") throw new Error("This project has its own Dockerfile, so it needs Docker, which isn't running on this computer.");
+    if (source.type === "github" && np.kind !== "static") {
+      throw new Error(
+        "Without Docker, CloudLab only runs code from GitHub if it's a static site: anything else would run with full access to your computer. If you trust this repository, copy it into your CloudLab folder and deploy that folder.",
+      );
+    }
+    await report({ status: "building", detail: "Setting it up without Docker…", runtime: np.runtime });
+    const dockerPorts = ((await inventory()) ?? []).map((c) => c.hostPort);
+    const port = await this.native.deploy(appId, name, np, dir, hostPort, [...this.native.ports(), ...dockerPorts], progress);
+    await report({ status: "starting", detail: "Starting…", buildLog: getBuildLog() });
+    const ok = await this.native.start(appId);
+    const logs = this.native.logs(appId);
+    if (!ok) {
+      await report({ status: "failed", detail: "The app started and then stopped. Its logs say why.", hostPort: port, containerPort: null, logs, buildLog: getBuildLog() });
+      return "The app exited right after starting.";
+    }
+    await report({ status: "running", detail: `Running on port ${port}, without Docker.`, hostPort: port, containerPort: null, runtime: np.runtime, logs, buildLog: getBuildLog() });
+    log(`${name} is running without Docker: http://localhost:${port}`);
+    return null;
   }
 
   async deploy(task) {
@@ -801,7 +1230,8 @@ export class Agent {
     };
     try {
       const info = await waitForDocker();
-      if (!info.ok) throw new Error(info.error);
+      // A redeploy starts from scratch, whichever way it ran before.
+      await this.native.remove(appId);
 
       // 1. Get the code into a fresh folder.
       const dir = path.join(APPS_DIR, appId, "src");
@@ -826,6 +1256,7 @@ export class Agent {
         const where = source.type === "folder" ? `the folder ${source.folder}` : "the repository";
         throw new Error(`Couldn't tell how to run this code: there's no Dockerfile, package.json, requirements.txt or index.html at the top of ${where}. Add a Dockerfile.`);
       }
+      if (!info.ok) return await this.deployNative({ appId, name, source, hostPort, plan, dir, report, progress, getBuildLog: () => buildLog });
       if (plan.dockerfile && !existsSync(path.join(dir, "Dockerfile"))) writeFileSync(path.join(dir, "Dockerfile"), plan.dockerfile);
       if (!existsSync(path.join(dir, ".dockerignore"))) writeFileSync(path.join(dir, ".dockerignore"), "node_modules\n.git\n");
       await report({ status: "building", detail: `Building the image (${plan.runtime})…`, runtime: plan.runtime });
@@ -896,6 +1327,21 @@ export class Agent {
 
   async lifecycle(task) {
     const { appId } = task.payload;
+    if (this.native.has(appId)) {
+      if (task.type === "remove") {
+        await this.native.remove(appId);
+        log("Removed an app.");
+        return null;
+      }
+      if (task.type === "stop") await this.native.stop(appId);
+      else {
+        if (task.type === "restart") await this.native.stop(appId, false);
+        await this.native.start(appId);
+      }
+      const [r] = this.native.report(true).filter((x) => x.id === appId);
+      await this.api.report(appId, r);
+      return r.status === "failed" ? "The app stopped with an error." : null;
+    }
     const c = await containerFor(appId);
     if (!c) {
       if (task.type === "remove") return null;
@@ -929,7 +1375,8 @@ export class Agent {
 
   /** One check-in: report the computer and its apps, and do whatever work comes back. */
   async tick() {
-    const info = { ...(await computerInfo()), lanIp: lanAddress(), gateway: this.gateway.state };
+    const base = await computerInfo();
+    const info = { ...base, lanIp: lanAddress(), gateway: base.docker.ok ? this.gateway.state : this.nativeGateway.state };
     const found = info.docker.ok ? await inventory() : null;
     const withLogs = Date.now() - this.lastLogs > LOGS_EVERY_MS;
     if (withLogs) this.lastLogs = Date.now();
@@ -945,14 +1392,14 @@ export class Agent {
         ...(withLogs && c.running ? { logs: await containerLogs(c.container) } : {}),
       });
     }
+    for (const a of this.native.report(withLogs)) if (!this.busy.has(a.id)) apps.push(a);
     const { tasks, routes = [] } = await this.api.sync({ info, apps, complete: found !== null && this.busy.size === 0 });
     for (const t of tasks) await this.handle(t);
-    if (info.docker.ok) {
-      try {
-        await this.gateway.update(routes);
-      } catch (e) {
-        log("Gateway:", e.message);
-      }
+    try {
+      if (info.docker.ok) await this.gateway.update(routes);
+      else await this.nativeGateway.update(routes, this.native.targets());
+    } catch (e) {
+      log("Gateway:", e.message);
     }
   }
 }
@@ -1037,10 +1484,24 @@ async function main(argv) {
   const agent = new Agent(new Api(config.server, config.token));
   const info = await computerInfo();
   console.log(`CloudLab agent ${AGENT_VERSION} on ${info.hostname} (${info.platform}, ${info.cpus} CPUs, ${(info.memTotal / 2 ** 30).toFixed(1)} GB RAM)`);
-  console.log(info.docker.ok ? `Docker ${info.docker.version} is ready.` : `Warning: ${info.docker.error}`);
+  console.log(info.docker.ok ? `Docker ${info.docker.version} is ready.` : `${info.docker.error}`);
   console.log(`Connected to ${config.server}. Leave this window open; press Ctrl+C to stop.`);
   console.log(`Your own projects go in ${WORKSPACE} (one folder per project).\n`);
 
+  await agent.native.restore();
+  // Apps run without Docker live as long as the agent: close them with it.
+  let closing = false;
+  const close = () => {
+    if (closing) return;
+    closing = true;
+    agent.native.stopAll();
+    agent.nativeGateway.stop();
+    process.exit(0);
+  };
+  for (const sig of IS_WINDOWS ? ["SIGINT", "SIGTERM", "SIGHUP", "SIGBREAK"] : ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(sig, close);
+  process.on("exit", () => {
+    if (!closing) agent.native.stopAll();
+  });
   let failures = 0;
   for (;;) {
     try {

@@ -271,11 +271,21 @@ function ComputerCard() {
             {info.docker.ok ? (
               <p className="text-success">Ready · {info.docker.version}</p>
             ) : (
-              <p className="flex items-start gap-1.5 text-destructive">
-                <TriangleAlertIcon className="mt-0.5 size-3.5 shrink-0" /> {info.docker.error}
+              <p className="flex items-start gap-1.5">
+                <TriangleAlertIcon className="mt-0.5 size-3.5 shrink-0 text-warning" /> Not available
               </p>
             )}
           </div>
+          {!info.docker.ok && (
+            <div className="rounded-md border border-warning/40 bg-warning/10 p-3 text-sm sm:col-span-2 lg:col-span-4">
+              <p className="font-medium">Running without Docker</p>
+              <p className="text-muted-foreground">{info.docker.error}</p>
+              <p className="mt-1 text-muted-foreground">
+                Without Docker, apps run straight on this computer: static sites and Node.js apps work as they are, Python apps if Python is installed. Code from
+                GitHub only runs if it&apos;s a static site, and projects with their own Dockerfile need Docker.
+              </p>
+            </div>
+          )}
           {info.workspace && (
             <div className="sm:col-span-2 lg:col-span-4">
               <p className="text-xs text-muted-foreground">Your projects folder</p>

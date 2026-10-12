@@ -45,6 +45,14 @@ describe("local mode", () => {
     await expect(local.authenticate(null)).rejects.toMatchObject({ code: "AgentUnauthorized" });
   });
 
+  it("hands unfinished deploys to a newly connected computer", async () => {
+    await connect();
+    const app = await local.deploy(ACCOUNT, { name: "web", source: { type: "sample", sample: "static-site" } });
+    const b = await connect();
+    const { tasks } = await local.sync(b, { info, apps: [], complete: false });
+    expect(tasks).toEqual([expect.objectContaining({ type: "deploy", payload: expect.objectContaining({ appId: app.id }) })]);
+  });
+
   it("goes offline when the agent stops checking in", async () => {
     const a = await connect();
     await local.sync(a, { info, apps: [], complete: true });

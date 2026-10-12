@@ -4,7 +4,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 // The agent is plain JavaScript that runs on the learner's computer; these test its pure parts.
 import { Script } from "node:vm";
-import { appState, copyProject, detect, dockerDesktopCommand, GATEWAY_JS, lanAddress, projectFolders, SAMPLE_FILES } from "../../public/agent/cloudlab-agent.mjs";
+import { appState, copyProject, detect, dockerDesktopCommand, GATEWAY_JS, jsCommand, lanAddress, nativePlan, projectFolders, SAMPLE_FILES } from "../../public/agent/cloudlab-agent.mjs";
 
 const dir = (files: Record<string, string>) => {
   const d = mkdtempSync(path.join(tmpdir(), "cl-agent-"));
@@ -86,5 +86,23 @@ describe("agent", () => {
     expect(dockerDesktopCommand("win32", { ProgramFiles: programFiles } as never)).toEqual({ cmd: exe, args: [] });
     expect(dockerDesktopCommand("darwin")).toEqual({ cmd: "open", args: ["-a", "Docker"] });
     expect(dockerDesktopCommand("linux")).toEqual({ cmd: "systemctl", args: ["--user", "start", "docker-desktop"] });
+  });
+
+  it("plans how to run each kind of project without Docker", () => {
+    const run = (files: Record<string, string>) => {
+      const d = dir(files);
+      return nativePlan(detect(d), d);
+    };
+    expect(run({ "index.html": "hi" })).toMatchObject({ kind: "static" });
+    expect(run({ "package.json": "{}" })).toMatchObject({ kind: "node" });
+    expect(run({ "requirements.txt": "flask", "main.py": "" })).toMatchObject({ kind: "python", entry: "main.py" });
+    expect(run({ Dockerfile: "FROM x" })).toMatchObject({ kind: "docker" });
+  });
+
+  it("runs JavaScript with its own runtime when it's the downloaded app, else with Node and npm", () => {
+    expect(jsCommand("install", [], true)).toMatchObject({ args: ["install"], env: { BUN_BE_BUN: "1" } });
+    expect(jsCommand("script", ["start"], true).args).toEqual(["run", "--bun", "start"]);
+    expect(jsCommand("script", ["start"], false).args).toEqual(["run", "start"]);
+    expect(jsCommand("file", ["index.js"], false)).toMatchObject({ cmd: process.execPath, args: ["index.js"] });
   });
 });

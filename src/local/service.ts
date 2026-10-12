@@ -87,6 +87,13 @@ export class LocalService {
     };
     await this.store.putAgent(agent);
     await this.store.reassignApps(accountId, agent.id);
+    // Work queued for the old computer went with it: deploys that hadn't finished start again on this one.
+    for (const app of await this.store.listApps(accountId)) {
+      if (["queued", "downloading", "building", "starting"].includes(app.status)) {
+        await this.queue(agent, "deploy", { appId: app.id, name: app.name, source: app.source, hostPort: app.hostPort ?? undefined });
+        await this.store.putApp({ ...app, agentId: agent.id, status: "queued", detail: "Queued. It starts when your computer's agent is running.", updatedAt: this.iso() });
+      }
+    }
     return { agent: this.view(agent), token };
   }
 
