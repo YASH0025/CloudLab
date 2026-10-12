@@ -23,6 +23,7 @@ import { activityCauses, healthySpread, loadHa, type HaState } from "./ha";
 import { loadDb, type DbState } from "./db";
 import { loadServerless, type ServerlessState } from "./serverless";
 import { loadWatch, WATCHED_FUNCTION, type WatchState } from "./watch";
+import { ALERTS_EMAIL, ALERTS_TOPIC, loadAlerts, type AlertsState } from "./alerts";
 import { loadDns, TUTORIAL_DOMAIN, type DnsState } from "./dns";
 import { DATA_FILE, loadStorage, type StorageState } from "./storage";
 import { loadVpcx, type VpcxState } from "./vpcx";
@@ -109,6 +110,10 @@ interface Ctx {
   watch(): Promise<WatchState>;
   /** The same, preloaded for tutorials that declare `needsWatch`. */
   watchState?: WatchState;
+  /** The SNS tutorial's topic, subscriptions and alarm (loaded once, on demand). */
+  alerts(): Promise<AlertsState>;
+  /** The same, preloaded for tutorials that declare `needsAlerts`. */
+  alertsState?: AlertsState;
   /** The Route 53 tutorial's zone, records and health check (loaded once, on demand). */
   dns(): Promise<DnsState>;
   /** The same, preloaded for tutorials that declare `needsDns`. */
@@ -152,6 +157,8 @@ interface TutorialDef {
   needsServerless?: boolean;
   /** Load the monitoring state before resolving links and text. */
   needsWatch?: boolean;
+  /** Load the SNS state before resolving links and text. */
+  needsAlerts?: boolean;
   /** Load the Route 53 state before resolving links and text. */
   needsDns?: boolean;
   /** Load the EBS state before resolving links and text. */
@@ -216,6 +223,7 @@ async function buildCtx(engine: Engine, accountId: string, region: string, ident
   let dbData: Promise<DbState> | null = null;
   let slsData: Promise<ServerlessState> | null = null;
   let watchData: Promise<WatchState> | null = null;
+  let alertsData: Promise<AlertsState> | null = null;
   let dnsData: Promise<DnsState> | null = null;
   let storageData: Promise<StorageState> | null = null;
   let vpcxData: Promise<VpcxState> | null = null;
@@ -237,6 +245,10 @@ async function buildCtx(engine: Engine, accountId: string, region: string, ident
     watch() {
       watchData ??= loadWatch(engine, accountId, region);
       return watchData;
+    },
+    alerts() {
+      alertsData ??= loadAlerts(engine, accountId, region);
+      return alertsData;
     },
     vpcx() {
       vpcxData ??= loadVpcx(engine, accountId, region, vpc, instance);
@@ -1845,7 +1857,7 @@ const WATCH_YOUR_APP: TutorialDef = {
   summary:
     "Things break in production, and you want to know before your users tell you. Read a function's logs, find the error, see it on a graph, and set an alarm that goes off by itself when errors happen.",
   minutes: 10,
-  nextId: "managed-database",
+  nextId: "get-alerted",
   needsWatch: true,
   steps: [
     {
@@ -1936,7 +1948,7 @@ const WATCH_YOUR_APP: TutorialDef = {
     {
       id: "alarm",
       title: "Create an alarm on errors",
-      why: "Nobody stares at graphs all day. An alarm watches one metric for you and changes to ALARM when it crosses a line: here, more than 0 errors in a minute. (On AWS it would then email you through SNS.)",
+      why: "Nobody stares at graphs all day. An alarm watches one metric for you and changes to ALARM when it crosses a line: here, more than 0 errors in a minute. (The next tutorial makes it email you, through SNS.)",
       instructions: [
         "Click Take me there (or Create alarm under the Errors graph).",
         `Pre-filled: Errors of ${WATCHED_FUNCTION}, Sum over 1 minute, > 0. Missing data is notBreaching: no runs means no errors.`,
@@ -2338,7 +2350,148 @@ const CONNECT_AND_PROTECT: TutorialDef = {
   ],
 };
 
-TUTORIALS.push(SERVERLESS_API, WATCH_YOUR_APP, MANAGED_DATABASE, REAL_NAME, DISKS_AND_BACKUPS, HIGHLY_AVAILABLE, CONNECT_AND_PROTECT);
+// ---------- SNS: get alerted ----------
+
+const topicLink = (c: Ctx): GuideLink | undefined => (c.alertsState?.topic ? { service: "sns", type: "topic", mode: "detail", id: c.alertsState.topic.id } : undefined);
+const emailLink = (c: Ctx): GuideLink | undefined => (c.alertsState?.email ? { service: "sns", type: "subscription", mode: "detail", id: c.alertsState.email.id } : undefined);
+const topicArnText = (c: Ctx) => c.alertsState?.topic?.id ?? `arn:aws:sns:${c.region}:<account-id>:${ALERTS_TOPIC}`;
+
+const GET_ALERTED: TutorialDef = {
+  id: "get-alerted",
+  title: "Get alerted: SNS topics and email",
+  level: "intermediate",
+  summary:
+    "An alarm nobody hears is useless. Create a topic, subscribe your email, confirm it, and make the alarm from Watch your app email you the moment errors start. Then use a filter policy so each person gets only what they care about.",
+  minutes: 10,
+  nextId: "managed-database",
+  needsAlerts: true,
+  steps: [
+    {
+      id: "topic",
+      title: `Create a topic: ${ALERTS_TOPIC}`,
+      why: "A topic is a channel. Whoever sends (an alarm, your app) publishes once to the topic; SNS copies the message to every subscriber. The sender never needs to know who's listening.",
+      instructions: ["Click Take me there.", `Pre-filled: name ${ALERTS_TOPIC}, display name MyShop alerts (shown as the email sender).`, "Click Create topic."],
+      link: (c) => topicLink(c) ?? { service: "sns", type: "topic", mode: "create", prefill: { name: ALERTS_TOPIC, displayName: "MyShop alerts" } },
+      cli: () => `aws sns create-topic --name ${ALERTS_TOPIC} --attributes DisplayName="MyShop alerts"`,
+      check: async (c) => !!(await c.alerts()).topic,
+    },
+    {
+      id: "subscribe",
+      title: "Subscribe your email",
+      why: "A subscription connects one endpoint to the topic: here an email address. CloudLab doesn't send real email: each address gets a pretend inbox you can open.",
+      instructions: ["Click Take me there.", `Pre-filled: the ${ALERTS_TOPIC} topic, protocol Email, endpoint ${ALERTS_EMAIL}. Use any address you like.`, "Click Create subscription. Its status is Pending confirmation."],
+      link: (c) =>
+        emailLink(c) ??
+        (c.alertsState?.topic ? { service: "sns", type: "subscription", mode: "create", prefill: { topicArn: c.alertsState.topic.id, protocol: "email", endpoint: ALERTS_EMAIL } } : undefined),
+      cli: (c) => `aws sns subscribe --topic-arn ${topicArnText(c)} --protocol email --notification-endpoint ${ALERTS_EMAIL}`,
+      check: async (c) => !!(await c.alerts()).email,
+    },
+    {
+      id: "confirm",
+      title: "Confirm it from the inbox",
+      why: "Anyone could type your address, so SNS first sends a confirmation email and delivers nothing until you click its link. Forgetting this is the #1 reason alert emails never arrive.",
+      instructions: ["Open the subscription (Take me there).", "In its inbox, open AWS Notification - Subscription Confirmation and click Confirm subscription.", "The status changes to Confirmed."],
+      link: emailLink,
+      cli: (c) => `aws sns confirm-subscription --topic-arn ${topicArnText(c)} --token <token from the email>`,
+      check: async (c) => (await c.alerts()).confirmed,
+    },
+    {
+      id: "publish",
+      title: "Publish a test message",
+      why: "Before trusting it with real alerts, send one yourself. Every confirmed subscriber gets a copy; Recent deliveries shows what happened to each.",
+      instructions: [
+        `Open the ${ALERTS_TOPIC} topic. Under Publish message, write a subject and a message, then click Publish message.`,
+        "Recent deliveries shows Delivered. Open the subscription's inbox: the email is there.",
+      ],
+      link: topicLink,
+      cli: (c) => `aws sns publish --topic-arn ${topicArnText(c)} --subject "Test" --message "Hello from SNS"`,
+      check: async (c) => (await c.alerts()).delivered,
+    },
+    {
+      id: "alarm-action",
+      title: "Make the alarm notify the topic",
+      why: "An alarm's actions run when its state changes. Point the ALARM action at the topic, and every subscriber hears about the problem within a minute.",
+      instructions: (c) =>
+        c.alertsState?.anyAlarm
+          ? [
+              `Open the alarm ${c.alertsState.anyAlarm.name} and click Edit.`,
+              `Under "When it goes into ALARM, notify", choose ${ALERTS_TOPIC}. Optionally pick it for "back to OK" too. Save.`,
+            ]
+          : [
+              `You don't have an alarm yet. Do the Watch your app tutorial first (it creates the ${WATCHED_FUNCTION} function and its errors alarm), or click Take me there for a pre-filled one.`,
+              `In the form, "When it goes into ALARM, notify" already has ${ALERTS_TOPIC}. Click Create alarm.`,
+            ],
+      link: (c) =>
+        c.alertsState?.alarm
+          ? { service: "cloudwatch", type: "alarm", mode: "detail", id: c.alertsState.alarm.id }
+          : c.alertsState?.anyAlarm
+            ? { service: "cloudwatch", type: "alarm", mode: "detail", id: c.alertsState.anyAlarm.id }
+            : {
+                service: "cloudwatch",
+                type: "alarm",
+                mode: "create",
+                prefill: {
+                  name: `${WATCHED_FUNCTION}-errors`,
+                  description: `Any error in ${WATCHED_FUNCTION}`,
+                  namespace: "AWS/Lambda",
+                  metricName: "Errors",
+                  dimensions: [{ name: "FunctionName", value: WATCHED_FUNCTION }],
+                  statistic: "Sum",
+                  period: 60,
+                  evaluationPeriods: 1,
+                  comparisonOperator: "GreaterThanThreshold",
+                  threshold: 0,
+                  treatMissingData: "notBreaching",
+                  alarmActions: c.alertsState?.topic ? [c.alertsState.topic.id] : [],
+                },
+              },
+      cli: (c) =>
+        `aws cloudwatch put-metric-alarm --alarm-name ${c.alertsState?.anyAlarm?.name ?? `${WATCHED_FUNCTION}-errors`} --namespace AWS/Lambda --metric-name Errors --dimensions Name=FunctionName,Value=${WATCHED_FUNCTION} --statistic Sum --period 60 --evaluation-periods 1 --threshold 0 --comparison-operator GreaterThanThreshold --treat-missing-data notBreaching --alarm-actions ${topicArnText(c)}`,
+      check: async (c) => !!(await c.alerts()).alarm,
+    },
+    {
+      id: "fire",
+      title: "Break something, and get the email",
+      why: "This is the whole point: you find out about a problem from an email, not from an angry customer.",
+      instructions: (c) => [
+        "An email is sent when the alarm changes state. If it's already In alarm, wait for it to go back to OK (a minute without errors).",
+        `Make the alarm go off: test ${WATCHED_FUNCTION} with {} (a bad order), then wait up to a minute.`,
+        `Or force it from the terminal: aws cloudwatch set-alarm-state --alarm-name ${c.alertsState?.alarm?.name ?? `${WATCHED_FUNCTION}-errors`} --state-value ALARM --state-reason "testing"`,
+        `Open ${ALERTS_EMAIL}'s inbox: an email titled ALARM: "…" explains what crossed the line.`,
+      ],
+      link: emailLink,
+      cli: (c) => `aws cloudwatch set-alarm-state --alarm-name ${c.alertsState?.alarm?.name ?? `${WATCHED_FUNCTION}-errors`} --state-value ALARM --state-reason "testing"`,
+      check: async (c) => (await c.alerts()).alarmEmail,
+    },
+    {
+      id: "filter",
+      title: "Only the important ones: a filter policy",
+      why: "Your boss wants only critical alerts. Instead of a second topic, give their subscription a filter policy: SNS checks each message's attributes and skips the ones that don't match. The message body is never looked at.",
+      instructions: (c) => [
+        c.alertsState?.filtered
+          ? `You have a filtered subscription (${String(c.alertsState.filtered.config.endpoint)}). Confirm it from its inbox if needed.`
+          : 'Click Take me there: pre-filled with boss@example.com and the filter policy {"severity": ["critical"]}. Create it, then confirm it from its inbox.',
+        `On the ${ALERTS_TOPIC} topic, publish twice: once with the attribute severity = critical, once with severity = low.`,
+        "Recent deliveries: the boss got the critical one, and the low one shows Filtered out with the reason.",
+      ],
+      link: (c) =>
+        c.alertsState?.filtered
+          ? { service: "sns", type: "subscription", mode: "detail", id: c.alertsState.filtered.id }
+          : c.alertsState?.topic
+            ? {
+                service: "sns",
+                type: "subscription",
+                mode: "create",
+                prefill: { topicArn: c.alertsState.topic.id, protocol: "email", endpoint: "boss@example.com", filterPolicy: '{\n  "severity": ["critical"]\n}' },
+              }
+            : undefined,
+      cli: (c) => `aws sns publish --topic-arn ${topicArnText(c)} --message "Database is down" --message-attributes 'severity={DataType=String,StringValue=critical}'`,
+      check: async (c) => (await c.alerts()).filterSeen,
+    },
+  ],
+};
+
+TUTORIALS.push(SERVERLESS_API, WATCH_YOUR_APP, GET_ALERTED, MANAGED_DATABASE, REAL_NAME, DISKS_AND_BACKUPS, HIGHLY_AVAILABLE, CONNECT_AND_PROTECT);
 
 const info = (t: TutorialDef): TutorialInfo => ({
   id: t.id,
@@ -2377,6 +2530,7 @@ export async function viewTutorial(
     c.slsState = await c.sls();
     c.watchState = await c.watch();
   }
+  if (t.needsAlerts) c.alertsState = await c.alerts();
   const steps = await Promise.all(
     t.steps.map(async (st) => ({
       id: st.id,

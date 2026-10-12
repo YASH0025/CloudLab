@@ -77,6 +77,7 @@ import type { TargetHealth } from "@/engine/analysis/health";
 import type { LoadTestResult } from "@/engine/analysis/loadtest";
 import type { DbConnectInput, DbConnectResult } from "@/engine/analysis/dbconnect";
 import type { InvokeResult } from "@/engine/lambda/invoke";
+import type { PublishResult } from "@/engine/sns/publish";
 
 export type { ObjectInfo };
 
@@ -207,6 +208,11 @@ export const api = {
     request<{ streams: { stream: string; firstEventTimestamp: number; lastEventTimestamp: number; storedBytes: number }[] }>(
       `/api/logs/streams?region=${encodeURIComponent(region)}&group=${encodeURIComponent(group)}`,
     ),
+
+  publish: (id: string, input: { message: string; subject?: string; messageStructure?: "json"; attributes: Record<string, { DataType: string; StringValue: string }> }) =>
+    request<{ result: PublishResult }>(`/api/resources/${encodeURIComponent(id)}/publish`, { method: "POST", body: JSON.stringify(input) }),
+
+  confirmSubscription: (id: string) => request<{ subscriptionArn: string }>(`/api/resources/${encodeURIComponent(id)}/confirm`, { method: "POST" }),
 
   invoke: (id: string, event: unknown) =>
     request<{ result: InvokeResult }>(`/api/resources/${encodeURIComponent(id)}/invoke`, { method: "POST", body: JSON.stringify({ event }) }),

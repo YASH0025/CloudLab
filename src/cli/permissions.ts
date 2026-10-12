@@ -120,6 +120,14 @@ export function cliChecks(command: Command, args: Args, ctx: CliContext): Check[
     }
   }
 
+  if (command.service === "sns") {
+    // SNS permissions are on topics; a subscription's actions are checked against its topic.
+    const topic = args.one("topic-arn") ?? args.one("target-arn") ?? args.one("subscription-arn")?.split(":").slice(0, 6).join(":");
+    if (topic) return [{ action, resource: topic }];
+    const name = args.one("name");
+    if (name && command.apiName === "CreateTopic") return [{ action, resource: `arn:aws:sns:${ctx.region}:${account}:${name}` }];
+  }
+
   if (command.service === "autoscaling" && !COLLECTION.test(command.apiName)) {
     const name = args.one("auto-scaling-group-name");
     if (name) return [{ action, resource: `arn:aws:autoscaling:${ctx.region}:${account}:autoScalingGroup:*:autoScalingGroupName/${name}` }];

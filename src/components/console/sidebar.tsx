@@ -3,6 +3,7 @@
 import { Logo } from "@/components/brand/logo";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import {
+  BellRingIcon,
   BoxIcon,
   DatabaseIcon,
   DatabaseZapIcon,
@@ -32,6 +33,7 @@ const icons: Record<string, ComponentType<{ className?: string }>> = {
   Storage: DatabaseIcon,
   Database: DatabaseZapIcon,
   Monitoring: ActivityIcon,
+  Integration: BellRingIcon,
   Security: ShieldIcon,
 };
 

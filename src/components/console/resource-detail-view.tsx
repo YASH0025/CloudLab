@@ -23,6 +23,7 @@ import { InstanceStoragePanel, SnapshotPanel as EbsSnapshotPanel, VolumePanel } 
 import { DnsTestCard, HealthCheckPanel, HostedZonePanel } from "./route53-panels";
 import { AlarmPanel, AlarmStateBadge, DashboardPanel, FunctionLogsCard, LogGroupPanel, MonitoringCard } from "./monitoring-panels";
 import { ObjectsPanel, WebsiteCard } from "./objects-panel";
+import { SubscriptionPanel, TopicPanel } from "./sns-panels";
 import { PermissionChecker } from "./permission-checker";
 import { ReachabilityPanel } from "./reachability-panel";
 import { ResourceForm } from "./resource-form";
@@ -302,6 +303,8 @@ export function ResourceDetailView() {
       {item.type === "db-instance" && <DatabasePanel db={item} />}
       {item.type === "db-snapshot" && <SnapshotPanel snapshot={item} />}
       {item.service === "lambda" && item.type === "function" && <FunctionPanel fn={item} />}
+      {item.service === "sns" && item.type === "topic" && <TopicPanel topic={item} />}
+      {item.service === "sns" && item.type === "subscription" && <SubscriptionPanel sub={item} />}
       {item.service === "apigateway" && item.type === "api" && <ApiPanel api={item} />}
       {item.service === "lambda" && item.type === "function" && <FunctionLogsCard fn={item} />}
       <MonitoringCard item={item} />

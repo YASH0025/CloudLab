@@ -42,8 +42,26 @@ beforeEach(() => {
 
 describe("challenges", { timeout: 60_000 }, () => {
   it("lists them, and scores fewer points per hint", () => {
-    expect(listChallenges().map((c) => c.id)).toEqual(["site-down", "no-updates", "access-denied", "db-connect", "api-500", "disk-wrong-zone", "peering-one-way", "acl-replies", "unhealthy-targets"]);
+    expect(listChallenges().map((c) => c.id)).toEqual(["site-down", "no-updates", "access-denied", "db-connect", "api-500", "disk-wrong-zone", "peering-one-way", "acl-replies", "silent-orders", "unhealthy-targets"]);
     expect([0, 1, 2, 3].map(challengeScore)).toEqual([100, 90, 70, 40]);
+  });
+
+  it("silent-orders: fix the filter's case and let only this topic invoke the function", async () => {
+    const sub = async () => (await engine.list(ACCOUNT, { service: "sns", type: "subscription", region: R }))[0];
+    const fn = () => find("lambda", "function", "fulfil");
+    const topic = () => find("sns", "topic", "orders");
+    await play(
+      "silent-orders",
+      async () => {
+        await engine.update(ACCOUNT, (await sub()).id, { filterPolicy: '{"type":["order"]}' });
+        expect((await view("silent-orders")).status).toMatch(/every delivery to the function fails/);
+        await addPermission(engine, ACCOUNT, await fn(), { statementId: "sns", action: "lambda:InvokeFunction", principal: "sns.amazonaws.com", sourceArn: (await topic()).id });
+      },
+      {
+        apply: async () => engine.update(ACCOUNT, (await sub()).id, { filterPolicy: "" }).then(() => undefined),
+        status: /so do refunds/,
+      },
+    );
   });
 
   it("site-down: open port 80 to the internet, and only port 80", async () => {

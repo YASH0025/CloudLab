@@ -13,6 +13,7 @@ import { LAMBDA_COMMANDS } from "./lambda";
 import { APIGATEWAY_COMMANDS } from "./apigateway";
 import { CLOUDWATCH_COMMANDS, LOGS_COMMANDS } from "./cloudwatch";
 import { ROUTE53_COMMANDS } from "./route53";
+import { SNS_COMMANDS } from "./sns";
 import { EBS_COMMANDS } from "./ebs";
 import { VPC_EXTRA_COMMANDS } from "./vpc-extras";
 
@@ -1027,6 +1028,9 @@ export const COMMANDS: Command[] = [
   // --- Lambda and API Gateway ---
   ...LAMBDA_COMMANDS,
   ...APIGATEWAY_COMMANDS,
+
+  // --- SNS ---
+  ...SNS_COMMANDS,
 
   // --- Route 53 ---
   ...ROUTE53_COMMANDS,

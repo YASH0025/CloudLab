@@ -1,3 +1,4 @@
+import { runAlarmActions } from "../sns/publish";
 import type { Engine } from "../engine";
 import type { Resource } from "../types";
 import type { Statistic } from "./metrics";
@@ -124,6 +125,8 @@ export async function changeState(engine: Engine, alarm: Resource, state: AlarmS
     history: old === state ? history : [entry, ...history].slice(0, 50),
     ...extra,
   });
+  // Notifications: an alarm's actions run when its state changes.
+  if (old !== state) await runAlarmActions(engine, alarm, old, state, reason, now.toISOString());
 }
 
 export async function evaluateAlarms(engine: Engine, accountId: string, region: string, now: Date) {

@@ -6,6 +6,8 @@ import type { Engine } from "@/engine/engine";
 import { check, resolvePrincipal } from "@/engine/iam/authorize";
 import { accountNumber } from "@/engine/ids";
 import { addPermission, allowsService } from "@/engine/lambda/invoke";
+import { publish } from "@/engine/sns/publish";
+import { checkFilterPolicy, matchesFilter } from "@/engine/services/sns";
 import type { Resource } from "@/engine/types";
 import type { Level } from "./types";
 
@@ -397,6 +399,81 @@ const API_500: ChallengeDef = {
   },
 };
 
+const FULFIL_CODE = `export const handler = async (event) => {
+  for (const record of event.Records) {
+    const order = JSON.parse(record.Sns.Message);
+    console.log("Packing order", order.id, "for", order.customer);
+  }
+};
+`;
+
+const order = (id: number, type: string) => ({
+  message: JSON.stringify({ id, customer: "asha@example.com", items: ["book"] }),
+  attributes: { type: { DataType: "String", StringValue: type }, amount: { DataType: "Number", StringValue: "499" } },
+});
+
+const SILENT_ORDERS: ChallengeDef = {
+  id: "silent-orders",
+  title: "Orders are placed, but nothing gets packed",
+  level: "intermediate",
+  minutes: 10,
+  summary: "The shop publishes every order to an SNS topic. The packing function hasn't run once since the move to the new account.",
+  story:
+    "The warehouse: “We haven't had a single packing slip since yesterday's move to the new AWS account.” The shop publishes each order to the SNS topic orders, with the attribute type = order (refunds go to the same topic with type = refund). The Lambda function fulfil is subscribed and should run for every order. Nobody sees an error anywhere: the shop's publish calls all succeed.",
+  goal: "A message with type = order runs fulfil. Refunds (type = refund) must still not reach fulfil, and only the orders topic may invoke it.",
+  tools: ["The topic orders → Recent deliveries (and its Publish message panel)", "The subscription to fulfil: its filter policy and Delivery to the function", "aws sns get-subscription-attributes, aws lambda get-policy"],
+  hints: [
+    "Publishing succeeds even if nobody receives the message. Look at what happened to each copy: the topic's Recent deliveries says why.",
+    "Two things stand between the topic and the function: the subscription's filter policy (compare its values with what the shop sends, letter by letter) and the function's permission for SNS.",
+    'Edit the subscription\'s filter policy to {"type": ["order"]} (matching is case-sensitive). Then on the subscription page, click Allow this topic to invoke the function (or aws lambda add-permission with --principal sns.amazonaws.com --source-arn <topic ARN>). Publish a test order to check.',
+  ],
+  explanation:
+    "Two separate things silenced the orders. First, the filter policy asked for type = \"Order\", but the shop sends \"order\": filter matching is exact and case-sensitive, so every message was filtered out, which isn't an error for SNS. Second, after the move nobody re-added the function's permission: in the new account, its resource-based policy had no statement letting sns.amazonaws.com invoke it, so even matching messages would have failed (SNS retries, then gives up, visible only in NumberOfNotificationsFailed). Publish returning a MessageId only means SNS accepted the message, never that anyone got it.",
+  async setup(b) {
+    const trust = JSON.stringify({ Version: "2012-10-17", Statement: [{ Effect: "Allow", Principal: { Service: "lambda.amazonaws.com" }, Action: "sts:AssumeRole" }] });
+    await b.make("iam", "role", { name: "fulfil-role", trustPolicy: trust, policyArns: ["arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"] }, "global");
+    const fn = await b.make("lambda", "function", { name: "fulfil", runtime: "nodejs22.x", handler: "index.handler", role: "fulfil-role", files: { "index.mjs": FULFIL_CODE } });
+    const topic = await b.make("sns", "topic", { name: "orders", displayName: "MyShop orders" });
+    await b.make("sns", "subscription", { topicArn: topic.id, protocol: "lambda", endpoint: fn.id, filterPolicy: '{\n  "type": ["Order"]\n}' });
+    // Yesterday's traffic, so the delivery log tells the story.
+    await publish(b.engine, b.accountId, topic, order(1041, "order"));
+    await publish(b.engine, b.accountId, topic, order(1042, "refund"));
+    await publish(b.engine, b.accountId, topic, order(1043, "order"));
+  },
+  async facts(engine, accountId) {
+    const topic = await named(engine, accountId, "sns", "topic", "orders");
+    return [
+      `Topic: ${topic?.id ?? "orders"}`,
+      `How the shop publishes: aws sns publish --topic-arn ${topic?.id ?? "<orders ARN>"} --message '{"id":1044,…}' --message-attributes 'type={DataType=String,StringValue=order}'`,
+    ];
+  },
+  async check(engine, accountId) {
+    const topic = await named(engine, accountId, "sns", "topic", "orders");
+    const fn = await named(engine, accountId, "lambda", "function", "fulfil");
+    if (!topic || !fn) return { solved: false, status: "The topic orders or the function fulfil is missing." };
+    const subs = (await list(engine, accountId, "sns", "subscription")).filter(
+      (s) => s.config.topicArn === topic.id && s.config.protocol === "lambda" && String(s.config.endpoint).split(":").slice(0, 7).join(":") === fn.id && s.state === "confirmed",
+    );
+    if (subs.length === 0) return { solved: false, status: "fulfil isn't subscribed to the topic any more." };
+    const wants = (type: string) =>
+      subs.some((s) => {
+        if (!s.config.filterPolicy) return true;
+        try {
+          return matchesFilter(checkFilterPolicy(String(s.config.filterPolicy)), order(0, type).attributes).match;
+        } catch {
+          return false;
+        }
+      });
+    if (!wants("order")) return { solved: false, status: "Orders still don't make it past the subscription." };
+    if (wants("refund")) return { solved: false, status: "Orders get through now, but so do refunds: the warehouse would ship refunded orders." };
+    if (!allowsService(fn, "sns.amazonaws.com", topic.id)) return { solved: false, status: "Orders pass the filter now, but every delivery to the function fails." };
+    if (allowsService(fn, "sns.amazonaws.com", `arn:aws:sns:${CHALLENGE_REGION}:${accountNumber(accountId)}:some-other-topic`)) {
+      return { solved: false, status: "It works, but now any SNS topic may invoke fulfil. Scope the permission to the orders topic." };
+    }
+    return { solved: true };
+  },
+};
+
 const UNHEALTHY: ChallengeDef = {
   id: "unhealthy-targets",
   title: "Every server behind the load balancer is unhealthy",
@@ -600,7 +677,7 @@ const PEERING_ONE_WAY: ChallengeDef = {
   },
 };
 
-const CHALLENGES: ChallengeDef[] = [SITE_DOWN, NO_UPDATES, ACCESS_DENIED, DB_CONNECT, API_500, DISK_ZONE, PEERING_ONE_WAY, ACL_REPLIES, UNHEALTHY];
+const CHALLENGES: ChallengeDef[] = [SITE_DOWN, NO_UPDATES, ACCESS_DENIED, DB_CONNECT, API_500, DISK_ZONE, PEERING_ONE_WAY, ACL_REPLIES, SILENT_ORDERS, UNHEALTHY];
 
 const info = (c: ChallengeDef): ChallengeInfo => ({ id: c.id, title: c.title, level: c.level, minutes: c.minutes, summary: c.summary });
 

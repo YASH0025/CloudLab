@@ -28,7 +28,7 @@ export const MANAGED_POLICIES: ManagedPolicy[] = [
     allow(["iam:CreateServiceLinkedRole", "iam:DeleteServiceLinkedRole", "iam:ListRoles", "organizations:DescribeOrganization", "account:ListRegions"]),
   ]),
   managed("ReadOnlyAccess", "Provides read-only access to AWS services and resources.", [
-    allow(["ec2:Describe*", "ec2:Get*", "s3:Get*", "s3:List*", "iam:Get*", "iam:List*", "iam:Simulate*", "elasticloadbalancing:Describe*", "autoscaling:Describe*", "rds:Describe*", "lambda:Get*", "lambda:List*", "apigateway:GET", "logs:Describe*", "logs:Get*", "logs:FilterLogEvents", "cloudwatch:Describe*", "cloudwatch:Get*", "cloudwatch:List*"]),
+    allow(["ec2:Describe*", "ec2:Get*", "s3:Get*", "s3:List*", "iam:Get*", "iam:List*", "iam:Simulate*", "elasticloadbalancing:Describe*", "autoscaling:Describe*", "rds:Describe*", "lambda:Get*", "lambda:List*", "apigateway:GET", "logs:Describe*", "logs:Get*", "logs:FilterLogEvents", "cloudwatch:Describe*", "cloudwatch:Get*", "cloudwatch:List*", "sns:Get*", "sns:List*"]),
   ]),
   managed("AmazonEC2FullAccess", "Provides full access to Amazon EC2.", [
     allow(["ec2:*", "elasticloadbalancing:*", "cloudwatch:*", "autoscaling:*"]),
@@ -83,6 +83,8 @@ export const MANAGED_POLICIES: ManagedPolicy[] = [
     allow(["cloudwatch:Describe*", "cloudwatch:Get*", "cloudwatch:List*", "logs:Get*", "logs:List*", "logs:Describe*", "logs:FilterLogEvents", "logs:StartQuery", "autoscaling:Describe*"]),
   ]),
   managed("CloudWatchLogsFullAccess", "Provides full access to CloudWatch Logs.", [allow(["logs:*", "cloudwatch:GenerateQuery"])]),
+  managed("AmazonSNSFullAccess", "Provides full access to Amazon SNS via the AWS Management Console.", [allow(["sns:*"])]),
+  managed("AmazonSNSReadOnlyAccess", "Provides read only access to Amazon SNS via the AWS Management Console.", [allow(["sns:GetTopicAttributes", "sns:List*", "sns:CheckIfPhoneNumberIsOptedOut", "sns:GetEndpointAttributes", "sns:GetDataProtectionPolicy", "sns:GetPlatformApplicationAttributes", "sns:GetSMSAttributes", "sns:GetSMSSandboxAccountStatus", "sns:GetSubscriptionAttributes"])]),
   managed("AmazonRoute53FullAccess", "Provides full access to all Amazon Route 53 via the AWS Management Console.", [
     allow(["route53:*", "route53domains:*", "elasticloadbalancing:DescribeLoadBalancers", "apigateway:GET", "s3:ListAllMyBuckets", "s3:GetBucketWebsite", "ec2:DescribeVpcs", "ec2:DescribeRegions"]),
   ]),

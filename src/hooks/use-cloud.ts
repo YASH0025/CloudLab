@@ -183,6 +183,30 @@ export function useLogStreams(group: string) {
   });
 }
 
+/** Publishes a message to a topic. Errors show inline in the panel. */
+export function usePublish(id: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: Parameters<typeof api.publish>[1]) => api.publish(id, input).then((r) => r.result),
+    // Deliveries change the topic, its subscriptions' inboxes and maybe a function.
+    onSettled: () => qc.invalidateQueries({ queryKey: ["resource"] }),
+  });
+}
+
+/** Follows the "Confirm subscription" link in a confirmation email. */
+export function useConfirmSubscription(id: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.confirmSubscription(id),
+    onSuccess: () => {
+      toast.success("Subscription confirmed");
+      qc.invalidateQueries({ queryKey: ["resource"] });
+      qc.invalidateQueries({ queryKey: ["resources"] });
+    },
+    onError: (e) => toast.error(e instanceof ApiError ? e.message : String(e)),
+  });
+}
+
 /** Runs a function with a test event. Errors show inline in the panel. */
 export function useInvoke(id: string) {
   const qc = useQueryClient();

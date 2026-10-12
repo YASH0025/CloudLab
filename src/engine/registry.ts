@@ -11,6 +11,7 @@ import { apiGatewayService } from "./services/apigateway";
 import { logsService } from "./services/logs";
 import { cloudWatchService } from "./services/cloudwatch";
 import { route53Service } from "./services/route53";
+import { snsService } from "./services/sns";
 import { objectType, storageService } from "./services/storage";
 import { progressType } from "./services/progress";
 import type { FieldDef, ResolvedServiceDef, ResolvedTypeDef, ResourceTypeDef, ServiceDef } from "./types";
@@ -25,6 +26,7 @@ export const SERVICES: ServiceDef[] = [
   rdsService,
   lambdaService,
   apiGatewayService,
+  snsService,
   storageService,
   iamService,
   cloudWatchService,

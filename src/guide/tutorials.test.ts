@@ -63,13 +63,14 @@ describe("tutorials", () => {
       "least-privilege",
       "serverless-api",
       "watch-your-app",
+      "get-alerted",
       "managed-database",
       "website-real-name",
       "disks-and-backups",
       "highly-available-website",
       "connect-and-protect",
     ]);
-    expect(listTutorials().filter((t) => t.level === "intermediate")).toHaveLength(9);
+    expect(listTutorials().filter((t) => t.level === "intermediate")).toHaveLength(10);
     expect(listTutorials().find((t) => t.id === "troubleshoot-reachability")?.nextId).toBe("static-website");
   });
 
@@ -129,6 +130,56 @@ describe("tutorials", () => {
     expect(steps).toBe(8);
     const t = await view(id);
     expect(t.steps.find((s) => s.id === "fire")!.link).toMatchObject({ service: "cloudwatch", type: "alarm", mode: "detail" });
+  });
+
+  it("completes 'Get alerted': a topic, a confirmed email, an alarm that emails, a filter policy", { timeout: 60_000 }, async () => {
+    const { confirmSubscription, publish } = await import("@/engine/sns/publish");
+    const list = (service: string, type: string) => engine.list(ACCOUNT, { service, type, region: REGION });
+    const fnOf = async () => (await list("lambda", "function")).find((f) => f.name === "orders")!;
+    const topicOf = async () => (await list("sns", "topic"))[0];
+    const confirmAll = async () => {
+      for (const s of await list("sns", "subscription")) if (s.state !== "confirmed") await confirmSubscription(engine, ACCOUNT, await topicOf(), String(s.attributes.token));
+    };
+    await play("watch-your-app", {
+      run: async () => {
+        await invokeFunction(engine, ACCOUNT, await fnOf(), { item: "book" }, "console");
+        await invokeFunction(engine, ACCOUNT, await fnOf(), {}, "console");
+      },
+      logs: async () => undefined,
+      graphs: async () => undefined,
+      fire: async () => {
+        await invokeFunction(engine, ACCOUNT, await fnOf(), {}, "console");
+        tick(60_000);
+      },
+    });
+    const steps = await play("get-alerted", {
+      confirm: confirmAll,
+      publish: async () => publish(engine, ACCOUNT, await topicOf(), { message: "Hello", subject: "Test" }),
+      "alarm-action": async () => {
+        const t = await view("get-alerted");
+        const link = t.steps.find((s) => s.id === "alarm-action")!.link!;
+        expect(link).toMatchObject({ service: "cloudwatch", type: "alarm", mode: "detail" });
+        await engine.update(ACCOUNT, link.id!, { alarmActions: [(await topicOf()).id] });
+      },
+      fire: async () => {
+        // Back to OK after a quiet minute, then a bad order sets it off again.
+        tick(120_000);
+        await view("get-alerted");
+        await invokeFunction(engine, ACCOUNT, await fnOf(), {}, "console");
+        tick(60_000);
+      },
+      filter: async () => {
+        if (!(await list("sns", "subscription")).some((s) => s.config.filterPolicy)) {
+          const link = (await view("get-alerted")).steps.find((s) => s.id === "filter")!.link!;
+          await engine.create(ACCOUNT, { service: "sns", type: "subscription", region: REGION, config: link.prefill! });
+        }
+        await confirmAll();
+        for (const severity of ["critical", "low"]) {
+          await publish(engine, ACCOUNT, await topicOf(), { message: "x", attributes: { severity: { DataType: "String", StringValue: severity } } });
+        }
+      },
+    });
+    expect(steps).toBe(7);
   });
 
   it("completes 'Give your website a real name': zone, A record, a visit, an apex alias, a health check", { timeout: 60_000 }, async () => {

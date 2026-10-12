@@ -1,5 +1,5 @@
 /** Which skill each tutorial and challenge trains, for the progress page. */
-export const TOPICS = ["Networking", "Compute", "Storage", "Databases", "Security", "Serverless", "Monitoring", "DNS"] as const;
+export const TOPICS = ["Networking", "Compute", "Storage", "Databases", "Security", "Serverless", "Monitoring", "Messaging", "DNS"] as const;
 export type Topic = (typeof TOPICS)[number];
 
 export const TOPIC_OF: Record<string, Topic> = {
@@ -14,6 +14,7 @@ export const TOPIC_OF: Record<string, Topic> = {
   "least-privilege": "Security",
   "serverless-api": "Serverless",
   "watch-your-app": "Monitoring",
+  "get-alerted": "Messaging",
   "managed-database": "Databases",
   "website-real-name": "DNS",
   "disks-and-backups": "Storage",
@@ -29,4 +30,5 @@ export const TOPIC_OF: Record<string, Topic> = {
   "peering-one-way": "Networking",
   "acl-replies": "Networking",
   "unhealthy-targets": "Compute",
+  "silent-orders": "Messaging",
 };

@@ -413,8 +413,21 @@ const EXPLANATIONS: Record<string, ErrorExplanation> = {
     fix: "Read the message: it names the conflicting resources.",
   },
   InvalidParameter: {
-    meaning: "Two of the resources you chose don't belong together.",
-    fix: "Make sure they're in the same VPC and region.",
+    meaning:
+      "One value isn't accepted. The message says which: in SNS it reads 'Invalid parameter: <what>' (an email address, a topic name, a filter policy). In EC2 it often means two resources you chose don't belong together.",
+    fix: "Fix the value the message names. For SNS ARNs, copy them from the topic's page; for EC2, make sure the resources are in the same VPC and region.",
+  },
+  NotFound: {
+    meaning: "SNS couldn't find that topic or subscription in this region. A subscription waiting for confirmation has no ARN yet, so it can't be looked up either.",
+    fix: "Copy the ARN from list-topics or list-subscriptions, and check the region in the ARN matches the one you're using.",
+  },
+  ParameterValueInvalid: {
+    meaning: "A message attribute is incomplete or has the wrong type, e.g. a Number attribute whose value isn't a number.",
+    fix: "Each attribute needs DataType (String, Number or String.Array) and a StringValue.",
+  },
+  SubscriptionLimitExceeded: {
+    meaning: "The topic has as many subscriptions as it's allowed.",
+    fix: "Remove subscriptions you no longer use (CloudLab allows 100 per topic).",
   },
   MissingParameter: {
     meaning: "A required option is missing.",

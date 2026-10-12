@@ -332,7 +332,7 @@ export interface ServiceDef {
   /** What it is modelled on, shown as a hint in the console. */
   modelledOn: string;
   description: string;
-  category: "Compute" | "Networking" | "Storage" | "Database" | "Security" | "DevOps" | "Monitoring";
+  category: "Compute" | "Networking" | "Storage" | "Database" | "Security" | "DevOps" | "Monitoring" | "Integration";
   types: ResourceTypeDef[];
 }
 

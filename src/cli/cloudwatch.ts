@@ -66,8 +66,8 @@ function alarmOut(a: Resource) {
     ...(c.description ? { AlarmDescription: c.description } : {}),
     AlarmConfigurationUpdatedTimestamp: at.alarmConfigurationUpdatedTimestamp,
     ActionsEnabled: c.actionsEnabled !== false,
-    OKActions: [],
-    AlarmActions: (at.alarmActions as string[] | undefined) ?? [],
+    AlarmActions: (a.config.alarmActions as string[] | undefined) ?? [],
+    OKActions: (a.config.okActions as string[] | undefined) ?? [],
     InsufficientDataActions: [],
     StateValue: at.stateValue,
     StateReason: at.stateReason,
@@ -189,7 +189,7 @@ export const CLOUDWATCH_COMMANDS: Command[] = [
     apiName: "PutMetricAlarm",
     summary: "Create or update an alarm on a metric",
     usage:
-      "--alarm-name <name> --namespace <ns> --metric-name <name> --statistic <stat> --period <seconds> --evaluation-periods <n> --threshold <number> --comparison-operator <op> [--dimensions Name=<n>,Value=<v> ...] [--datapoints-to-alarm <m>] [--treat-missing-data <missing|notBreaching|breaching|ignore>] [--alarm-description <text>] [--alarm-actions <arn> ...]",
+      "--alarm-name <name> --namespace <ns> --metric-name <name> --statistic <stat> --period <seconds> --evaluation-periods <n> --threshold <number> --comparison-operator <op> [--dimensions Name=<n>,Value=<v> ...] [--datapoints-to-alarm <m>] [--treat-missing-data <missing|notBreaching|breaching|ignore>] [--alarm-description <text>] [--alarm-actions <topic-arn> ...] [--ok-actions <topic-arn> ...]",
     mutates: true,
     async run(args, ctx) {
       const name = args.required("alarm-name");
@@ -207,13 +207,12 @@ export const CLOUDWATCH_COMMANDS: Command[] = [
         comparisonOperator: args.required("comparison-operator"),
         treatMissingData: args.one("treat-missing-data") ?? "missing",
         actionsEnabled: args.bool("actions-enabled") ?? true,
+        alarmActions: args.list("alarm-actions"),
+        okActions: args.list("ok-actions"),
       };
       const existing = (await listType(ctx, "alarm")).find((a) => a.name === name);
-      const saved = existing
-        ? await ctx.engine.update(ctx.accountId, existing.id, config)
-        : await ctx.engine.create(ctx.accountId, { service: "cloudwatch", type: "alarm", region: ctx.region, config });
-      const actions = args.list("alarm-actions");
-      if (actions.length) await ctx.engine.setAttributes(ctx.accountId, saved.id, { alarmActions: actions });
+      if (existing) await ctx.engine.update(ctx.accountId, existing.id, config);
+      else await ctx.engine.create(ctx.accountId, { service: "cloudwatch", type: "alarm", region: ctx.region, config });
       // A new or changed alarm is checked straight away.
       await ctx.engine.ensureDefaults(ctx.accountId, ctx.region);
     },

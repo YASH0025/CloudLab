@@ -54,7 +54,6 @@ const logGroup: ResourceTypeDef = {
   ],
   columns: [
     { label: "Retention", path: "config.retentionInDays" },
-    { label: "Created", path: "createdAt" },
   ],
   iam: {
     create: "logs:CreateLogGroup",

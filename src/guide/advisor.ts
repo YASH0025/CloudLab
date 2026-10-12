@@ -23,6 +23,7 @@ import { databaseAdvice } from "./advisor-rds";
 import { serverlessAdvice } from "./advisor-serverless";
 import { monitoringAdvice } from "./advisor-cloudwatch";
 import { dnsAdvice } from "./advisor-route53";
+import { snsAdvice } from "./advisor-sns";
 import { storageAdvice } from "./advisor-ebs";
 import { vpcxAdvice } from "./advisor-vpcx";
 
@@ -514,10 +515,11 @@ export async function advise(engine: Engine, accountId: string, region: string):
   const cw = await monitoringAdvice(engine, accountId, region);
   const dns = await dnsAdvice(engine, accountId);
   const vpcx = await vpcxAdvice(engine, accountId, region);
-  out.unshift(...vpcx.problems, ...rds.problems, ...sls.problems, ...cw.problems, ...dns.problems, ...elb.problems);
+  const sns = await snsAdvice(engine, accountId, region);
+  out.unshift(...vpcx.problems, ...rds.problems, ...sls.problems, ...sns.problems, ...cw.problems, ...dns.problems, ...elb.problems);
   out.push(...vpcx.suggestions);
   const ebs = await storageAdvice(engine, accountId, region);
-  out.push(...sls.suggestions, ...rds.suggestions, ...dns.suggestions, ...ebs.suggestions);
+  out.push(...sls.suggestions, ...sns.suggestions, ...rds.suggestions, ...dns.suggestions, ...ebs.suggestions);
   if (sls.hasFunction && !cw.hasAlarm) {
     out.push({
       id: "watch-your-app",

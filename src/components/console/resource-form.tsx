@@ -20,7 +20,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { buildSchema, defaultValues } from "@/engine/fields";
 import type { FieldDef } from "@/engine/types";
-import { useIamPolicies, useResources } from "@/hooks/use-cloud";
+import { useIamPolicies, useResources, useTypeDef } from "@/hooks/use-cloud";
 import { ApiError } from "@/lib/api-client";
 import { getPath, inSentence } from "@/lib/utils";
 
@@ -307,6 +307,7 @@ function RefControl({
   invalid?: boolean;
 }) {
   const { data = [], isLoading } = useResources(field.ref!.service, field.ref!.type);
+  const target = useTypeDef(field.ref!.service, field.ref!.type).typeDef;
   const options = data.filter((r) => r.state !== "terminated");
   // Some references store the target's name rather than its ID (an instance's key pair).
   const valueOf = (r: (typeof options)[number]) => (field.ref?.by === "name" ? r.name : r.id);
@@ -318,7 +319,7 @@ function RefControl({
   if (!isLoading && options.length === 0) {
     return (
       <p className="rounded-md border border-dashed px-3 py-2 text-sm text-muted-foreground">
-        No {inSentence(field.label.replace(/^or /, ""))} in this region yet. {field.required ? "Create one first." : "You can create one first, or carry on without."}
+        No {inSentence(target?.pluralLabel ?? field.label.replace(/^or /, ""))} in this region yet. {field.required ? "Create one first." : "You can create one first, or carry on without."}
       </p>
     );
   }

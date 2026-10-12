@@ -16,7 +16,7 @@ export const COMPARISONS = [
   { value: "LessThanOrEqualToThreshold", label: "<=", hint: "Less than or equal to" },
 ];
 
-export const NAMESPACES = ["AWS/EC2", "AWS/Lambda", "AWS/ApiGateway", "AWS/ApplicationELB", "AWS/RDS", "AWS/AutoScaling"];
+export const NAMESPACES = ["AWS/EC2", "AWS/Lambda", "AWS/ApiGateway", "AWS/ApplicationELB", "AWS/RDS", "AWS/AutoScaling", "AWS/SNS"];
 
 const dimensionItem: FieldDef[] = [
   { key: "name", label: "Name", type: "string", required: true, maxLength: 255, placeholder: "FunctionName" },
@@ -38,7 +38,7 @@ const alarm: ResourceTypeDef = {
   malformedCode: "ResourceNotFound",
   malformedMessage: (id) => `Alarm ${id} does not exist.`,
   apiNoun: "alarm",
-  panelAttributes: ["history", "stateReasonData", "manualUntil", "alarmActions", "evaluatedAt", "stateValue", "stateReason", "stateUpdatedTimestamp"],
+  panelAttributes: ["history", "stateReasonData", "manualUntil", "evaluatedAt", "stateValue", "stateReason", "stateUpdatedTimestamp"],
   fields: [
     { key: "name", label: "Alarm name", type: "string", required: true, immutable: true, maxLength: 255, placeholder: "hello-errors", param: "AlarmName" },
     { key: "description", label: "Description", type: "string", maxLength: 1024, param: "AlarmDescription" },
@@ -115,6 +115,22 @@ const alarm: ResourceTypeDef = {
         { value: "ignore", label: "ignore", hint: "Keep the current state" },
       ],
       description: "What no data means. For error counts, notBreaching: no errors reported is good news.",
+    },
+    {
+      key: "alarmActions",
+      label: "When it goes into ALARM, notify",
+      type: "ref",
+      ref: { service: "sns", type: "topic", multiple: true, weak: true },
+      param: "AlarmActions",
+      description: "SNS topics to publish to when the alarm enters ALARM. Subscribe your email to the topic to get the alert.",
+    },
+    {
+      key: "okActions",
+      label: "When it's back to OK, notify",
+      type: "ref",
+      ref: { service: "sns", type: "topic", multiple: true, weak: true },
+      param: "OKActions",
+      description: "Optional: topics to tell when the problem is over.",
     },
     { key: "actionsEnabled", label: "Actions enabled", type: "boolean", default: true, param: "ActionsEnabled" },
   ],
