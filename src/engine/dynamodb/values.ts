@@ -120,7 +120,22 @@ export function equal(a: AttributeValue | undefined, b: AttributeValue | undefin
 }
 
 /** Item size as DynamoDB counts it (attribute names + values), approximately. */
+/**
+ * Stored items are never edited in place (an update builds a new item), so an item's
+ * size is worked out once. Writes add up every item's size to check the table limit,
+ * which would otherwise re-measure the whole table on each write.
+ */
+const sizes = new WeakMap<Item, number>();
+
 export function itemSize(item: Item): number {
+  const known = sizes.get(item);
+  if (known !== undefined) return known;
+  const total = measure(item);
+  sizes.set(item, total);
+  return total;
+}
+
+function measure(item: Item): number {
   const size = (v: AttributeValue): number => {
     const t = typeOf(v);
     const val = Object.values(v)[0];

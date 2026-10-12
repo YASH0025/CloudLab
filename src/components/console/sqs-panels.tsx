@@ -46,11 +46,11 @@ interface AttrRow {
 
 /** A queue's page: what's in it, send a message, poll like a consumer would, delete what's done. */
 export function QueuePanel({ queue }: { queue: ResourceDTO }) {
-  const counts = useQueueCounts(queue.id);
-  const send = useQueueAction(queue.id);
-  const poll = useQueueAction(queue.id);
-  const del = useQueueAction(queue.id);
-  const purge = useQueueAction(queue.id);
+  const counts = useQueueCounts(queue);
+  const send = useQueueAction(queue);
+  const poll = useQueueAction(queue);
+  const del = useQueueAction(queue);
+  const purge = useQueueAction(queue);
   const [body, setBody] = useState('{ "orderId": 1042, "item": "book" }');
   const [delay, setDelay] = useState("");
   const [attrs, setAttrs] = useState<AttrRow[]>([]);
@@ -255,7 +255,7 @@ export function QueuePanel({ queue }: { queue: ResourceDTO }) {
 function SubscribeCard({ queue }: { queue: ResourceDTO }) {
   const topics = useResources("sns", "topic");
   const subs = useResources("sns", "subscription");
-  const action = useQueueAction(queue.id);
+  const action = useQueueAction(queue);
   const [topic, setTopic] = useState("");
   const arn = String(queue.attributes.arn);
   const mine = (subs.data ?? []).filter((s) => s.config.protocol === "sqs" && s.config.endpoint === arn);

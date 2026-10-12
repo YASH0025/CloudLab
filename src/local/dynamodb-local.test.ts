@@ -151,9 +151,12 @@ describe("DynamoDB on My computer (local)", () => {
   });
 
   it("keeps tables as files that survive a restart, and changes settings without losing items", async () => {
-    const { call, dir } = setup();
+    const { call, dir, host } = setup();
     await call("CreateTable", orders);
     await call("PutItem", { TableName: "Orders", Item: order("ana", 1, "NEW", 20) });
+    // Writes are batched: on disk within FLUSH_MS, or at once when the agent stops (flush).
+    expect(JSON.parse(readFileSync(path.join(dir, "Orders.json"), "utf8")).attributes.itemCount).toBe(0);
+    host.flush();
     expect(JSON.parse(readFileSync(path.join(dir, "Orders.json"), "utf8")).attributes.itemCount).toBe(1);
 
     const again = setup(dir);
@@ -164,6 +167,26 @@ describe("DynamoDB on My computer (local)", () => {
     expect((await again.call("Scan", { TableName: "Orders" })).Count).toBe(1);
     await again.call("DeleteTable", { TableName: "Orders" });
     await expect(again.call("Scan", { TableName: "Orders" })).rejects.toMatchObject({ code: "ResourceNotFoundException" });
+  });
+
+  it("leaves the table untouched when a write is refused for CloudLab's size limit", async () => {
+    const { call, host } = setup();
+    await call("CreateTable", { ...orders, GlobalSecondaryIndexes: undefined, AttributeDefinitions: orders.AttributeDefinitions.slice(0, 2) });
+    const big = (i: number) => ({ customer: { S: "big" }, orderId: { N: String(i) }, blob: { S: "x".repeat(390 * 1024) } });
+    let refused: unknown = null;
+    for (let i = 0; i < 12 && !refused; i++) refused = await call("PutItem", { TableName: "Orders", Item: big(i) }).then(() => null, (e) => e);
+    expect(refused).toMatchObject({ code: "LimitExceededException" });
+    const t = host.byName("Orders");
+    expect(Object.keys(t.attributes.items as object)).toHaveLength(t.attributes.itemCount as number);
+    // Scan reads 1 MB per page, like DynamoDB: page through to count them all.
+    let counted = 0;
+    let start: unknown;
+    do {
+      const page = await call("Scan", { TableName: "Orders", Select: "COUNT", ...(start ? { ExclusiveStartKey: start } : {}) });
+      counted += page.Count as number;
+      start = page.LastEvaluatedKey;
+    } while (start);
+    expect(counted).toBe(t.attributes.itemCount);
   });
 
   it("explores items for the console, and refuses unknown operations and legacy parameters", async () => {

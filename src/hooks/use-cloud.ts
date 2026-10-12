@@ -4,13 +4,14 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { api, ApiError, type MetricQuery, type QueueActionInput, type TableItemsInput } from "@/lib/api-client";
 import { queryKeys } from "@/lib/query-keys";
-import { localTableItems, serverObjects, type ObjectsBackend } from "@/lib/objects-backend";
+import { localAgentCall, localTableItems, serverObjects, type LocalApiInfo, type ObjectsBackend } from "@/lib/objects-backend";
 import { LOCAL_REGION, REGIONS } from "@/engine/catalog";
 import { resolveCatalog } from "@/engine/resolve";
 import { useServiceCatalog } from "@/components/console/service-catalog";
 import { useConsoleStore } from "@/stores/console-store";
 import { useGuideStore } from "@/stores/guide-store";
 import type { ResourceDTO } from "@/engine/types";
+import type { QueueCounts } from "@/engine/sqs/queue";
 import type { ReachabilityInput } from "@/engine/analysis/reachability";
 import type { DbConnectInput } from "@/engine/analysis/dbconnect";
 
@@ -198,16 +199,47 @@ export function usePublish(id: string) {
   });
 }
 
-/** A queue's message counts, kept live while its page is open. */
-export function useQueueCounts(id: string) {
-  return useQuery({ queryKey: ["queue-counts", id], queryFn: () => api.queueCounts(id).then((r) => r.counts), refetchInterval: 3_000 });
+type QueueRef = Pick<ResourceDTO, "id" | "name" | "region">;
+
+/**
+ * The agent's local API on this computer, for a resource in My computer (local):
+ * its data (items, messages) is there. Null when it isn't local; throws when the
+ * agent isn't running.
+ */
+function useLocalApi(region: string | undefined) {
+  const isLocal = region === LOCAL_REGION;
+  const local = useLocal(isLocal);
+  return {
+    isLocal,
+    info: (): LocalApiInfo => {
+      const info = local.data?.agent?.online ? local.data.agent.info?.localApi : null;
+      if (!info) throw new ApiError("AgentNotRunning", "This resource's data is on your computer, and the CloudLab agent isn't running there. Start it (Local mode) and try again.", 0);
+      return info;
+    },
+  };
 }
 
-/** Send, poll, delete, purge or subscribe-to-topic on a queue. Errors show inline. */
-export function useQueueAction(id: string) {
+/** A queue's message counts, kept live while its page is open. */
+export function useQueueCounts(queue: QueueRef) {
+  const local = useLocalApi(queue.region);
+  return useQuery({
+    queryKey: ["queue-counts", queue.id],
+    queryFn: () =>
+      (local.isLocal ? localAgentCall<{ counts: QueueCounts }>(local.info(), "/sqs/console", { queue: queue.name, action: "counts" }) : api.queueCounts(queue.id)).then((r) => r.counts),
+    refetchInterval: 3_000,
+  });
+}
+
+/** Send, poll, delete, purge or subscribe-to-topic on a queue. Errors show inline. A queue on My computer (local) is used through the agent. */
+export function useQueueAction(queue: QueueRef | string) {
   const qc = useQueryClient();
+  const ref = typeof queue === "string" ? { id: queue, name: "", region: undefined } : queue;
+  const local = useLocalApi(ref.region);
   return useMutation({
-    mutationFn: (input: QueueActionInput) => api.queueAction(id, input),
+    mutationFn: (input: QueueActionInput) =>
+      local.isLocal && input.action !== "subscribe"
+        ? localAgentCall<Awaited<ReturnType<typeof api.queueAction>>>(local.info(), "/sqs/console", { ...input, queue: ref.name })
+        : api.queueAction(ref.id, input),
     onSettled: () => {
       qc.invalidateQueries({ queryKey: ["queue-counts"] });
       qc.invalidateQueries({ queryKey: ["resource"] });
@@ -227,18 +259,10 @@ export function usePreviewChanges(id: string) {
  */
 export function useTableItems(table: Pick<ResourceDTO, "id" | "name" | "region">) {
   const qc = useQueryClient();
-  const isLocal = table.region === LOCAL_REGION;
-  const local = useLocal(isLocal);
+  const local = useLocalApi(table.region);
   const id = table.id;
   return useMutation({
-    mutationFn: (input: TableItemsInput) => {
-      if (!isLocal) return api.tableItems(id, input);
-      const info = local.data?.agent?.online ? local.data.agent.info?.localApi : null;
-      if (!info) {
-        throw new ApiError("AgentNotRunning", "This table's items are on your computer, and the CloudLab agent isn't running there. Start it (Local mode) and try again.", 0);
-      }
-      return localTableItems(info, table.name, input);
-    },
+    mutationFn: (input: TableItemsInput) => (local.isLocal ? localTableItems(local.info(), table.name, input) : api.tableItems(id, input)),
     onSettled: (_d, _e, input) => {
       if (input.action === "put" || input.action === "delete") {
         qc.invalidateQueries({ queryKey: queryKeys.resource(id) });

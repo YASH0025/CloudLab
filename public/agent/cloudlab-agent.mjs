@@ -35,9 +35,9 @@ import os from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
-import { dynamodbApi, EngineError, explore, FileTableHost } from "./lib/core.mjs";
+import { dynamodbApi, EngineError, explore, FileQueueHost, FileTableHost, QueueWaiters, queueConsole, sqsApi, sqsErrorNames } from "./lib/core.mjs";
 
-export const AGENT_VERSION = "0.8.0";
+export const AGENT_VERSION = "0.9.0";
 const DEFAULT_SERVER = "https://cloud-lab-livid.vercel.app";
 const HOME = path.join(os.homedir(), ".cloudlab");
 const CONFIG = path.join(HOME, "agent.json");
@@ -1639,6 +1639,12 @@ export class LocalApi {
       const url = new URL(req.url ?? "/", "http://localhost");
       // The keys for AWS SDKs and the AWS CLI: only ever handed to the console on this computer.
       if (url.pathname === "/credentials" && req.method === "GET") return send(200, this.credentials?.() ?? null);
+      // A queue's messages, for the console's "Send and receive messages".
+      if (url.pathname === "/sqs/console" && req.method === "POST") {
+        if (!this.sqs) return send(404, { error: { code: "NotFound", message: "SQS isn't running on this computer." } });
+        const input = JSON.parse((await readBody(req, 1024 * 1024)).toString("utf8") || "{}");
+        return send(200, await this.sqs.console(input));
+      }
       // A DynamoDB table's items, for the console's "Explore items".
       if (url.pathname === "/dynamodb/explore" && req.method === "POST") {
         if (!this.dynamodb) return send(404, { error: { code: "NotFound", message: "DynamoDB isn't running on this computer." } });
@@ -2106,7 +2112,8 @@ export class AwsEndpoint {
       return res.end();
     }
     // Unsigned requests can't name a service in a signature: DynamoDB's say who they're for in X-Amz-Target.
-    let service = String(req.headers["x-amz-target"] ?? "").startsWith("DynamoDB_") ? "dynamodb" : "s3";
+    const target = String(req.headers["x-amz-target"] ?? "");
+    let service = target.startsWith("DynamoDB_") ? "dynamodb" : target.startsWith("AmazonSQS.") ? "sqs" : "s3";
     // Errors in the signature itself come back in the shape of the service it was for.
     const scope = /Credential=[^/,]+\/\d{8}\/[^/]+\/([^/]+)\//.exec(String(req.headers.authorization ?? "")) ?? /^[^/]+\/\d{8}\/[^/]+\/([^/]+)\//.exec(url.searchParams.get("X-Amz-Credential") ?? "");
     if (scope && this.services[scope[1]]) service = scope[1];
@@ -2198,6 +2205,81 @@ export class DynamoApi {
     return explore(this.host, t, { limit: 100, forward: true, mustBeNew: false, ...input });
   }
 }
+
+// ---------- SQS ----------
+
+const SQS_PREFIX = "AmazonSQS.";
+
+/**
+ * SQS's API on the AWS endpoint (AWS's JSON protocol, which current SDKs and the
+ * AWS CLI use: POST / with X-Amz-Target: AmazonSQS.<Operation>). The work is
+ * CloudLab's own SQS code (lib/core.mjs) on queues kept as files on this computer.
+ * Long polling really waits (QueueWaiters), so idle workers cost nothing.
+ */
+export class SqsApi {
+  constructor(host, { createQueue, updateQueue, deleteQueue, urlOf }) {
+    this.host = host;
+    this.waiters = new QueueWaiters();
+    this.ctx = { host, accountId: "local", region: "local-1", createQueue, updateQueue, deleteQueue, urlOf, waiters: this.waiters };
+  }
+
+  async handle(req, res, url, who) {
+    if (!who) throw new AwsError("MissingAuthenticationToken", "Request is missing Authentication Token", 403);
+    if (String(req.headers["content-type"] ?? "").startsWith("application/x-www-form-urlencoded")) {
+      throw new AwsError(
+        "UnsupportedProtocol",
+        "This client uses SQS's older Query protocol. CloudLab's SQS speaks the JSON protocol that current AWS SDKs and the AWS CLI use: update your SDK.",
+        400,
+      );
+    }
+    const target = String(req.headers["x-amz-target"] ?? "");
+    if (req.method !== "POST" || !target.startsWith(SQS_PREFIX)) throw new AwsError("AWS.SimpleQueueService.UnsupportedOperation", "", 400);
+    let body;
+    try {
+      const raw = (await readBody(req, 2 * 1024 * 1024)).toString("utf8");
+      body = raw ? JSON.parse(raw) : {};
+    } catch (e) {
+      if (e instanceof AwsError) throw e;
+      throw new AwsError("SerializationException", "The request body isn't valid JSON.", 400);
+    }
+    // A long-polling receive ends early if the client goes away.
+    const out = await sqsApi(target.slice(SQS_PREFIX.length), body, this.ctx);
+    if (res.destroyed) return;
+    const json = JSON.stringify(out ?? {});
+    res.writeHead(200, { "content-type": "application/x-amz-json-1.0", "x-amzn-requestid": randomUUIDv4(), "content-length": Buffer.byteLength(json) });
+    res.end(json);
+  }
+
+  /** SQS's error shape: {"__type": "com.amazonaws.sqs#QueueDoesNotExist", "message": "…"}, with the older code in x-amzn-query-error. */
+  sendError(res, e) {
+    const auth = {
+      InvalidAccessKeyId: ["InvalidClientTokenId", "The security token included in the request is invalid.", 403],
+      SignatureDoesNotMatch: ["SignatureDoesNotMatch", e.message, 403],
+      RequestTimeTooSkewed: ["SignatureDoesNotMatch", "Signature expired: the request's time is more than 15 minutes from this computer's time.", 403],
+    }[e.code];
+    if (auth) e = new AwsError(auth[0], auth[1], auth[2]);
+    const known = e instanceof EngineError || e instanceof AwsError;
+    if (!known) log("SQS:", e.stack ?? e);
+    const code = known ? (e.code ?? "InternalError") : "InternalError";
+    const { type, queryCode } = sqsErrorNames(code);
+    const status = known ? (e.status ?? 400) : 500;
+    res.writeHead(status, {
+      "content-type": "application/x-amz-json-1.0",
+      "x-amzn-requestid": randomUUIDv4(),
+      "x-amzn-query-error": `${queryCode};${status < 500 ? "Sender" : "Receiver"}`,
+    });
+    res.end(JSON.stringify({ __type: `com.amazonaws.sqs#${type}`, message: known ? e.message : "Internal error" }));
+  }
+
+  /** The console's "Send and receive messages" for a queue on this computer. */
+  async console(input) {
+    const q = this.host.byName(String(input?.queue ?? ""));
+    if (!["counts", "send", "receive", "delete", "purge"].includes(input?.action)) throw new EngineError("ValidationException", "Unknown action.", 400);
+    return queueConsole(this.host, q, { maxNumberOfMessages: 10, attributes: {}, ...input }, () => this.waiters.notify(q.id));
+  }
+}
+
+const randomUUIDv4 = () => randomBytes(16).toString("hex").replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/, "$1-$2-$3-$4-$5");
 
 // ---------- EC2 in My computer (local) ----------
 
@@ -2484,9 +2566,10 @@ export class Agent {
     this.s3 = new LocalS3();
     this.localApi = null;
     this.bucketReports = new Map();
-    /** DynamoDB tables on this computer (set up in startLocal). */
+    /** DynamoDB tables and SQS queues on this computer (set up in startLocal). */
     this.tables = null;
-    this.tableReports = new Map();
+    this.queues = null;
+    this.localReports = new Map();
   }
 
   /** Sets up and starts an app without Docker. Returns an error message, or null. */
@@ -2673,9 +2756,10 @@ export class Agent {
     return null;
   }
 
-  /** A bucket's files changed: tell CloudLab its counts (once things settle for half a second). */
+  /** A bucket's files changed: tell CloudLab its counts. */
   reportBucket(bucket) {
-    clearTimeout(this.bucketReports.get(bucket));
+    // At most once per half second, also while files keep changing.
+    if (this.bucketReports.has(bucket)) return;
     this.bucketReports.set(
       bucket,
       setTimeout(async () => {
@@ -2686,30 +2770,59 @@ export class Agent {
     );
   }
 
-  /** CloudLab created, changed or deleted a DynamoDB table on this computer. */
-  handleTable(r) {
-    if (!this.tables) throw new Error("DynamoDB isn't running on this computer.");
-    if (r.op === "delete-table") {
-      this.tables.remove(r.table.name);
-      log(`Table ${r.table.name} deleted.`);
-      return;
+  /** Writes local services' pending changes to disk (they're batched for speed). */
+  flushLocal() {
+    for (const host of [this.tables, this.queues]) {
+      try {
+        host?.flush();
+      } catch (e) {
+        console.error("Couldn't save local data:", e.message);
+      }
     }
-    const isNew = !this.tables.has(r.table.name);
-    const t = this.tables.upsert(r.table);
-    if (isNew) log(`Table ${t.name} ready (${this.tables.pathOf(t.name)}).`);
-    this.reportTable(t.name);
   }
 
-  /** A table's items changed: tell CloudLab its counts (never the items), once things settle. */
-  reportTable(name) {
-    clearTimeout(this.tableReports.get(name));
-    this.tableReports.set(
-      name,
+  /**
+   * Services whose resources are records in CloudLab and data on this computer:
+   * their store, their routes in CloudLab, and what to call them in messages.
+   */
+  localServices() {
+    return [
+      { kind: "dynamodb", host: this.tables, route: "/api/agent/dynamodb/tables", noun: "Table", spec: (r) => r.table },
+      { kind: "sqs", host: this.queues, route: "/api/agent/sqs/queues", noun: "Queue", spec: (r) => r.queue },
+    ].filter((x) => x.host);
+  }
+
+  /** CloudLab created, changed or deleted a table or queue on this computer. */
+  handleLocalResource(r) {
+    const svc = this.localServices().find((x) => x.kind === r.kind);
+    if (!svc) throw new Error(`${r.kind} isn't running on this computer.`);
+    const spec = svc.spec(r);
+    if (r.op.startsWith("delete-")) {
+      svc.host.remove(spec.name);
+      log(`${svc.noun} ${spec.name} deleted.`);
+      return;
+    }
+    const isNew = !svc.host.has(spec.name);
+    const res = svc.host.upsert(spec);
+    if (isNew) log(`${svc.noun} ${res.name} ready (${svc.host.pathOf(res.name)}).`);
+    this.reportLocal(svc.kind, res.name);
+  }
+
+  /**
+   * A table's or queue's data changed: tell CloudLab its counts (never the data).
+   * At most once per half second, also while changes keep coming.
+   */
+  reportLocal(kind, name) {
+    const key = `${kind}:${name}`;
+    if (this.localReports.has(key)) return;
+    this.localReports.set(
+      key,
       setTimeout(async () => {
-        this.tableReports.delete(name);
-        const attributes = this.tables?.report(name);
+        this.localReports.delete(key);
+        const svc = this.localServices().find((x) => x.kind === kind);
+        const attributes = svc?.host.report(name);
         if (!attributes) return;
-        await this.api.reportResource(this.tables.byName(name).id, { attributes });
+        await this.api.reportResource(svc.host.byName(name).id, { attributes });
       }, 500),
     );
   }
@@ -2748,7 +2861,7 @@ export class Agent {
       }
       this.s3.deleteBucket(name);
     };
-    this.tables = new FileTableHost(path.join(HOME, "dynamodb"), (t) => this.reportTable(t.name));
+    this.tables = new FileTableHost(path.join(HOME, "dynamodb"), (t) => this.reportLocal("dynamodb", t.name));
     const dynamodb = new DynamoApi(this.tables, {
       createTable: async (cfg) => this.tables.upsert(await this.viaCloudLab("/api/agent/dynamodb/tables", { config: cfg })),
       updateTable: async (t, patch) => this.tables.upsert(await this.viaCloudLab(`/api/agent/dynamodb/tables/${encodeURIComponent(t.name)}`, { config: patch }, "PATCH")),
@@ -2758,12 +2871,26 @@ export class Agent {
       },
     });
     this.localApi.dynamodb = dynamodb;
+
+    this.queues = new FileQueueHost(path.join(HOME, "sqs"), (q) => this.reportLocal("sqs", q.name));
+    const queueRoute = (q) => `/api/agent/sqs/queues/${encodeURIComponent(q.name)}`;
+    const sqs = new SqsApi(this.queues, {
+      createQueue: async (cfg) => this.queues.upsert(await this.viaCloudLab("/api/agent/sqs/queues", { config: cfg })),
+      updateQueue: async (q, patch) => this.queues.upsert(await this.viaCloudLab(queueRoute(q), { config: patch }, "PATCH")),
+      deleteQueue: async (q) => {
+        await this.viaCloudLab(queueRoute(q), {}, "DELETE");
+        this.queues.remove(q.name);
+      },
+      urlOf: (q) => `http://localhost:${this.aws?.port ?? AWS_PORT}/${q.id.split("/").at(-2)}/${q.name}`,
+    });
+    this.localApi.sqs = sqs;
+
     this.aws = new AwsEndpoint({
       keys: () => keys,
-      services: { s3: new S3Api(this.s3, { createBucket, deleteBucket, onChange: (b) => this.reportBucket(b), owner: config.awsAccessKeyId }), dynamodb },
+      services: { s3: new S3Api(this.s3, { createBucket, deleteBucket, onChange: (b) => this.reportBucket(b), owner: config.awsAccessKeyId }), dynamodb, sqs },
     });
     const awsPort = await this.aws.start();
-    if (awsPort) log(`AWS endpoint for SDKs and the AWS CLI: http://localhost:${awsPort} (S3 and DynamoDB)`);
+    if (awsPort) log(`AWS endpoint for SDKs and the AWS CLI: http://localhost:${awsPort} (S3, DynamoDB and SQS)`);
     else log(`Couldn't open the AWS endpoint: port ${AWS_PORT} is in use by another program.`);
     this.localApi.credentials = () =>
       awsPort ? { accessKeyId: config.awsAccessKeyId, secretAccessKey: config.awsSecretAccessKey, endpoint: `http://localhost:${awsPort}`, lanEndpoint: lanAddress() ? `http://${lanAddress()}:${awsPort}` : null, region: "local-1" } : null;
@@ -2776,22 +2903,24 @@ export class Agent {
    * the folders by hand, and add buckets the account doesn't have yet (made before
    * this computer was connected to it).
    */
-  async syncTables() {
-    for (const name of this.tables?.names() ?? []) {
-      const t = this.tables.byName(name);
-      try {
-        await this.api.post(`/api/agent/resources/${encodeURIComponent(t.id)}`, { attributes: this.tables.report(name) });
-      } catch (e) {
-        if (e.code !== "ResourceNotFound") {
-          log(`Couldn't report table ${name}:`, e.message);
-          continue;
-        }
+  async syncLocalResources() {
+    for (const svc of this.localServices()) {
+      for (const name of svc.host.names()) {
+        const res = svc.host.byName(name);
         try {
-          this.tables.upsert(await this.api.post("/api/agent/dynamodb/tables", { config: t.config }));
-          log(`Table ${name} is on this computer but wasn't in your CloudLab account, so it was added.`);
-          this.reportTable(name);
-        } catch (e2) {
-          log(`Table ${name} is on this computer but couldn't be added to your CloudLab account: ${e2.message}`);
+          await this.api.post(`/api/agent/resources/${encodeURIComponent(res.id)}`, { attributes: svc.host.report(name) });
+        } catch (e) {
+          if (e.code !== "ResourceNotFound") {
+            log(`Couldn't report ${svc.noun.toLowerCase()} ${name}:`, e.message);
+            continue;
+          }
+          try {
+            svc.host.upsert(await this.api.post(svc.route, { config: res.config }));
+            log(`${svc.noun} ${name} is on this computer but wasn't in your CloudLab account, so it was added.`);
+            this.reportLocal(svc.kind, name);
+          } catch (e2) {
+            log(`${svc.noun} ${name} is on this computer but couldn't be added to your CloudLab account: ${e2.message}`);
+          }
         }
       }
     }
@@ -2827,7 +2956,7 @@ export class Agent {
       try {
         if (r.kind === "ec2") await this.ec2.handle(r);
         else if (r.kind === "s3") await this.s3.handle(r, this.api);
-        else if (r.kind === "dynamodb") this.handleTable(r);
+        else if (r.kind === "dynamodb" || r.kind === "sqs") this.handleLocalResource(r);
       } catch (e) {
         error = String(e.message ?? e);
         log(`  failed: ${error}`);
@@ -2871,7 +3000,7 @@ export class Agent {
     if (!this.bucketsSynced) {
       this.bucketsSynced = true;
       await this.syncBuckets();
-      await this.syncTables();
+      await this.syncLocalResources();
     }
     try {
       if (info.docker.ok) await this.gateway.update(routes, this.native.targets());
@@ -2981,13 +3110,18 @@ async function main(argv) {
   const close = () => {
     if (closing) return;
     closing = true;
+    // Tables and queues keep recent changes in memory for a moment: write them out first.
+    agent.flushLocal();
     agent.native.stopAll();
     agent.nativeGateway.stop();
     process.exit(0);
   };
   for (const sig of IS_WINDOWS ? ["SIGINT", "SIGTERM", "SIGHUP", "SIGBREAK"] : ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(sig, close);
   process.on("exit", () => {
-    if (!closing) agent.native.stopAll();
+    if (!closing) {
+      agent.flushLocal();
+      agent.native.stopAll();
+    }
   });
   let failures = 0;
   for (;;) {

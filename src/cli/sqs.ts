@@ -1,7 +1,7 @@
 import { EngineError } from "@/engine/errors";
-import { changeVisibility, countsOf, deleteMessage, purgeQueue, receiveMessages, sendMessage } from "@/engine/sqs/queue";
-import { QUEUE_ARN, QUEUE_SETTINGS, queueArn, urlFromArn, type QueueSetting } from "@/engine/services/sqs";
-import type { Resource } from "@/engine/types";
+import { attributesToConfig, checkDeadLetterQueue, KNOWN_ATTRIBUTES, queueAttributes } from "@/engine/sqs/attributes";
+import { changeVisibility, deleteMessage, purgeQueue, receiveMessages, sendMessage } from "@/engine/sqs/queue";
+import { QUEUE_SETTINGS } from "@/engine/services/sqs";
 import type { Args, CliContext, Command } from "./commands";
 import { UsageError } from "./parse";
 import { messageAttributesArg, textArg } from "./sns";
@@ -15,10 +15,6 @@ const cmd = (c: Command) => c;
 
 const listQueues = (ctx: CliContext) => ctx.engine.list(ctx.accountId, { service: "sqs", type: "queue", region: ctx.region });
 const byUrl = (ctx: CliContext, url: string) => ctx.engine.getTyped(ctx.accountId, url.trim(), "sqs", "queue", ctx.region);
-
-const SETTING_BY_ATTR = Object.fromEntries(Object.entries(QUEUE_SETTINGS).map(([key, s]) => [s.attr, key as QueueSetting]));
-const READ_ONLY = ["QueueArn", "ApproximateNumberOfMessages", "ApproximateNumberOfMessagesNotVisible", "ApproximateNumberOfMessagesDelayed", "CreatedTimestamp", "LastModifiedTimestamp", "SqsManagedSseEnabled"];
-const KNOWN = [...Object.keys(SETTING_BY_ATTR), "Policy", "RedrivePolicy", ...READ_ONLY];
 
 /** --attributes VisibilityTimeout=60,DelaySeconds=5 or a JSON object (needed for Policy and RedrivePolicy). */
 function attributesArg(ctx: CliContext, args: Args): Record<string, string> {
@@ -34,7 +30,7 @@ function attributesArg(ctx: CliContext, args: Args): Record<string, string> {
     }
   }
   const out: Record<string, string> = {};
-  for (const part of text.split(new RegExp(`,(?=(?:${KNOWN.join("|")})=)`))) {
+  for (const part of text.split(new RegExp(`,(?=(?:${KNOWN_ATTRIBUTES.join("|")})=)`))) {
     const eq = part.indexOf("=");
     if (eq === -1) throw new UsageError(`Error parsing parameter '--attributes': Expected: '=', received: end of input for input: ${part}`);
     out[part.slice(0, eq)] = part.slice(eq + 1);
@@ -42,89 +38,9 @@ function attributesArg(ctx: CliContext, args: Args): Record<string, string> {
   return out;
 }
 
-/** Turns API attributes into the queue's settings, with SQS's errors. */
-function toConfig(ctx: CliContext, attrs: Record<string, string>): Record<string, unknown> {
-  const config: Record<string, unknown> = {};
-  for (const [name, value] of Object.entries(attrs)) {
-    const key = SETTING_BY_ATTR[name];
-    if (key) {
-      const n = Number(value);
-      const s = QUEUE_SETTINGS[key];
-      if (!/^\d+$/.test(value) || n < s.min || n > s.max) throw new EngineError("InvalidAttributeValue", `Invalid value for the parameter ${name}.`);
-      config[key] = n;
-    } else if (name === "Policy") {
-      config.policy = value === "" ? undefined : value;
-    } else if (name === "RedrivePolicy") {
-      if (value === "") {
-        config.deadLetterQueue = undefined;
-        continue;
-      }
-      let rp: { deadLetterTargetArn?: string; maxReceiveCount?: string | number };
-      try {
-        rp = JSON.parse(value);
-      } catch {
-        throw new EngineError("InvalidParameterValue", `Value ${value} for parameter RedrivePolicy is invalid. Reason: Redrive policy is not a valid JSON map.`);
-      }
-      if (!rp.deadLetterTargetArn || !QUEUE_ARN.test(rp.deadLetterTargetArn)) {
-        throw new EngineError("InvalidParameterValue", `Value ${value} for parameter RedrivePolicy is invalid. Reason: Invalid value for deadLetterTargetArn.`);
-      }
-      const count = Number(rp.maxReceiveCount);
-      if (!Number.isInteger(count) || count < 1 || count > 1000) {
-        throw new EngineError(
-          "InvalidParameterValue",
-          `Value ${value} for parameter RedrivePolicy is invalid. Reason: Invalid value for maxReceiveCount: ${rp.maxReceiveCount}, valid values are from 1 to 1000 both inclusive.`,
-        );
-      }
-      config.deadLetterQueue = urlFromArn(rp.deadLetterTargetArn);
-      config.maxReceiveCount = count;
-      config._redrive = value;
-    } else if (READ_ONLY.includes(name)) {
-      throw new EngineError("InvalidAttributeName", `Unknown Attribute ${name}.`);
-    } else if (name === "FifoQueue" || name === "ContentBasedDeduplication") {
-      throw new EngineError("InvalidAttributeName", `Unknown Attribute ${name}. (CloudLab simulates standard queues; FIFO queues aren't available yet.)`);
-    } else {
-      throw new EngineError("InvalidAttributeName", `Unknown Attribute ${name}.`);
-    }
-  }
-  return config;
-}
-
 /** The DLQ must exist; SQS checks when the redrive policy is set. */
 async function checkDlq(ctx: CliContext, config: Record<string, unknown>) {
-  if (!config.deadLetterQueue) return;
-  const raw = String(config._redrive);
-  delete config._redrive;
-  const exists = (await listQueues(ctx)).some((q) => q.id === config.deadLetterQueue);
-  if (!exists) throw new EngineError("InvalidParameterValue", `Value ${raw} for parameter RedrivePolicy is invalid. Reason: Dead letter target does not exist.`);
-}
-
-const epoch = (iso: string) => String(Math.floor(Date.parse(iso) / 1000));
-
-function allAttributes(ctx: CliContext, q: Resource): Record<string, string> {
-  const c = countsOf(q, ctx.engine.now().getTime());
-  return {
-    QueueArn: String(q.attributes.arn),
-    ApproximateNumberOfMessages: String(c.available),
-    ApproximateNumberOfMessagesNotVisible: String(c.inFlight),
-    ApproximateNumberOfMessagesDelayed: String(c.delayed),
-    CreatedTimestamp: epoch(q.createdAt),
-    LastModifiedTimestamp: epoch(q.updatedAt),
-    VisibilityTimeout: String(q.config.visibilityTimeout),
-    MaximumMessageSize: String(q.config.maximumMessageSize),
-    MessageRetentionPeriod: String(q.config.messageRetentionPeriod),
-    DelaySeconds: String(q.config.delaySeconds),
-    ...(q.config.policy ? { Policy: JSON.stringify(JSON.parse(String(q.config.policy))) } : {}),
-    ...(q.config.deadLetterQueue
-      ? {
-          RedrivePolicy: JSON.stringify({
-            deadLetterTargetArn: queueArn(ctx.region, ctx.accountId, String(q.config.deadLetterQueue).split("/").pop()!),
-            maxReceiveCount: Number(q.config.maxReceiveCount ?? 10),
-          }),
-        }
-      : {}),
-    ReceiveMessageWaitTimeSeconds: String(q.config.receiveMessageWaitTimeSeconds),
-    SqsManagedSseEnabled: "true",
-  };
+  await checkDeadLetterQueue(config, async () => (await listQueues(ctx)).map((q) => q.id));
 }
 
 const intArg = (args: Args, name: string): number | undefined => {
@@ -144,7 +60,7 @@ export const SQS_COMMANDS: Command[] = [
     mutates: true,
     async run(args, ctx) {
       const name = args.required("queue-name");
-      const config = toConfig(ctx, attributesArg(ctx, args));
+      const config = attributesToConfig(attributesArg(ctx, args));
       await checkDlq(ctx, config);
       const existing = (await listQueues(ctx)).find((q) => q.name === name);
       if (existing) {
@@ -211,9 +127,9 @@ export const SQS_COMMANDS: Command[] = [
       const q = await byUrl(ctx, args.required("queue-url"));
       const names = args.list("attribute-names");
       if (names.length === 0) return undefined;
-      const all = allAttributes(ctx, q);
+      const all = queueAttributes(q, ctx.engine.now().getTime());
       if (names.includes("All")) return { Attributes: all };
-      for (const n of names) if (!KNOWN.includes(n) && n !== "RedriveAllowPolicy") throw new EngineError("InvalidAttributeName", `Unknown Attribute ${n}.`);
+      for (const n of names) if (!KNOWN_ATTRIBUTES.includes(n) && n !== "RedriveAllowPolicy") throw new EngineError("InvalidAttributeName", `Unknown Attribute ${n}.`);
       const picked = Object.fromEntries(names.filter((n) => n in all).map((n) => [n, all[n]]));
       return Object.keys(picked).length ? { Attributes: picked } : undefined;
     },
@@ -229,7 +145,7 @@ export const SQS_COMMANDS: Command[] = [
       const q = await byUrl(ctx, args.required("queue-url"));
       const attrs = attributesArg(ctx, args);
       if (Object.keys(attrs).length === 0) throw new UsageError("the following arguments are required: --attributes");
-      const config = toConfig(ctx, attrs);
+      const config = attributesToConfig(attrs);
       await checkDlq(ctx, config);
       if (config.deadLetterQueue === q.id) {
         throw new EngineError("InvalidParameterValue", `Value ${attrs.RedrivePolicy} for parameter RedrivePolicy is invalid. Reason: Dead letter target cannot be the queue itself.`);

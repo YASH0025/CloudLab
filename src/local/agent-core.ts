@@ -8,3 +8,6 @@ export { dynamodbApi, DYNAMODB_OPERATIONS } from "@/engine/dynamodb/api";
 export { explore } from "@/engine/dynamodb/explore";
 export { EngineError } from "@/engine/errors";
 export { FileTableHost } from "./dynamodb-host";
+export { QueueWaiters, sqsApi, sqsErrorNames } from "@/engine/sqs/api";
+export { queueConsole } from "@/engine/sqs/console";
+export { FileQueueHost } from "./sqs-host";

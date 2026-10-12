@@ -61,7 +61,7 @@ describe("My computer (local)", () => {
     const vpcs = await engine.list(ACCOUNT, { service: "networking", type: "vpc", region: LOCAL });
     expect(vpcs).toHaveLength(1);
     await expect(
-      engine.create(ACCOUNT, { service: "sqs", type: "queue", region: LOCAL, config: { name: "q" } }),
+      engine.create(ACCOUNT, { service: "sns", type: "topic", region: LOCAL, config: { name: "t" } }),
     ).rejects.toMatchObject({ code: "NotAvailableLocally" });
   });
 
@@ -86,6 +86,18 @@ describe("My computer (local)", () => {
 
     await engine.remove(ACCOUNT, t.id, { force: true });
     expect((await local.sync(agent, { info, apps: [], complete: false })).tasks.map((x) => x.payload.resource?.op)).toEqual(["delete-table"]);
+  });
+
+  it("sends SQS queues to the computer, and keeps their messages there", async () => {
+    const agent = await connect();
+    const q = await engine.create(ACCOUNT, { service: "sqs", type: "queue", region: LOCAL, config: { name: "orders" } });
+    const { tasks } = await local.sync(agent, { info, apps: [], complete: false });
+    expect(tasks.map((x) => [x.payload.resource?.kind, x.payload.resource?.op])).toEqual([["sqs", "create-queue"]]);
+    expect(tasks[0].payload.resource?.queue).toMatchObject({ id: q.id, name: "orders", config: { visibilityTimeout: 30 } });
+    const { sendMessage } = await import("@/engine/sqs/queue");
+    await expect(sendMessage(engine, q, { body: "hi" })).rejects.toMatchObject({ code: "LocalQueue" });
+    await engine.remove(ACCOUNT, q.id);
+    expect((await local.sync(agent, { info, apps: [], complete: false })).tasks.map((x) => x.payload.resource?.op)).toEqual(["delete-queue"]);
   });
 
   it("leaves other regions simulated", async () => {

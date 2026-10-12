@@ -1,4 +1,4 @@
-import type { TableHost } from "./host";
+import type { TableHost } from "../host";
 import { LOCAL_REGION } from "../catalog";
 import { EngineError } from "../errors";
 import { indexesOf, tableKey, tableNotFound, type KeyDef } from "../services/dynamodb";
@@ -93,11 +93,41 @@ async function load(engine: TableHost, table: Resource): Promise<Resource> {
   return engine.get(t.accountId, t.id);
 }
 
-async function save(engine: TableHost, t: Resource, items: Record<string, Item>, add: Partial<TableStats> = {}) {
+interface Totals {
+  count: number;
+  bytes: number;
+}
+
+/** The table's item count and size: kept up to date by every write, worked out from the items only when missing. */
+function totalsOf(t: Resource, items: Record<string, Item>): Totals {
+  const count = t.attributes.itemCount;
+  const bytes = t.attributes.tableSizeBytes;
+  if (typeof count === "number" && typeof bytes === "number") return { count, bytes };
+  return { count: Object.keys(items).length, bytes: Object.values(items).reduce((n, it) => n + itemSize(it), 0) };
+}
+
+async function save(engine: TableHost, t: Resource, items: Record<string, Item>, add: Partial<TableStats> = {}, totals?: Totals) {
   const stats = statsOf(t);
   for (const [k, v] of Object.entries(add)) stats[k as keyof TableStats] += v ?? 0;
-  const bytes = Object.values(items).reduce((n, it) => n + itemSize(it), 0);
-  await engine.setAttributes(t.accountId, t.id, { items, itemCount: Object.keys(items).length, tableSizeBytes: bytes, stats });
+  const { count, bytes } = totals ?? { count: Object.keys(items).length, bytes: Object.values(items).reduce((n, it) => n + itemSize(it), 0) };
+  await engine.setAttributes(t.accountId, t.id, { items, itemCount: count, tableSizeBytes: bytes, stats });
+}
+
+/**
+ * Puts `item` at key `k` (or removes it), after checking CloudLab's table limits
+ * against the table as it would be, so a write that's refused changes nothing.
+ */
+async function write(engine: TableHost, t: Resource, items: Record<string, Item>, k: string, item: Item | undefined) {
+  const before = totalsOf(t, items);
+  const old = items[k];
+  const totals = {
+    count: before.count + (item ? 1 : 0) - (old ? 1 : 0),
+    bytes: before.bytes + (item ? itemSize(item) : 0) - (old ? itemSize(old) : 0),
+  };
+  if (item) checkLimits(totals);
+  if (item) items[k] = item;
+  else delete items[k];
+  await save(engine, t, items, { writes: 1 }, totals);
 }
 
 async function bump(engine: TableHost, t: Resource, add: Partial<TableStats>) {
@@ -182,9 +212,9 @@ async function failOnCondition<T>(engine: TableHost, t: Resource, fn: () => T): 
   }
 }
 
-function checkLimits(items: Record<string, Item>) {
-  if (Object.keys(items).length > MAX_ITEMS) throw new EngineError("LimitExceededException", `CloudLab keeps at most ${MAX_ITEMS} items per table. Delete some first.`, 400);
-  if (Object.values(items).reduce((n, it) => n + itemSize(it), 0) > MAX_TABLE_BYTES) throw new EngineError("LimitExceededException", "CloudLab keeps at most 4 MB per table. Delete some items first.", 400);
+function checkLimits(totals: Totals) {
+  if (totals.count > MAX_ITEMS) throw new EngineError("LimitExceededException", `CloudLab keeps at most ${MAX_ITEMS} items per table. Delete some first.`, 400);
+  if (totals.bytes > MAX_TABLE_BYTES) throw new EngineError("LimitExceededException", "CloudLab keeps at most 4 MB per table. Delete some items first.", 400);
 }
 
 export interface WriteInput extends ExpressionInput {
@@ -207,9 +237,7 @@ export async function putItem(engine: TableHost, table: Resource, itemInput: unk
   if (!input.condition) checkUnused(ctx);
   await consume(engine, t, "write", writeUnits(size));
   const old = items[k];
-  items[k] = item;
-  checkLimits(items);
-  await save(engine, t, items, { writes: 1 });
+  await write(engine, t, items, k, item);
   return rv === "ALL_OLD" && old ? { Attributes: old } : {};
 }
 
@@ -243,10 +271,7 @@ export async function deleteItem(engine: TableHost, table: Resource, keyInput: u
   if (!input.condition) checkUnused(ctx);
   const old = items[k];
   await consume(engine, t, "write", writeUnits(old ? itemSize(old) : 1));
-  if (old) {
-    delete items[k];
-    await save(engine, t, items, { writes: 1 });
-  }
+  if (old) await write(engine, t, items, k, undefined);
   return rv === "ALL_OLD" && old ? { Attributes: old } : {};
 }
 
@@ -285,9 +310,7 @@ export async function updateItem(engine: TableHost, table: Resource, keyInput: u
   const size = itemSize(updated);
   if (size > MAX_ITEM_BYTES) throw validation("Item size to update has exceeded the maximum allowed size");
   await consume(engine, t, "write", writeUnits(size));
-  items[k] = updated;
-  checkLimits(items);
-  await save(engine, t, items, { writes: 1 });
+  await write(engine, t, items, k, updated);
   const touched = new Set(actions.map((a) => String(a.path[0])));
   const pick = (it: Item | undefined) => (it ? Object.fromEntries(Object.entries(it).filter(([n]) => touched.has(n))) : undefined);
   const out = rv === "ALL_NEW" ? updated : rv === "UPDATED_NEW" ? pick(updated) : rv === "ALL_OLD" ? old : rv === "UPDATED_OLD" ? pick(old) : undefined;

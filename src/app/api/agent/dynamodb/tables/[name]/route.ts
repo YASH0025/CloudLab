@@ -3,7 +3,7 @@ import { z } from "zod";
 import { LOCAL_REGION } from "@/engine/catalog";
 import type { Engine } from "@/engine/engine";
 import { tableNotFound } from "@/engine/services/dynamodb";
-import { tableSpec } from "@/local/bridge";
+import { localSpec } from "@/local/bridge";
 import { getEngine, getLocal, handle } from "@/server/api";
 
 async function localTable(engine: Engine, accountId: string, name: string) {
@@ -22,7 +22,7 @@ export async function PATCH(request: NextRequest, ctx: RouteContext<"/api/agent/
     const { config } = patch.parse(await request.json());
     const engine = getEngine();
     const t = await localTable(engine, agent.accountId, decodeURIComponent(name));
-    return Response.json(tableSpec(await engine.update(agent.accountId, t.id, config)));
+    return Response.json(localSpec(await engine.update(agent.accountId, t.id, config)));
   });
 }
 

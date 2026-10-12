@@ -1,5 +1,5 @@
 import type { Resource } from "../types";
-import type { TableHost } from "./host";
+import type { TableHost } from "../host";
 import { deleteItem, putItem, query, scan } from "./items";
 import { executeStatement } from "./partiql";
 import { marshall, marshallItem, unmarshallItem, type Item } from "./values";

@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { LOCAL_REGION } from "@/engine/catalog";
-import { tableSpec } from "@/local/bridge";
+import { localSpec } from "@/local/bridge";
 import { getEngine, getLocal, handle } from "@/server/api";
 
 const body = z.object({ config: z.record(z.string(), z.unknown()) });
@@ -15,6 +15,6 @@ export async function POST(request: Request) {
     const agent = await getLocal().authenticate(request.headers.get("authorization"));
     const { config } = body.parse(await request.json());
     const t = await getEngine().create(agent.accountId, { service: "dynamodb", type: "table", region: LOCAL_REGION, config });
-    return Response.json(tableSpec(t), { status: 201 });
+    return Response.json(localSpec(t), { status: 201 });
   });
 }

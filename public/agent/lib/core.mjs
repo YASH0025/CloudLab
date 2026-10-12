@@ -73,8 +73,8 @@ function customAlphabet(alphabet, defaultSize = 21) {
       return customRandom(alphabet, defaultSize, random);
     }
   }
-  let charCodes = Uint8Array.from(alphabet, (str2) => {
-    return str2.charCodeAt(0);
+  let charCodes = Uint8Array.from(alphabet, (str3) => {
+    return str3.charCodeAt(0);
   });
   let alphabetLen = alphabet.length;
   let mask = (2 << 31 - Math.clz32(alphabetLen - 1 | 1)) - 1;
@@ -95,14 +95,14 @@ function customAlphabet(alphabet, defaultSize = 21) {
           buffer[i] = charCodes[buffer[i] & mask];
         }
       } else {
-        let randomBytes = Buffer.allocUnsafe(
+        let randomBytes2 = Buffer.allocUnsafe(
           Math.ceil(1.6 * (mask + 1) * target / alphabetLen)
         );
         let accepted = 0;
         while (accepted < target) {
-          fillRandom(randomBytes);
-          for (let i = 0; i < randomBytes.length; i++) {
-            let index = randomBytes[i] & mask;
+          fillRandom(randomBytes2);
+          for (let i = 0; i < randomBytes2.length; i++) {
+            let index = randomBytes2[i] & mask;
             if (index < alphabetLen) {
               buffer[accepted++] = charCodes[index];
               if (accepted === target) break;
@@ -122,6 +122,11 @@ var nanoid = customAlphabet(urlAlphabet);
 // src/engine/ids.ts
 var hex = customAlphabet("0123456789abcdef", 17);
 var upper = customAlphabet("ABCDEFGHIJKLMNOPQRSTUVWXYZ234567", 17);
+function accountNumber(accountId) {
+  let h = 0;
+  for (const ch of accountId) h = h * 31 + ch.charCodeAt(0) >>> 0;
+  return String(1e11 + h % 9e11).padStart(12, "0");
+}
 
 // src/engine/services/dynamodb.ts
 var tableNotFound = (name) => new EngineError("ResourceNotFoundException", `Requested resource not found: Table: ${name} not found`, 400);
@@ -273,7 +278,15 @@ function equal(a, b) {
   }
   return JSON.stringify(a) === JSON.stringify(b);
 }
+var sizes = /* @__PURE__ */ new WeakMap();
 function itemSize(item) {
+  const known = sizes.get(item);
+  if (known !== void 0) return known;
+  const total = measure(item);
+  sizes.set(item, total);
+  return total;
+}
+function measure(item) {
   const size = (v) => {
     const t = typeOf(v);
     const val = Object.values(v)[0];
@@ -861,11 +874,29 @@ async function load(engine, table2) {
   }
   return engine.get(t.accountId, t.id);
 }
-async function save(engine, t, items, add = {}) {
+function totalsOf(t, items) {
+  const count = t.attributes.itemCount;
+  const bytes = t.attributes.tableSizeBytes;
+  if (typeof count === "number" && typeof bytes === "number") return { count, bytes };
+  return { count: Object.keys(items).length, bytes: Object.values(items).reduce((n, it) => n + itemSize(it), 0) };
+}
+async function save(engine, t, items, add = {}, totals) {
   const stats = statsOf(t);
   for (const [k, v] of Object.entries(add)) stats[k] += v ?? 0;
-  const bytes = Object.values(items).reduce((n, it) => n + itemSize(it), 0);
-  await engine.setAttributes(t.accountId, t.id, { items, itemCount: Object.keys(items).length, tableSizeBytes: bytes, stats });
+  const { count, bytes } = totals ?? { count: Object.keys(items).length, bytes: Object.values(items).reduce((n, it) => n + itemSize(it), 0) };
+  await engine.setAttributes(t.accountId, t.id, { items, itemCount: count, tableSizeBytes: bytes, stats });
+}
+async function write(engine, t, items, k, item) {
+  const before = totalsOf(t, items);
+  const old = items[k];
+  const totals = {
+    count: before.count + (item ? 1 : 0) - (old ? 1 : 0),
+    bytes: before.bytes + (item ? itemSize(item) : 0) - (old ? itemSize(old) : 0)
+  };
+  if (item) checkLimits(totals);
+  if (item) items[k] = item;
+  else delete items[k];
+  await save(engine, t, items, { writes: 1 }, totals);
 }
 async function bump(engine, t, add) {
   const stats = statsOf(t);
@@ -935,9 +966,9 @@ async function failOnCondition(engine, t, fn) {
     throw e;
   }
 }
-function checkLimits(items) {
-  if (Object.keys(items).length > MAX_ITEMS) throw new EngineError("LimitExceededException", `CloudLab keeps at most ${MAX_ITEMS} items per table. Delete some first.`, 400);
-  if (Object.values(items).reduce((n, it) => n + itemSize(it), 0) > MAX_TABLE_BYTES) throw new EngineError("LimitExceededException", "CloudLab keeps at most 4 MB per table. Delete some items first.", 400);
+function checkLimits(totals) {
+  if (totals.count > MAX_ITEMS) throw new EngineError("LimitExceededException", `CloudLab keeps at most ${MAX_ITEMS} items per table. Delete some first.`, 400);
+  if (totals.bytes > MAX_TABLE_BYTES) throw new EngineError("LimitExceededException", "CloudLab keeps at most 4 MB per table. Delete some items first.", 400);
 }
 async function putItem(engine, table2, itemInput, input = {}) {
   const t = await load(engine, table2);
@@ -954,9 +985,7 @@ async function putItem(engine, table2, itemInput, input = {}) {
   if (!input.condition) checkUnused(ctx);
   await consume(engine, t, "write", writeUnits(size));
   const old = items[k];
-  items[k] = item;
-  checkLimits(items);
-  await save(engine, t, items, { writes: 1 });
+  await write(engine, t, items, k, item);
   return rv === "ALL_OLD" && old ? { Attributes: old } : {};
 }
 async function getItem(engine, table2, keyInput, input = {}) {
@@ -983,10 +1012,7 @@ async function deleteItem(engine, table2, keyInput, input = {}) {
   if (!input.condition) checkUnused(ctx);
   const old = items[k];
   await consume(engine, t, "write", writeUnits(old ? itemSize(old) : 1));
-  if (old) {
-    delete items[k];
-    await save(engine, t, items, { writes: 1 });
-  }
+  if (old) await write(engine, t, items, k, void 0);
   return rv === "ALL_OLD" && old ? { Attributes: old } : {};
 }
 async function updateItem(engine, table2, keyInput, input) {
@@ -1019,9 +1045,7 @@ async function updateItem(engine, table2, keyInput, input) {
   const size = itemSize(updated);
   if (size > MAX_ITEM_BYTES) throw validation("Item size to update has exceeded the maximum allowed size");
   await consume(engine, t, "write", writeUnits(size));
-  items[k] = updated;
-  checkLimits(items);
-  await save(engine, t, items, { writes: 1 });
+  await write(engine, t, items, k, updated);
   const touched = new Set(actions.map((a) => String(a.path[0])));
   const pick = (it) => it ? Object.fromEntries(Object.entries(it).filter(([n]) => touched.has(n))) : void 0;
   const out = rv === "ALL_NEW" ? updated : rv === "UPDATED_NEW" ? pick(updated) : rv === "ALL_OLD" ? old : rv === "UPDATED_OLD" ? pick(old) : void 0;
@@ -1153,10 +1177,10 @@ function tokenize2(src) {
       continue;
     }
     const rest = src.slice(i);
-    const num2 = /^-?\d+(\.\d+)?([eE][-+]?\d+)?/.exec(rest);
-    if (num2 && !(ch === "-" && out.length && ["num", "ident", "qident", "str"].includes(out[out.length - 1].k))) {
-      out.push({ k: "num", v: num2[0] });
-      i += num2[0].length;
+    const num3 = /^-?\d+(\.\d+)?([eE][-+]?\d+)?/.exec(rest);
+    if (num3 && !(ch === "-" && out.length && ["num", "ident", "qident", "str"].includes(out[out.length - 1].k))) {
+      out.push({ k: "num", v: num3[0] });
+      i += num3[0].length;
       continue;
     }
     const id = /^[A-Za-z_][A-Za-z0-9_]*/.exec(rest);
@@ -1901,7 +1925,11 @@ var ops = {
       seen.add(id);
     }
     const before = /* @__PURE__ */ new Map();
-    for (const s of steps) if (!before.has(s.t.id)) before.set(s.t.id, await ctx.host.get(s.t.accountId, s.t.id));
+    for (const s of steps) {
+      if (before.has(s.t.id)) continue;
+      const t = await ctx.host.get(s.t.accountId, s.t.id);
+      before.set(s.t.id, { ...t, attributes: { ...t.attributes, items: { ...t.attributes.items ?? {} }, stats: { ...t.attributes.stats ?? {} } } });
+    }
     const reasons = steps.map(() => ({ Code: "None" }));
     let failed = false;
     for (const [i, s] of steps.entries()) {
@@ -2037,104 +2065,149 @@ async function explore(host, t, input) {
   }
 }
 
-// src/local/dynamodb-host.ts
+// src/local/file-host.ts
 import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
-var FILE = /^[a-zA-Z0-9_.-]{3,255}\.json$/;
-var FileTableHost = class {
-  constructor(dir, onChange = () => void 0, now = () => /* @__PURE__ */ new Date()) {
+var FLUSH_MS = 200;
+var FILE = /^[a-zA-Z0-9_.-]{1,255}\.json$/;
+var FileResourceHost = class {
+  constructor(dir, service, type, notFound, onChange = () => void 0, now = () => /* @__PURE__ */ new Date()) {
     this.dir = dir;
+    this.service = service;
+    this.type = type;
+    this.notFound = notFound;
     this.onChange = onChange;
     this.now = now;
     this.holdsLocalItems = true;
-    this.tables = /* @__PURE__ */ new Map();
-    this.calls = /* @__PURE__ */ new Map();
     this.metrics = { record: async () => void 0 };
+    this.resources = /* @__PURE__ */ new Map();
+    this.byId = /* @__PURE__ */ new Map();
+    this.dirty = /* @__PURE__ */ new Set();
+    this.timer = null;
+    this.calls = /* @__PURE__ */ new Map();
     mkdirSync(dir, { recursive: true });
     for (const f of readdirSync(dir)) {
       if (!FILE.test(f)) continue;
       try {
-        const t = JSON.parse(readFileSync(path.join(dir, f), "utf8"));
-        if (t?.name && t.config) this.tables.set(t.name, t);
+        const r = JSON.parse(readFileSync(path.join(dir, f), "utf8"));
+        if (r?.name && r.config) this.index(r);
       } catch {
       }
     }
   }
+  index(r) {
+    const old = this.resources.get(r.name);
+    if (old) this.byId.delete(old.id);
+    this.resources.set(r.name, r);
+    this.byId.set(r.id, r);
+  }
   file(name) {
     return path.join(this.dir, `${name}.json`);
   }
-  save(t) {
-    const tmp = `${this.file(t.name)}.tmp`;
-    writeFileSync(tmp, JSON.stringify(t));
-    renameSync(tmp, this.file(t.name));
+  write(name) {
+    const r = this.resources.get(name);
+    if (!r) return;
+    const tmp = `${this.file(name)}.tmp`;
+    writeFileSync(tmp, JSON.stringify(r));
+    renameSync(tmp, this.file(name));
   }
-  /** Creates the table, or brings its settings up to date. Items are kept. */
+  markDirty(name) {
+    this.dirty.add(name);
+    this.timer ??= setTimeout(() => this.flush(), FLUSH_MS);
+  }
+  /** Writes every pending change to disk now. */
+  flush() {
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = null;
+    for (const name of this.dirty) this.write(name);
+    this.dirty.clear();
+  }
+  /**
+   * A copy of a resource for a caller that may change it. Services override this to
+   * copy only what their code changes (DynamoDB replaces items but never edits one;
+   * SQS edits its messages), which is much faster than copying everything.
+   */
+  copy(r) {
+    return structuredClone(r);
+  }
+  /** The data a new resource of this kind starts with (no items, no messages…). */
+  initialAttributes() {
+    return {};
+  }
+  /** Attributes that always follow the spec (an ARN, a URL), even for a resource that already exists. */
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  specAttributes(spec) {
+    return {};
+  }
+  /** Creates the resource, or brings its settings up to date. Its data is kept. */
   upsert(spec) {
-    const old = this.tables.get(spec.name);
+    const old = this.resources.get(spec.name);
     const now = this.now().toISOString();
-    const t = {
+    const r = {
       id: spec.id,
       accountId: "local",
       region: LOCAL_REGION,
-      service: "dynamodb",
-      type: "table",
+      service: this.service,
+      type: this.type,
       name: spec.name,
       state: "ACTIVE",
       pendingState: null,
       transitionAt: null,
       config: { ...spec.config, name: spec.name },
-      attributes: { items: {}, itemCount: 0, tableSizeBytes: 0, ...old?.attributes ?? {}, arn: spec.id },
+      attributes: { ...this.initialAttributes(), ...old?.attributes ?? {}, ...this.specAttributes(spec) },
       refs: [],
       createdAt: old?.createdAt ?? spec.createdAt ?? now,
       updatedAt: now
     };
-    this.tables.set(t.name, t);
-    this.save(t);
-    return t;
+    this.index(r);
+    this.write(r.name);
+    return this.copy(r);
   }
   remove(name) {
-    this.tables.delete(name);
+    const r = this.resources.get(name);
+    if (r) this.byId.delete(r.id);
+    this.resources.delete(name);
+    this.dirty.delete(name);
     rmSync(this.file(name), { force: true });
   }
   has(name) {
-    return this.tables.has(name);
+    return this.resources.has(name);
   }
   names() {
-    return [...this.tables.keys()];
+    return [...this.resources.keys()];
   }
+  /** A copy of the resource, by name. */
   byName(name) {
-    const t = this.tables.get(name);
-    if (!t) throw tableNotFound(name);
-    return structuredClone(t);
+    const r = this.resources.get(name);
+    if (!r) throw this.notFound(name);
+    return this.copy(r);
   }
-  report(name) {
-    const t = this.tables.get(name);
-    if (!t) return null;
-    const a = t.attributes;
-    return { itemCount: Number(a.itemCount ?? 0), tableSizeBytes: Number(a.tableSizeBytes ?? 0), stats: a.stats ?? {}, ...a.throttledAt ? { throttledAt: a.throttledAt } : {} };
+  /** The live resource, for reading counts without copying (don't change it). */
+  peek(name) {
+    return this.resources.get(name);
   }
-  /** Where a table's file is (shown in the console). */
+  /** Where a resource's file is (shown in the console). */
   pathOf(name) {
     return this.file(name);
   }
-  // ---------- TableHost ----------
+  // ---------- ServiceHost ----------
   async get(_accountId, id) {
-    const t = [...this.tables.values()].find((x) => x.id === id || x.name === id);
-    if (!t) throw tableNotFound(id.split("/").pop() ?? id);
-    return structuredClone(t);
+    const r = this.byId.get(id) ?? this.resources.get(id);
+    if (!r) throw this.notFound(id.split(/[/:]/).pop() ?? id);
+    return this.copy(r);
   }
   async list(_accountId, filter) {
-    if (filter.service && filter.service !== "dynamodb" || filter.type && filter.type !== "table") return [];
+    if (filter.service && filter.service !== this.service || filter.type && filter.type !== this.type) return [];
     if (filter.region && filter.region !== LOCAL_REGION) return [];
-    return [...this.tables.values()].map((t) => structuredClone(t));
+    return [...this.resources.values()].map((r) => this.copy(r));
   }
   async setAttributes(_accountId, id, patch) {
-    const t = [...this.tables.values()].find((x) => x.id === id);
-    if (!t) return;
-    t.attributes = { ...t.attributes, ...patch };
-    t.updatedAt = this.now().toISOString();
-    this.save(t);
-    this.onChange(t);
+    const r = this.byId.get(id);
+    if (!r) return;
+    r.attributes = { ...r.attributes, ...patch };
+    r.updatedAt = this.now().toISOString();
+    this.markDirty(r.name);
+    this.onChange(r);
   }
   async countInWindow(key, windowMs) {
     const now = this.now().getTime();
@@ -2144,10 +2217,787 @@ var FileTableHost = class {
     return recent.length;
   }
 };
+
+// src/local/dynamodb-host.ts
+var FileTableHost = class extends FileResourceHost {
+  constructor(dir, onChange = () => void 0, now = () => /* @__PURE__ */ new Date()) {
+    super(dir, "dynamodb", "table", tableNotFound, onChange, now);
+  }
+  initialAttributes() {
+    return { items: {}, itemCount: 0, tableSizeBytes: 0 };
+  }
+  /**
+   * Hands out the live item map instead of a copy: copying a 2,000-item map on every
+   * call made each write slower as the table grew. That's safe because items are
+   * never edited in place (UpdateItem builds a new item), and every write checks
+   * its limits before it changes the map (items.ts `write`); transactions keep
+   * their own snapshot to roll back to.
+   */
+  copy(t) {
+    return { ...t, config: structuredClone(t.config), refs: [...t.refs], attributes: { ...t.attributes, stats: { ...t.attributes.stats } } };
+  }
+  specAttributes(spec) {
+    return { arn: spec.id };
+  }
+  report(name) {
+    const t = this.peek(name);
+    if (!t) return null;
+    const a = t.attributes;
+    return { itemCount: Number(a.itemCount ?? 0), tableSizeBytes: Number(a.tableSizeBytes ?? 0), stats: a.stats ?? {}, ...a.throttledAt ? { throttledAt: a.throttledAt } : {} };
+  }
+};
+
+// src/engine/services/sqs.ts
+var queueUrl = (region, accountId, name) => `https://sqs.${region}.amazonaws.com/${accountNumber(accountId)}/${name}`;
+var queueArn = (region, accountId, name) => `arn:aws:sqs:${region}:${accountNumber(accountId)}:${name}`;
+var urlFromArn = (arn) => {
+  const [, , , region, account, name] = arn.split(":");
+  return `https://sqs.${region}.amazonaws.com/${account}/${name}`;
+};
+var QUEUE_URL = /^https:\/\/sqs\.[a-z0-9-]+\.amazonaws\.com\/\d{12}\/[A-Za-z0-9_-]{1,80}$/;
+var QUEUE_ARN = /^arn:aws:sqs:[a-z0-9-]+:\d{12}:[A-Za-z0-9_-]{1,80}$/;
+var NON_EXISTENT = () => new EngineError("AWS.SimpleQueueService.NonExistentQueue", "The specified queue does not exist.", 400);
+var QUEUE_SETTINGS = {
+  visibilityTimeout: { attr: "VisibilityTimeout", min: 0, max: 43200, default: 30 },
+  messageRetentionPeriod: { attr: "MessageRetentionPeriod", min: 60, max: 1209600, default: 345600 },
+  delaySeconds: { attr: "DelaySeconds", min: 0, max: 900, default: 0 },
+  receiveMessageWaitTimeSeconds: { attr: "ReceiveMessageWaitTimeSeconds", min: 0, max: 20, default: 0 },
+  maximumMessageSize: { attr: "MaximumMessageSize", min: 1024, max: 262144, default: 262144 }
+};
+var setting = (key, label, description) => {
+  const s = QUEUE_SETTINGS[key];
+  return { key, label, type: "number", required: true, default: s.default, min: s.min, max: s.max, param: s.attr, description };
+};
+var queue = {
+  service: "sqs",
+  type: "queue",
+  label: "Queue",
+  pluralLabel: "Queues",
+  description: "A waiting line for messages. Producers send to it, consumers receive and delete when done. If the consumer is slow or crashes, the messages wait safely instead of being lost.",
+  idPrefix: "queue",
+  makeId: ({ name, region, accountId }) => queueUrl(region, accountId, name),
+  idPattern: QUEUE_URL,
+  notFoundCode: "AWS.SimpleQueueService.NonExistentQueue",
+  notFoundMessage: () => "The specified queue does not exist.",
+  notFoundByNameMessage: () => "The specified queue does not exist.",
+  malformedCode: "AWS.SimpleQueueService.NonExistentQueue",
+  malformedMessage: () => "The specified queue does not exist.",
+  apiNoun: "queue",
+  privateAttributes: ["messages"],
+  panelAttributes: ["lastPurgeAt", "stats"],
+  fields: [
+    {
+      key: "name",
+      label: "Name",
+      type: "string",
+      required: true,
+      immutable: true,
+      maxLength: 80,
+      pattern: "^[A-Za-z0-9_-]+$",
+      patternMessage: "Up to 80 letters, numbers, hyphens and underscores.",
+      placeholder: "orders-queue",
+      param: "QueueName",
+      description: "Becomes part of the queue's URL, which is how you send to and receive from it."
+    },
+    setting("visibilityTimeout", "Visibility timeout (seconds)", "After a consumer receives a message, it's hidden from others this long. Delete it in time, or it comes back to be tried again. Set it longer than processing takes."),
+    setting("messageRetentionPeriod", "Message retention period (seconds)", "Messages nobody deletes are dropped after this long: 60 seconds to 14 days (1,209,600). Default 4 days (345,600)."),
+    setting("delaySeconds", "Delivery delay (seconds)", "New messages stay invisible this long before anyone can receive them (0 to 900)."),
+    setting("receiveMessageWaitTimeSeconds", "Receive message wait time (seconds)", "Long polling: a receive waits up to this long for a message instead of returning empty straight away (0 to 20)."),
+    setting("maximumMessageSize", "Maximum message size (bytes)", "From 1,024 to 262,144 (256 KB)."),
+    {
+      key: "deadLetterQueue",
+      label: "Dead-letter queue",
+      type: "ref",
+      ref: { service: "sqs", type: "queue", weak: true },
+      param: "RedrivePolicy",
+      description: "Optional. A message received too many times without being deleted (a 'poison' message that keeps failing) is moved here, so it stops blocking the others."
+    },
+    {
+      key: "maxReceiveCount",
+      label: "Maximum receives",
+      type: "number",
+      min: 1,
+      max: 1e3,
+      default: 10,
+      param: "RedrivePolicy",
+      description: "How many times a message may be received before it's moved to the dead-letter queue."
+    },
+    {
+      key: "policy",
+      label: "Access policy",
+      type: "json",
+      param: "Policy",
+      description: "Optional. Who else may use the queue, e.g. letting an SNS topic send to it. Your own account's users and roles don't need it: their IAM policies are enough."
+    }
+  ],
+  columns: [
+    { label: "Visibility timeout", path: "config.visibilityTimeout" },
+    { label: "Dead-letter queue", path: "attributes.deadLetterName" }
+  ],
+  iam: {
+    create: "sqs:CreateQueue",
+    read: "sqs:GetQueueAttributes",
+    update: "sqs:SetQueueAttributes",
+    delete: "sqs:DeleteQueue",
+    arn: (r, account) => `arn:aws:sqs:${r.region}:${account}:${r.name}`
+  },
+  invalidValue({ field, value }) {
+    if (field.key === "name") {
+      if (typeof value === "string" && value.endsWith(".fifo")) {
+        return new EngineError("InvalidParameterValue", "CloudLab simulates standard queues; FIFO queues (ending in .fifo) aren't available yet.");
+      }
+      return new EngineError("InvalidParameterValue", "Can only include alphanumeric characters, hyphens, or underscores. 1 to 80 in length");
+    }
+    const s = QUEUE_SETTINGS[field.key];
+    if (s) return new EngineError("InvalidAttributeValue", `Invalid value for the parameter ${s.attr}.`);
+    if (field.key === "maxReceiveCount") return new EngineError("InvalidParameterValue", 'Value {"maxReceiveCount":"' + String(value) + '"} for parameter RedrivePolicy is invalid. Reason: Invalid value for maxReceiveCount: ' + String(value) + ", valid values are from 1 to 1000 both inclusive.");
+    if (field.key === "policy") return new EngineError("InvalidAttributeValue", "Invalid value for the parameter Policy.");
+    return void 0;
+  },
+  async validate({ config, existing, ctx }) {
+    if (!existing && (await ctx.list("sqs", "queue")).some((q) => q.name === config.name)) {
+      throw new EngineError("QueueAlreadyExists", "A queue already exists with the same name and a different value for an attribute.", 400);
+    }
+    if (config.deadLetterQueue && existing && config.deadLetterQueue === existing.id) {
+      throw new EngineError("InvalidParameterValue", "Value for parameter RedrivePolicy is invalid. Reason: A queue can't be its own dead-letter queue.");
+    }
+    if (config.policy) {
+      let doc;
+      try {
+        doc = JSON.parse(String(config.policy));
+      } catch {
+        throw new EngineError("InvalidAttributeValue", "Invalid value for the parameter Policy.");
+      }
+      const st = doc?.Statement;
+      if (!doc || typeof doc !== "object" || !(Array.isArray(st) || st && typeof st === "object")) {
+        throw new EngineError("InvalidAttributeValue", "Invalid value for the parameter Policy. Reason: the policy must have a Statement.");
+      }
+    }
+  },
+  async derive({ id, config, existing, ctx }) {
+    const name = String(config.name);
+    const dlq = config.deadLetterQueue ? String(config.deadLetterQueue) : null;
+    return {
+      ...existing?.attributes ?? {},
+      arn: queueArn(ctx.region, ctx.accountId, name),
+      queueUrl: id,
+      deadLetterName: dlq ? dlq.split("/").pop() : null,
+      messages: existing?.attributes.messages ?? []
+    };
+  }
+};
+
+// src/engine/sqs/queue.ts
+import { createHash, randomBytes, randomUUID } from "node:crypto";
+var MAX_MESSAGES = 1e3;
+var MAX_QUEUE_BYTES = 4 * 1024 * 1024;
+var PURGE_COOLDOWN_MS = 6e4;
+var md5 = (s) => createHash("md5").update(s).digest("hex");
+function md5OfAttributes(attrs) {
+  const parts = [];
+  const lenPrefixed = (b) => {
+    const len = Buffer.alloc(4);
+    len.writeUInt32BE(b.length);
+    parts.push(len, b);
+  };
+  for (const name of Object.keys(attrs).sort()) {
+    const a = attrs[name];
+    lenPrefixed(Buffer.from(name));
+    lenPrefixed(Buffer.from(a.DataType));
+    parts.push(Buffer.from([1]));
+    lenPrefixed(Buffer.from(a.StringValue ?? ""));
+  }
+  return createHash("md5").update(Buffer.concat(parts)).digest("hex");
+}
+var messagesOf = (q) => q.attributes.messages ?? [];
+var num2 = (q, key) => Number(q.config[key]);
+var arnOf = (q) => String(q.attributes.arn);
+function retained(q, msgs, now) {
+  const keepMs = num2(q, "messageRetentionPeriod") * 1e3;
+  return msgs.filter((m) => now - m.sentAt < keepMs);
+}
+function countsOf(q, now) {
+  const msgs = retained(q, messagesOf(q), now);
+  const delayed = msgs.filter((m) => m.receiveCount === 0 && m.visibleAt > now).length;
+  const inFlight = msgs.filter((m) => m.receiveCount > 0 && m.visibleAt > now).length;
+  const oldest = msgs.reduce((min, m) => Math.min(min, m.sentAt), now);
+  return { available: msgs.length - delayed - inFlight, inFlight, delayed, oldestAgeSeconds: Math.floor((now - oldest) / 1e3) };
+}
+var statsOf2 = (q) => ({ sent: 0, received: 0, deleted: 0, redelivered: 0, movedToDlq: 0, fromSns: 0, ...q.attributes.stats ?? {} });
+async function load2(engine, q) {
+  if (q.region === LOCAL_REGION && !engine.holdsLocalItems) {
+    throw new EngineError(
+      "LocalQueue",
+      `The messages of ${q.name} are on your computer (My computer (local)), not on CloudLab's servers. Use the console on that computer, or an AWS SDK or the AWS CLI with the endpoint http://localhost:4566.`,
+      400
+    );
+  }
+  return engine.get(q.accountId, q.id);
+}
+async function save2(engine, q, msgs, extra = {}, add = {}) {
+  const stats = statsOf2(q);
+  for (const [k, v] of Object.entries(add)) stats[k] += v ?? 0;
+  await engine.setAttributes(q.accountId, q.id, { messages: msgs, stats, ...extra });
+}
+var SNS_SENDER = "AIDAIT2UOQQY3AUEKVGXU";
+function checkAttributes(attrs) {
+  if (Object.keys(attrs).length > 10) throw new EngineError("InvalidParameterValue", "Number of message attributes [" + Object.keys(attrs).length + "] exceeds the allowed maximum [10].");
+  for (const [name, a] of Object.entries(attrs)) {
+    if (!a?.DataType) throw new EngineError("InvalidParameterValue", `The message attribute '${name}' must contain non-empty message attribute type.`);
+    if (!/^(String|Number|Binary)(\..+)?$/.test(a.DataType)) throw new EngineError("InvalidParameterValue", `The type of message (user) attribute '${name}' is invalid. You must use only the following supported type prefixes: Binary, Number, String.`);
+    if (a.StringValue === void 0 || a.StringValue === "") throw new EngineError("InvalidParameterValue", `The message attribute '${name}' must contain non-empty message attribute value for message attribute type '${a.DataType}'.`);
+    if (a.DataType.startsWith("Number") && Number.isNaN(Number(a.StringValue))) throw new EngineError("InvalidParameterValue", `Could not cast message attribute '${name}' value to number.`);
+  }
+}
+async function sendMessage(engine, q, input) {
+  if (input.body === void 0 || input.body === null || input.body === "") {
+    throw new EngineError("MissingParameter", "The request must contain the parameter MessageBody.");
+  }
+  if (/[^\u0009\u000A\u000D -퟿-�\u{10000}-\u{10FFFF}]/u.test(input.body)) {
+    throw new EngineError("InvalidMessageContents", "Invalid characters found. Valid unicode characters are #x9 | #xA | #xD | #x20 to #xD7FF | #xE000 to #xFFFD | #x10000 to #x10FFFF");
+  }
+  const attrs = input.attributes ?? {};
+  checkAttributes(attrs);
+  const size = Buffer.byteLength(input.body) + Object.entries(attrs).reduce((n, [k, a]) => n + k.length + a.DataType.length + (a.StringValue?.length ?? 0), 0);
+  const max = num2(q, "maximumMessageSize");
+  if (size > max) throw new EngineError("InvalidParameterValue", `One or more parameters are invalid. Reason: Message must be shorter than ${max} bytes.`);
+  const delay = input.delaySeconds ?? num2(q, "delaySeconds");
+  if (!Number.isInteger(delay) || delay < 0 || delay > 900) throw new EngineError("InvalidParameterValue", `Value ${delay} for parameter DelaySeconds is invalid. Reason: DelaySeconds must be >= 0 and <= 900.`);
+  const now = engine.now().getTime();
+  const fresh = await load2(engine, q);
+  const msgs = retained(fresh, messagesOf(fresh), now);
+  if (msgs.length >= MAX_MESSAGES) throw new EngineError("OverLimit", `CloudLab keeps at most ${MAX_MESSAGES} messages in a queue. Receive and delete some, or purge the queue.`, 403);
+  if (msgs.reduce((n, m2) => n + m2.body.length, 0) + size > MAX_QUEUE_BYTES) throw new EngineError("OverLimit", "CloudLab keeps at most 4 MB of messages in a queue. Receive and delete some, or purge the queue.", 403);
+  const m = {
+    messageId: randomUUID(),
+    body: input.body,
+    md5: md5(input.body),
+    attributes: attrs,
+    sentAt: now,
+    visibleAt: now + delay * 1e3,
+    receiveCount: 0,
+    senderId: input.senderId ?? accountNumber(q.accountId),
+    deadLetterSourceArn: input.deadLetterSourceArn
+  };
+  await save2(engine, fresh, [...msgs, m], {}, { sent: 1, fromSns: m.senderId === SNS_SENDER ? 1 : 0 });
+  await engine.metrics.record(q.accountId, q.region, "AWS/SQS", "NumberOfMessagesSent", { QueueName: q.name }, 1, "Count");
+  await engine.metrics.record(q.accountId, q.region, "AWS/SQS", "SentMessageSize", { QueueName: q.name }, size, "Bytes");
+  return { MessageId: m.messageId, MD5OfMessageBody: m.md5, ...Object.keys(attrs).length ? { MD5OfMessageAttributes: md5OfAttributes(attrs) } : {} };
+}
+function receiveAttributes(m, names) {
+  if (names.length === 0) return void 0;
+  const all = {
+    SenderId: m.senderId,
+    ApproximateFirstReceiveTimestamp: String(m.firstReceivedAt ?? ""),
+    ApproximateReceiveCount: String(m.receiveCount),
+    SentTimestamp: String(m.sentAt),
+    ...m.deadLetterSourceArn ? { DeadLetterQueueSourceArn: m.deadLetterSourceArn } : {}
+  };
+  if (names.includes("All")) return all;
+  return Object.fromEntries(Object.entries(all).filter(([k]) => names.includes(k)));
+}
+async function receiveMessages(engine, q, input = {}) {
+  const max = input.maxNumberOfMessages ?? 1;
+  if (!Number.isInteger(max) || max < 1 || max > 10) {
+    throw new EngineError("InvalidParameterValue", `Value ${max} for parameter MaxNumberOfMessages is invalid. Reason: Must be between 1 and 10, if provided.`);
+  }
+  const wait = input.waitTimeSeconds;
+  if (wait !== void 0 && (!Number.isInteger(wait) || wait < 0 || wait > 20)) {
+    throw new EngineError("InvalidParameterValue", `Value ${wait} for parameter WaitTimeSeconds is invalid. Reason: Must be >= 0 and <= 20, if provided.`);
+  }
+  const vt = input.visibilityTimeout ?? num2(q, "visibilityTimeout");
+  if (!Number.isInteger(vt) || vt < 0 || vt > 43200) throw new EngineError("InvalidParameterValue", `Value ${vt} for parameter VisibilityTimeout is invalid. Reason: Must be >= 0 and <= 43200, if provided.`);
+  const now = engine.now().getTime();
+  const fresh = await load2(engine, q);
+  let msgs = retained(fresh, messagesOf(fresh), now);
+  const dlqUrl = fresh.config.deadLetterQueue ? String(fresh.config.deadLetterQueue) : null;
+  const maxReceives = Number(fresh.config.maxReceiveCount ?? 10);
+  const dlq = dlqUrl ? await engine.get(q.accountId, dlqUrl).catch(() => null) : null;
+  const out = [];
+  const toDlq = [];
+  for (const m of [...msgs].sort((a, b) => a.sentAt - b.sentAt)) {
+    if (out.length >= max) break;
+    if (m.visibleAt > now) continue;
+    if (dlq && m.receiveCount >= maxReceives) {
+      toDlq.push(m);
+      continue;
+    }
+    m.receiveCount += 1;
+    m.firstReceivedAt ??= now;
+    m.receiptHandle = randomBytes(48).toString("base64url");
+    m.visibleAt = now + vt * 1e3;
+    const wanted = input.messageAttributeNames ?? [];
+    const attrs = Object.fromEntries(Object.entries(m.attributes).filter(([k]) => wanted.includes("All") || wanted.includes(".*") || wanted.includes(k)));
+    out.push({
+      MessageId: m.messageId,
+      ReceiptHandle: m.receiptHandle,
+      MD5OfBody: m.md5,
+      Body: m.body,
+      ...input.attributeNames?.length ? { Attributes: receiveAttributes(m, input.attributeNames) } : {},
+      ...Object.keys(attrs).length ? { MD5OfMessageAttributes: md5OfAttributes(attrs), MessageAttributes: Object.fromEntries(Object.entries(attrs).map(([k, a]) => [k, { StringValue: a.StringValue, DataType: a.DataType }])) } : {}
+    });
+  }
+  if (toDlq.length) msgs = msgs.filter((m) => !toDlq.includes(m));
+  const again = out.filter((o) => (msgs.find((m) => m.messageId === o.MessageId)?.receiveCount ?? 0) > 1).length;
+  await save2(engine, fresh, msgs, {}, { received: out.length, redelivered: again, movedToDlq: toDlq.length });
+  for (const m of toDlq) {
+    await sendMessage(engine, dlq, { body: m.body, attributes: m.attributes, senderId: m.senderId, deadLetterSourceArn: arnOf(fresh), delaySeconds: 0 }).catch(() => void 0);
+  }
+  const dims = { QueueName: q.name };
+  if (out.length) await engine.metrics.record(q.accountId, q.region, "AWS/SQS", "NumberOfMessagesReceived", dims, out.length, "Count");
+  else await engine.metrics.record(q.accountId, q.region, "AWS/SQS", "NumberOfEmptyReceives", dims, 1, "Count");
+  return { messages: out, movedToDlq: toDlq.length };
+}
+function byHandle(msgs, handle) {
+  if (!handle || handle.length < 20) throw new EngineError("ReceiptHandleIsInvalid", `The input receipt handle "${handle}" is not a valid receipt handle.`);
+  return msgs.find((m) => m.receiptHandle === handle);
+}
+async function deleteMessage(engine, q, handle) {
+  const fresh = await load2(engine, q);
+  const msgs = messagesOf(fresh);
+  const m = byHandle(msgs, handle);
+  if (!m) return;
+  await save2(engine, fresh, msgs.filter((x) => x !== m), {}, { deleted: 1 });
+  await engine.metrics.record(q.accountId, q.region, "AWS/SQS", "NumberOfMessagesDeleted", { QueueName: q.name }, 1, "Count");
+}
+async function changeVisibility(engine, q, handle, seconds) {
+  if (!Number.isInteger(seconds) || seconds < 0 || seconds > 43200) {
+    throw new EngineError("InvalidParameterValue", `Value ${seconds} for parameter VisibilityTimeout is invalid. Reason: Must be >= 0 and <= 43200, if provided.`);
+  }
+  const now = engine.now().getTime();
+  const fresh = await load2(engine, q);
+  const msgs = messagesOf(fresh);
+  const m = byHandle(msgs, handle);
+  if (!m || m.visibleAt <= now) {
+    throw new EngineError("MessageNotInflight", "Value " + handle + " for parameter ReceiptHandle is invalid. Reason: Message does not exist or is not available for visibility timeout change.");
+  }
+  m.visibleAt = now + seconds * 1e3;
+  await save2(engine, fresh, msgs);
+}
+async function purgeQueue(engine, q) {
+  const now = engine.now().getTime();
+  const fresh = await load2(engine, q);
+  const last = Number(fresh.attributes.lastPurgeAt ?? 0);
+  if (now - last < PURGE_COOLDOWN_MS) {
+    throw new EngineError("AWS.SimpleQueueService.PurgeQueueInProgress", `Only one PurgeQueue operation on ${q.name} is allowed every 60 seconds.`, 403);
+  }
+  await save2(engine, fresh, [], { lastPurgeAt: now });
+}
+
+// src/engine/sqs/attributes.ts
+var SETTING_BY_ATTR = Object.fromEntries(Object.entries(QUEUE_SETTINGS).map(([key, s]) => [s.attr, key]));
+var READ_ONLY = ["QueueArn", "ApproximateNumberOfMessages", "ApproximateNumberOfMessagesNotVisible", "ApproximateNumberOfMessagesDelayed", "CreatedTimestamp", "LastModifiedTimestamp", "SqsManagedSseEnabled"];
+var KNOWN_ATTRIBUTES = [...Object.keys(SETTING_BY_ATTR), "Policy", "RedrivePolicy", ...READ_ONLY];
+var arnFromUrl = (url) => {
+  const m = /^https?:\/\/[^/]*?(?:sqs\.([a-z0-9-]+)\.[^/]*)?\/(\d{12})\/([^/]+)$/.exec(url);
+  return m ? `arn:aws:sqs:${m[1] ?? "local-1"}:${m[2]}:${m[3]}` : url;
+};
+function attributesToConfig(attrs) {
+  const config = {};
+  for (const [name, value] of Object.entries(attrs)) {
+    const key = SETTING_BY_ATTR[name];
+    if (key) {
+      const n = Number(value);
+      const s = QUEUE_SETTINGS[key];
+      if (!/^\d+$/.test(value) || n < s.min || n > s.max) throw new EngineError("InvalidAttributeValue", `Invalid value for the parameter ${name}.`);
+      config[key] = n;
+    } else if (name === "Policy") {
+      config.policy = value === "" ? void 0 : value;
+    } else if (name === "RedrivePolicy") {
+      if (value === "") {
+        config.deadLetterQueue = void 0;
+        continue;
+      }
+      let rp;
+      try {
+        rp = JSON.parse(value);
+      } catch {
+        throw new EngineError("InvalidParameterValue", `Value ${value} for parameter RedrivePolicy is invalid. Reason: Redrive policy is not a valid JSON map.`);
+      }
+      if (!rp.deadLetterTargetArn || !QUEUE_ARN.test(rp.deadLetterTargetArn)) {
+        throw new EngineError("InvalidParameterValue", `Value ${value} for parameter RedrivePolicy is invalid. Reason: Invalid value for deadLetterTargetArn.`);
+      }
+      const count = Number(rp.maxReceiveCount);
+      if (!Number.isInteger(count) || count < 1 || count > 1e3) {
+        throw new EngineError(
+          "InvalidParameterValue",
+          `Value ${value} for parameter RedrivePolicy is invalid. Reason: Invalid value for maxReceiveCount: ${rp.maxReceiveCount}, valid values are from 1 to 1000 both inclusive.`
+        );
+      }
+      config.deadLetterQueue = urlFromArn(rp.deadLetterTargetArn);
+      config.maxReceiveCount = count;
+      config._redrive = value;
+    } else if (READ_ONLY.includes(name)) {
+      throw new EngineError("InvalidAttributeName", `Unknown Attribute ${name}.`);
+    } else if (name === "FifoQueue" || name === "ContentBasedDeduplication") {
+      throw new EngineError("InvalidAttributeName", `Unknown Attribute ${name}. (CloudLab simulates standard queues; FIFO queues aren't available yet.)`);
+    } else {
+      throw new EngineError("InvalidAttributeName", `Unknown Attribute ${name}.`);
+    }
+  }
+  return config;
+}
+async function checkDeadLetterQueue(config, queueIds2) {
+  if (!config.deadLetterQueue) {
+    delete config._redrive;
+    return;
+  }
+  const raw = String(config._redrive);
+  delete config._redrive;
+  const exists = (await queueIds2()).includes(String(config.deadLetterQueue));
+  if (!exists) throw new EngineError("InvalidParameterValue", `Value ${raw} for parameter RedrivePolicy is invalid. Reason: Dead letter target does not exist.`);
+}
+var epoch2 = (iso) => String(Math.floor(Date.parse(iso) / 1e3));
+function queueAttributes(q, now) {
+  const c = countsOf(q, now);
+  return {
+    QueueArn: String(q.attributes.arn),
+    ApproximateNumberOfMessages: String(c.available),
+    ApproximateNumberOfMessagesNotVisible: String(c.inFlight),
+    ApproximateNumberOfMessagesDelayed: String(c.delayed),
+    CreatedTimestamp: epoch2(q.createdAt),
+    LastModifiedTimestamp: epoch2(q.updatedAt),
+    VisibilityTimeout: String(q.config.visibilityTimeout),
+    MaximumMessageSize: String(q.config.maximumMessageSize),
+    MessageRetentionPeriod: String(q.config.messageRetentionPeriod),
+    DelaySeconds: String(q.config.delaySeconds),
+    ...q.config.policy ? { Policy: JSON.stringify(JSON.parse(String(q.config.policy))) } : {},
+    ...q.config.deadLetterQueue ? {
+      RedrivePolicy: JSON.stringify({
+        deadLetterTargetArn: arnFromUrl(String(q.config.deadLetterQueue)),
+        maxReceiveCount: Number(q.config.maxReceiveCount ?? 10)
+      })
+    } : {},
+    ReceiveMessageWaitTimeSeconds: String(q.config.receiveMessageWaitTimeSeconds),
+    SqsManagedSseEnabled: "true"
+  };
+}
+
+// src/engine/sqs/api.ts
+var QueueWaiters = class {
+  constructor() {
+    this.waiting = /* @__PURE__ */ new Map();
+  }
+  /** Resolves when notified, or at `until` (ms since 1970), whichever comes first. */
+  wait(queueId, until) {
+    return new Promise((resolve) => {
+      const set = this.waiting.get(queueId) ?? /* @__PURE__ */ new Set();
+      this.waiting.set(queueId, set);
+      const done = () => {
+        clearTimeout(timer);
+        set.delete(done);
+        if (set.size === 0) this.waiting.delete(queueId);
+        resolve();
+      };
+      const timer = setTimeout(done, Math.max(0, until - Date.now()));
+      set.add(done);
+    });
+  }
+  notify(queueId) {
+    for (const done of [...this.waiting.get(queueId) ?? []]) done();
+  }
+  /** How many receives are waiting (for tests and the console). */
+  count(queueId) {
+    if (queueId) return this.waiting.get(queueId)?.size ?? 0;
+    return [...this.waiting.values()].reduce((n, s) => n + s.size, 0);
+  }
+};
+var JSON_NAMES = {
+  "AWS.SimpleQueueService.NonExistentQueue": "QueueDoesNotExist",
+  QueueAlreadyExists: "QueueNameExists",
+  "AWS.SimpleQueueService.PurgeQueueInProgress": "PurgeQueueInProgress",
+  "AWS.SimpleQueueService.TooManyEntriesInBatchRequest": "TooManyEntriesInBatchRequest",
+  "AWS.SimpleQueueService.EmptyBatchRequest": "EmptyBatchRequest",
+  "AWS.SimpleQueueService.BatchEntryIdsNotDistinct": "BatchEntryIdsNotDistinct",
+  "AWS.SimpleQueueService.InvalidBatchEntryId": "InvalidBatchEntryId",
+  "AWS.SimpleQueueService.UnsupportedOperation": "UnsupportedOperation",
+  "AWS.SimpleQueueService.MessageNotInflight": "MessageNotInflight"
+};
+function sqsErrorNames(code) {
+  return { type: JSON_NAMES[code] ?? code, queryCode: code };
+}
+var nonExistent = () => new EngineError("AWS.SimpleQueueService.NonExistentQueue", "The specified queue does not exist.", 400);
+var missing2 = (param) => new EngineError("MissingParameter", `The request must contain the parameter ${param}.`, 400);
+var str2 = (b, param) => {
+  const v = b[param];
+  if (typeof v !== "string" || !v) throw missing2(param);
+  return v;
+};
+async function queues(ctx) {
+  return ctx.host.list(ctx.accountId, { service: "sqs", type: "queue", region: ctx.region });
+}
+async function byUrl(ctx, url) {
+  const name = /\/(\d{12})\/([A-Za-z0-9_-]{1,80})\/?$/.exec(url)?.[2];
+  const q = name ? (await queues(ctx)).find((x) => x.name === name) : void 0;
+  if (!q) throw nonExistent();
+  return q;
+}
+function messageAttributes(raw) {
+  if (!raw || typeof raw !== "object") return {};
+  const out = {};
+  for (const [name, a] of Object.entries(raw)) {
+    if (a?.BinaryValue !== void 0 || a?.DataType?.startsWith("Binary")) {
+      throw new EngineError("InvalidParameterValue", `The message attribute '${name}' is Binary: CloudLab keeps String and Number message attributes.`);
+    }
+    out[name] = { DataType: String(a?.DataType ?? ""), StringValue: a?.StringValue };
+  }
+  return out;
+}
+function nextVisible(q, now) {
+  const times = (q.attributes.messages ?? []).map((m) => m.visibleAt).filter((t) => t > now);
+  return times.length ? Math.min(...times) : null;
+}
+var MAX_BATCH = 10;
+var BATCH_ID = /^[A-Za-z0-9_-]{1,80}$/;
+function checkBatch(entries) {
+  const list = Array.isArray(entries) ? entries : [];
+  if (list.length === 0) throw new EngineError("AWS.SimpleQueueService.EmptyBatchRequest", "There should be at least one SendMessageBatchRequestEntry in the request.", 400);
+  if (list.length > MAX_BATCH) throw new EngineError("AWS.SimpleQueueService.TooManyEntriesInBatchRequest", `Maximum number of entries per request are ${MAX_BATCH}. You have sent ${list.length}.`, 400);
+  const ids = /* @__PURE__ */ new Set();
+  for (const e of list) {
+    if (!e.Id || !BATCH_ID.test(e.Id)) {
+      throw new EngineError("AWS.SimpleQueueService.InvalidBatchEntryId", "A batch entry id can only contain alphanumeric characters, hyphens and underscores. It can be at most 80 letters long.", 400);
+    }
+    if (ids.has(e.Id)) throw new EngineError("AWS.SimpleQueueService.BatchEntryIdsNotDistinct", `Id ${e.Id} repeated.`, 400);
+    ids.add(e.Id);
+  }
+  return list;
+}
+async function eachEntry(entries, run2) {
+  const Successful = [];
+  const Failed = [];
+  for (const e of entries) {
+    try {
+      Successful.push({ Id: e.Id, ...await run2(e) });
+    } catch (err) {
+      if (!(err instanceof EngineError)) throw err;
+      Failed.push({ Id: e.Id, SenderFault: err.status < 500, Code: sqsErrorNames(err.code).type, Message: err.message });
+    }
+  }
+  return { Successful, Failed };
+}
+function toConfig(attrs) {
+  const raw = attrs && typeof attrs === "object" ? attrs : {};
+  return attributesToConfig(Object.fromEntries(Object.entries(raw).map(([k, v]) => [k, typeof v === "string" ? v : JSON.stringify(v)])));
+}
+var queueIds = (ctx) => async () => (await queues(ctx)).map((q) => q.id);
+async function send(ctx, q, e) {
+  if (typeof e.MessageBody !== "string") throw missing2("MessageBody");
+  const r = await sendMessage(ctx.host, q, { body: e.MessageBody, delaySeconds: e.DelaySeconds, attributes: messageAttributes(e.MessageAttributes) });
+  ctx.waiters?.notify(q.id);
+  return r;
+}
+var ops2 = {
+  async CreateQueue(ctx, body) {
+    const name = str2(body, "QueueName");
+    const config = toConfig(body.Attributes);
+    const existing = (await queues(ctx)).find((q2) => q2.name === name);
+    if (existing) {
+      const now = queueAttributes(existing, Date.now());
+      for (const [k, v] of Object.entries(body.Attributes ?? {})) {
+        if (now[k] !== void 0 && String(now[k]) !== String(v)) {
+          throw new EngineError("QueueAlreadyExists", `A queue already exists with the same name and a different value for attribute ${k}`, 400);
+        }
+      }
+      return { QueueUrl: ctx.urlOf(existing) };
+    }
+    await checkDeadLetterQueue(config, queueIds(ctx));
+    const q = await ctx.createQueue(Object.fromEntries(Object.entries({ name, ...config }).filter(([, v]) => v !== void 0)));
+    return { QueueUrl: ctx.urlOf(q) };
+  },
+  async GetQueueUrl(ctx, body) {
+    const name = str2(body, "QueueName");
+    const q = (await queues(ctx)).find((x) => x.name === name);
+    if (!q) throw nonExistent();
+    return { QueueUrl: ctx.urlOf(q) };
+  },
+  async ListQueues(ctx, body) {
+    const prefix = typeof body.QueueNamePrefix === "string" ? body.QueueNamePrefix : "";
+    const max = body.MaxResults === void 0 ? 1e3 : Number(body.MaxResults);
+    if (!Number.isInteger(max) || max < 1 || max > 1e3) throw new EngineError("InvalidParameterValue", "Value for parameter MaxResults is invalid. Reason: MaxResults must be an integer between 1 and 1000.", 400);
+    const after = typeof body.NextToken === "string" ? Buffer.from(body.NextToken, "base64").toString("utf8") : "";
+    const all = (await queues(ctx)).filter((q) => q.name.startsWith(prefix) && q.name > after).sort((a, b) => a.name.localeCompare(b.name));
+    const page2 = all.slice(0, max);
+    return {
+      ...page2.length ? { QueueUrls: page2.map((q) => ctx.urlOf(q)) } : {},
+      ...body.MaxResults !== void 0 && all.length > max ? { NextToken: Buffer.from(page2[page2.length - 1].name).toString("base64") } : {}
+    };
+  },
+  async DeleteQueue(ctx, body) {
+    const q = await byUrl(ctx, str2(body, "QueueUrl"));
+    await ctx.deleteQueue(q);
+    ctx.waiters?.notify(q.id);
+    return {};
+  },
+  async GetQueueAttributes(ctx, body) {
+    const q = await byUrl(ctx, str2(body, "QueueUrl"));
+    const names = Array.isArray(body.AttributeNames) ? body.AttributeNames : [];
+    if (names.length === 0) return {};
+    const all = queueAttributes(await ctx.host.get(q.accountId, q.id), Date.now());
+    if (names.includes("All")) return { Attributes: all };
+    for (const n of names) if (!KNOWN_ATTRIBUTES.includes(n) && n !== "RedriveAllowPolicy") throw new EngineError("InvalidAttributeName", `Unknown Attribute ${n}.`, 400);
+    const picked = Object.fromEntries(names.filter((n) => n in all).map((n) => [n, all[n]]));
+    return Object.keys(picked).length ? { Attributes: picked } : {};
+  },
+  async SetQueueAttributes(ctx, body) {
+    const q = await byUrl(ctx, str2(body, "QueueUrl"));
+    const config = toConfig(body.Attributes);
+    if (config.deadLetterQueue && config.deadLetterQueue === q.id) {
+      throw new EngineError("InvalidParameterValue", "Value for parameter RedrivePolicy is invalid. Reason: Dead letter target cannot be the queue itself.", 400);
+    }
+    await checkDeadLetterQueue(config, queueIds(ctx));
+    await ctx.updateQueue(q, config);
+    return {};
+  },
+  async ListDeadLetterSourceQueues(ctx, body) {
+    const q = await byUrl(ctx, str2(body, "QueueUrl"));
+    return { queueUrls: (await queues(ctx)).filter((x) => x.config.deadLetterQueue === q.id).map((x) => ctx.urlOf(x)) };
+  },
+  async SendMessage(ctx, body) {
+    const q = await byUrl(ctx, str2(body, "QueueUrl"));
+    return send(ctx, q, body);
+  },
+  async SendMessageBatch(ctx, body) {
+    const q = await byUrl(ctx, str2(body, "QueueUrl"));
+    const entries = checkBatch(body.Entries);
+    return eachEntry(entries, (e) => send(ctx, q, e));
+  },
+  async ReceiveMessage(ctx, body) {
+    const q = await byUrl(ctx, str2(body, "QueueUrl"));
+    const wait = body.WaitTimeSeconds === void 0 ? Number(q.config.receiveMessageWaitTimeSeconds ?? 0) : Number(body.WaitTimeSeconds);
+    const input = {
+      maxNumberOfMessages: body.MaxNumberOfMessages,
+      visibilityTimeout: body.VisibilityTimeout,
+      waitTimeSeconds: wait,
+      attributeNames: [...body.AttributeNames ?? [], ...body.MessageSystemAttributeNames ?? []],
+      messageAttributeNames: body.MessageAttributeNames ?? []
+    };
+    const deadline = Date.now() + wait * 1e3;
+    for (; ; ) {
+      const r = await receiveMessages(ctx.host, q, input);
+      if (r.messages.length || !ctx.waiters || Date.now() >= deadline) return r.messages.length ? { Messages: r.messages } : {};
+      const fresh = await ctx.host.get(q.accountId, q.id).catch(() => null);
+      if (!fresh) throw nonExistent();
+      const soon = nextVisible(fresh, Date.now());
+      await ctx.waiters.wait(q.id, soon === null ? deadline : Math.min(deadline, soon + 5));
+    }
+  },
+  async DeleteMessage(ctx, body) {
+    const q = await byUrl(ctx, str2(body, "QueueUrl"));
+    await deleteMessage(ctx.host, q, str2(body, "ReceiptHandle"));
+    return {};
+  },
+  async DeleteMessageBatch(ctx, body) {
+    const q = await byUrl(ctx, str2(body, "QueueUrl"));
+    const entries = checkBatch(body.Entries);
+    return eachEntry(entries, async (e) => {
+      await deleteMessage(ctx.host, q, String(e.ReceiptHandle ?? ""));
+      return {};
+    });
+  },
+  async ChangeMessageVisibility(ctx, body) {
+    const q = await byUrl(ctx, str2(body, "QueueUrl"));
+    await changeVisibility(ctx.host, q, str2(body, "ReceiptHandle"), Number(body.VisibilityTimeout));
+    ctx.waiters?.notify(q.id);
+    return {};
+  },
+  async ChangeMessageVisibilityBatch(ctx, body) {
+    const q = await byUrl(ctx, str2(body, "QueueUrl"));
+    const entries = checkBatch(body.Entries);
+    const r = await eachEntry(entries, async (e) => {
+      await changeVisibility(ctx.host, q, String(e.ReceiptHandle ?? ""), Number(e.VisibilityTimeout));
+      return {};
+    });
+    ctx.waiters?.notify(q.id);
+    return r;
+  },
+  async PurgeQueue(ctx, body) {
+    const q = await byUrl(ctx, str2(body, "QueueUrl"));
+    await purgeQueue(ctx.host, q);
+    return {};
+  },
+  async ListQueueTags(ctx, body) {
+    await byUrl(ctx, str2(body, "QueueUrl"));
+    return {};
+  }
+};
+var SQS_OPERATIONS = Object.keys(ops2);
+async function sqsApi(operation, body, ctx) {
+  const handler = ops2[operation];
+  if (!handler) throw new EngineError("AWS.SimpleQueueService.UnsupportedOperation", `CloudLab's SQS doesn't support ${operation || "this operation"} yet.`, 400);
+  return handler(ctx, body && typeof body === "object" && !Array.isArray(body) ? body : {});
+}
+
+// src/engine/sqs/console.ts
+async function queueConsole(host, q, input, onSent) {
+  switch (input.action) {
+    case "counts":
+      return { counts: countsOf(await host.get(q.accountId, q.id), host.now().getTime()) };
+    case "send": {
+      const sent = await sendMessage(host, q, { body: input.body, delaySeconds: input.delaySeconds, attributes: input.attributes });
+      onSent?.();
+      return { sent };
+    }
+    case "receive":
+      return receiveMessages(host, q, {
+        maxNumberOfMessages: input.maxNumberOfMessages,
+        visibilityTimeout: input.visibilityTimeout,
+        attributeNames: ["All"],
+        messageAttributeNames: ["All"]
+      });
+    case "delete":
+      await deleteMessage(host, q, input.receiptHandle);
+      return { deleted: true };
+    case "purge":
+      await purgeQueue(host, q);
+      return { purged: true };
+  }
+}
+
+// src/local/sqs-host.ts
+var FileQueueHost = class extends FileResourceHost {
+  constructor(dir, onChange = () => void 0, now = () => /* @__PURE__ */ new Date()) {
+    super(dir, "sqs", "queue", () => NON_EXISTENT(), onChange, now);
+  }
+  initialAttributes() {
+    return { messages: [] };
+  }
+  /** Receiving edits messages in place (receive count, visibility), so each message is copied; their bodies are shared strings. */
+  copy(q) {
+    const a = q.attributes;
+    const messages = (a.messages ?? []).map((m) => ({ ...m }));
+    return { ...q, config: structuredClone(q.config), refs: [...q.refs], attributes: { ...a, messages, stats: { ...a.stats } } };
+  }
+  specAttributes(spec) {
+    return {
+      queueUrl: spec.id,
+      arn: arnFromUrl(spec.id),
+      deadLetterName: spec.config.deadLetterQueue ? String(spec.config.deadLetterQueue).split("/").pop() : null
+    };
+  }
+  /** What CloudLab shows about a queue on this computer: counts, never the messages. */
+  report(name) {
+    const q = this.peek(name);
+    if (!q) return null;
+    const c = countsOf(q, this.now().getTime());
+    return {
+      approximateMessages: c.available,
+      approximateInFlight: c.inFlight,
+      approximateDelayed: c.delayed,
+      stats: statsOf2(q),
+      ...q.attributes.lastPurgeAt ? { lastPurgeAt: q.attributes.lastPurgeAt } : {}
+    };
+  }
+};
 export {
   DYNAMODB_OPERATIONS,
   EngineError,
+  FileQueueHost,
   FileTableHost,
+  QueueWaiters,
   dynamodbApi,
-  explore
+  explore,
+  queueConsole,
+  sqsApi,
+  sqsErrorNames
 };

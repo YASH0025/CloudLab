@@ -1,7 +1,7 @@
 import { EngineError } from "../errors";
 import { describeTable, tableKey } from "../services/dynamodb";
 import type { Resource } from "../types";
-import type { TableHost } from "./host";
+import type { TableHost } from "../host";
 import { checkItemCondition, deleteItem, getItem, putItem, query, scan, updateItem } from "./items";
 import { executeStatement } from "./partiql";
 import { validation, type AttributeValue, type Item } from "./values";
@@ -379,8 +379,13 @@ const ops: Record<string, Handler> = {
       seen.add(id);
     }
     // All or nothing: keep each table as it was, put it back if any step fails.
+    // Hosts may share the live item map, so the snapshot copies it (items themselves are never edited in place).
     const before = new Map<string, Resource>();
-    for (const s of steps) if (!before.has(s.t.id)) before.set(s.t.id, await ctx.host.get(s.t.accountId, s.t.id));
+    for (const s of steps) {
+      if (before.has(s.t.id)) continue;
+      const t = await ctx.host.get(s.t.accountId, s.t.id);
+      before.set(s.t.id, { ...t, attributes: { ...t.attributes, items: { ...((t.attributes.items as object) ?? {}) }, stats: { ...((t.attributes.stats as object) ?? {}) } } });
+    }
     const reasons: { Code: string; Message?: string }[] = steps.map(() => ({ Code: "None" }));
     let failed = false;
     for (const [i, s] of steps.entries()) {

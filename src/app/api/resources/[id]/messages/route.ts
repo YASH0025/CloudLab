@@ -2,7 +2,8 @@ import type { NextRequest } from "next/server";
 import { z } from "zod";
 import type { Engine } from "@/engine/engine";
 import { EngineError } from "@/engine/errors";
-import { countsOf, deleteMessage, purgeQueue, receiveMessages, sendMessage, snsSendStatement, withStatement } from "@/engine/sqs/queue";
+import { queueConsole, queueConsoleAction } from "@/engine/sqs/console";
+import { countsOf, snsSendStatement, withStatement } from "@/engine/sqs/queue";
 import type { Resource } from "@/engine/types";
 import { authorizeActions, getCaller, getEngine, handle, type Caller } from "@/server/api";
 
@@ -46,28 +47,11 @@ export async function POST(request: NextRequest, ctx: RouteContext<"/api/resourc
     const engine = getEngine();
     const q = await queueOf(engine, caller, id);
     const arn = String(q.attributes.arn);
+    if (input.action !== "subscribe") {
+      authorizeActions(caller, [{ action: queueConsoleAction(input), resource: arn }]);
+      return Response.json(await queueConsole(engine, q, input));
+    }
     switch (input.action) {
-      case "send":
-        authorizeActions(caller, [{ action: "sqs:SendMessage", resource: arn }]);
-        return Response.json({ sent: await sendMessage(engine, q, { body: input.body, delaySeconds: input.delaySeconds, attributes: input.attributes }) });
-      case "receive": {
-        authorizeActions(caller, [{ action: "sqs:ReceiveMessage", resource: arn }]);
-        const r = await receiveMessages(engine, q, {
-          maxNumberOfMessages: input.maxNumberOfMessages,
-          visibilityTimeout: input.visibilityTimeout,
-          attributeNames: ["All"],
-          messageAttributeNames: ["All"],
-        });
-        return Response.json(r);
-      }
-      case "delete":
-        authorizeActions(caller, [{ action: "sqs:DeleteMessage", resource: arn }]);
-        await deleteMessage(engine, q, input.receiptHandle);
-        return Response.json({ deleted: true });
-      case "purge":
-        authorizeActions(caller, [{ action: "sqs:PurgeQueue", resource: arn }]);
-        await purgeQueue(engine, q);
-        return Response.json({ purged: true });
       case "subscribe": {
         const topic = await engine.get(caller.accountId, input.topicArn);
         if (topic.service !== "sns" || topic.type !== "topic") throw new EngineError("ValidationError", "Choose an SNS topic.");

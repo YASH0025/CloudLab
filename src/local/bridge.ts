@@ -4,7 +4,7 @@ import { EngineError } from "@/engine/errors";
 import { getTypeDef } from "@/engine/registry";
 import type { LocalBridge, Resource } from "@/engine/types";
 import type { LocalService } from "./service";
-import type { DynamoTableSpec, Ec2Spec, ResourceTask, S3BucketSpec } from "./types";
+import type { LocalResourceSpec, Ec2Spec, ResourceTask, S3BucketSpec } from "./types";
 
 /** What each machine image runs as on the learner's computer. */
 export const LOCAL_IMAGES: Record<string, string> = {
@@ -17,7 +17,7 @@ export const LOCAL_IMAGES: Record<string, string> = {
  * Types that run for real on the learner's computer. EC2 joins once it's been
  * tried on real Docker; until then the local region refuses it like other services.
  */
-const REAL = new Set(["storage/bucket", "dynamodb/table"]);
+const REAL = new Set(["storage/bucket", "dynamodb/table", "sqs/queue"]);
 
 export function bucketSpec(r: Resource): S3BucketSpec {
   const c = r.config;
@@ -32,7 +32,7 @@ export function bucketSpec(r: Resource): S3BucketSpec {
   };
 }
 
-export const tableSpec = (r: Resource): DynamoTableSpec => ({ id: r.id, name: r.name, config: r.config, createdAt: r.createdAt });
+export const localSpec = (r: Resource): LocalResourceSpec => ({ id: r.id, name: r.name, config: r.config, createdAt: r.createdAt });
 
 /** Ports opened when a rule allows all traffic (a container can't publish every port). */
 export const ALL_TRAFFIC_PORTS = [22, 80, 443, 3000, 5000, 8000, 8080];
@@ -86,7 +86,7 @@ export class AgentBridge implements LocalBridge {
   async ready(accountId: string, r: { service: string; type: string; config: Record<string, unknown> }) {
     // Networks are bookkeeping that real services build on (and every region gets a default VPC).
     if (r.service === "networking") return;
-    if ((r.service === "storage" && r.type === "bucket") || (r.service === "dynamodb" && r.type === "table")) {
+    if (REAL.has(`${r.service}/${r.type}`)) {
       await this.local.requireAgent(accountId);
       return;
     }
@@ -94,7 +94,7 @@ export class AgentBridge implements LocalBridge {
       const def = getTypeDef(r.service, r.type);
       throw new EngineError(
         "NotAvailableLocally",
-        `${def.pluralLabel} don't run on My computer (local) yet. There, today: S3 buckets and DynamoDB tables, for real, with their data on your computer. Use another region to practise with simulated ${def.pluralLabel.toLowerCase()}.`,
+        `${def.pluralLabel} don't run on My computer (local) yet. There, today: S3 buckets, DynamoDB tables and SQS queues, for real, with their data on your computer. Use another region to practise with simulated ${def.pluralLabel.toLowerCase()}.`,
         400,
       );
     }
@@ -145,7 +145,16 @@ export class AgentBridge implements LocalBridge {
     if (r.service === "dynamodb" && r.type === "table") {
       const op = e.kind === "create" ? "create-table" : e.kind === "delete" ? "delete-table" : "configure-table";
       try {
-        await this.local.queueResource(r.accountId, { kind: "dynamodb", op, id: r.id, table: tableSpec(r) });
+        await this.local.queueResource(r.accountId, { kind: "dynamodb", op, id: r.id, table: localSpec(r) });
+      } catch (err) {
+        if (e.kind !== "delete") throw err;
+      }
+      return;
+    }
+    if (r.service === "sqs" && r.type === "queue") {
+      const op = e.kind === "create" ? "create-queue" : e.kind === "delete" ? "delete-queue" : "configure-queue";
+      try {
+        await this.local.queueResource(r.accountId, { kind: "sqs", op, id: r.id, queue: localSpec(r) });
       } catch (err) {
         if (e.kind !== "delete") throw err;
       }

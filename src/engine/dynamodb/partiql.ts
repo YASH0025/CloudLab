@@ -1,4 +1,4 @@
-import type { TableHost } from "./host";
+import type { TableHost } from "../host";
 import { EngineError } from "../errors";
 import { indexesOf, tableKey, type KeyDef } from "../services/dynamodb";
 import type { Resource } from "../types";

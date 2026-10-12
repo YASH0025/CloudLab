@@ -1,5 +1,6 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import type { Engine } from "../engine";
+import { LOCAL_REGION } from "../catalog";
+import type { ServiceHost } from "../host";
 import { EngineError } from "../errors";
 import { accountNumber } from "../ids";
 import type { MessageAttribute } from "../services/sns";
@@ -108,7 +109,19 @@ export interface QueueStats {
 
 export const statsOf = (q: Resource): QueueStats => ({ sent: 0, received: 0, deleted: 0, redelivered: 0, movedToDlq: 0, fromSns: 0, ...((q.attributes.stats as Partial<QueueStats> | undefined) ?? {}) });
 
-async function save(engine: Engine, q: Resource, msgs: StoredMessage[], extra: Record<string, unknown> = {}, add: Partial<QueueStats> = {}) {
+/** The queue as it is now. A queue on My computer (local) keeps its messages there, so only the agent can use them. */
+async function load(engine: ServiceHost, q: Resource): Promise<Resource> {
+  if (q.region === LOCAL_REGION && !engine.holdsLocalItems) {
+    throw new EngineError(
+      "LocalQueue",
+      `The messages of ${q.name} are on your computer (My computer (local)), not on CloudLab's servers. Use the console on that computer, or an AWS SDK or the AWS CLI with the endpoint http://localhost:4566.`,
+      400,
+    );
+  }
+  return engine.get(q.accountId, q.id);
+}
+
+async function save(engine: ServiceHost, q: Resource, msgs: StoredMessage[], extra: Record<string, unknown> = {}, add: Partial<QueueStats> = {}) {
   const stats = statsOf(q);
   for (const [k, v] of Object.entries(add)) stats[k as keyof QueueStats] += v ?? 0;
   await engine.setAttributes(q.accountId, q.id, { messages: msgs, stats, ...extra });
@@ -136,7 +149,7 @@ export interface SendInput {
   deadLetterSourceArn?: string;
 }
 
-export async function sendMessage(engine: Engine, q: Resource, input: SendInput): Promise<{ MessageId: string; MD5OfMessageBody: string; MD5OfMessageAttributes?: string }> {
+export async function sendMessage(engine: ServiceHost, q: Resource, input: SendInput): Promise<{ MessageId: string; MD5OfMessageBody: string; MD5OfMessageAttributes?: string }> {
   if (input.body === undefined || input.body === null || input.body === "") {
     throw new EngineError("MissingParameter", "The request must contain the parameter MessageBody.");
   }
@@ -152,7 +165,7 @@ export async function sendMessage(engine: Engine, q: Resource, input: SendInput)
   if (!Number.isInteger(delay) || delay < 0 || delay > 900) throw new EngineError("InvalidParameterValue", `Value ${delay} for parameter DelaySeconds is invalid. Reason: DelaySeconds must be >= 0 and <= 900.`);
 
   const now = engine.now().getTime();
-  const fresh = await engine.get(q.accountId, q.id);
+  const fresh = await load(engine, q);
   const msgs = retained(fresh, messagesOf(fresh), now);
   if (msgs.length >= MAX_MESSAGES) throw new EngineError("OverLimit", `CloudLab keeps at most ${MAX_MESSAGES} messages in a queue. Receive and delete some, or purge the queue.`, 403);
   if (msgs.reduce((n, m) => n + m.body.length, 0) + size > MAX_QUEUE_BYTES) throw new EngineError("OverLimit", "CloudLab keeps at most 4 MB of messages in a queue. Receive and delete some, or purge the queue.", 403);
@@ -197,7 +210,7 @@ function receiveAttributes(m: StoredMessage, names: string[]): Record<string, st
 }
 
 /** ReceiveMessage. A message received more times than the redrive policy allows moves to the dead-letter queue instead. */
-export async function receiveMessages(engine: Engine, q: Resource, input: ReceiveInput = {}): Promise<{ messages: ReceivedMessage[]; movedToDlq: number }> {
+export async function receiveMessages(engine: ServiceHost, q: Resource, input: ReceiveInput = {}): Promise<{ messages: ReceivedMessage[]; movedToDlq: number }> {
   const max = input.maxNumberOfMessages ?? 1;
   if (!Number.isInteger(max) || max < 1 || max > 10) {
     throw new EngineError("InvalidParameterValue", `Value ${max} for parameter MaxNumberOfMessages is invalid. Reason: Must be between 1 and 10, if provided.`);
@@ -210,7 +223,7 @@ export async function receiveMessages(engine: Engine, q: Resource, input: Receiv
   if (!Number.isInteger(vt) || vt < 0 || vt > 43200) throw new EngineError("InvalidParameterValue", `Value ${vt} for parameter VisibilityTimeout is invalid. Reason: Must be >= 0 and <= 43200, if provided.`);
 
   const now = engine.now().getTime();
-  const fresh = await engine.get(q.accountId, q.id);
+  const fresh = await load(engine, q);
   let msgs = retained(fresh, messagesOf(fresh), now);
   const dlqUrl = fresh.config.deadLetterQueue ? String(fresh.config.deadLetterQueue) : null;
   const maxReceives = Number(fresh.config.maxReceiveCount ?? 10);
@@ -261,8 +274,8 @@ function byHandle(msgs: StoredMessage[], handle: string): StoredMessage | undefi
 }
 
 /** DeleteMessage. A stale handle for a message already gone succeeds quietly, as in SQS. */
-export async function deleteMessage(engine: Engine, q: Resource, handle: string): Promise<void> {
-  const fresh = await engine.get(q.accountId, q.id);
+export async function deleteMessage(engine: ServiceHost, q: Resource, handle: string): Promise<void> {
+  const fresh = await load(engine, q);
   const msgs = messagesOf(fresh);
   const m = byHandle(msgs, handle);
   if (!m) return;
@@ -271,12 +284,12 @@ export async function deleteMessage(engine: Engine, q: Resource, handle: string)
 }
 
 /** ChangeMessageVisibility: more time to finish, or 0 to give it back straight away. */
-export async function changeVisibility(engine: Engine, q: Resource, handle: string, seconds: number): Promise<void> {
+export async function changeVisibility(engine: ServiceHost, q: Resource, handle: string, seconds: number): Promise<void> {
   if (!Number.isInteger(seconds) || seconds < 0 || seconds > 43200) {
     throw new EngineError("InvalidParameterValue", `Value ${seconds} for parameter VisibilityTimeout is invalid. Reason: Must be >= 0 and <= 43200, if provided.`);
   }
   const now = engine.now().getTime();
-  const fresh = await engine.get(q.accountId, q.id);
+  const fresh = await load(engine, q);
   const msgs = messagesOf(fresh);
   const m = byHandle(msgs, handle);
   if (!m || m.visibleAt <= now) {
@@ -287,9 +300,9 @@ export async function changeVisibility(engine: Engine, q: Resource, handle: stri
 }
 
 /** PurgeQueue: deletes every message. Once a minute at most. */
-export async function purgeQueue(engine: Engine, q: Resource): Promise<void> {
+export async function purgeQueue(engine: ServiceHost, q: Resource): Promise<void> {
   const now = engine.now().getTime();
-  const fresh = await engine.get(q.accountId, q.id);
+  const fresh = await load(engine, q);
   const last = Number(fresh.attributes.lastPurgeAt ?? 0);
   if (now - last < PURGE_COOLDOWN_MS) {
     throw new EngineError("AWS.SimpleQueueService.PurgeQueueInProgress", `Only one PurgeQueue operation on ${q.name} is allowed every 60 seconds.`, 403);

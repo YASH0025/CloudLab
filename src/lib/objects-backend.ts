@@ -105,19 +105,23 @@ export function localObjects(info: LocalApiInfo): ObjectsBackend {
   };
 }
 
-/** "Explore items" for a DynamoDB table on this computer: the agent runs it on the table's file. */
-export async function localTableItems(info: LocalApiInfo, table: string, input: TableItemsInput): Promise<TableItemsResult> {
+/** Calls the agent's local API for a service's console page (tables, queues…). */
+export async function localAgentCall<T>(info: LocalApiInfo, pathname: string, body: unknown): Promise<T> {
   let res: Response;
   try {
-    res = await fetch(`http://127.0.0.1:${info.port}/dynamodb/explore`, {
+    res = await fetch(`http://127.0.0.1:${info.port}${pathname}`, {
       method: "POST",
       headers: { "x-cloudlab-key": info.key, "content-type": "application/json" },
-      body: JSON.stringify({ ...input, table }),
+      body: JSON.stringify(body),
     });
   } catch {
     throw unreachable();
   }
-  const body = await res.json().catch(() => ({}));
-  if (!res.ok) throw new ApiError(body?.error?.code ?? "RequestFailed", body?.error?.message ?? res.statusText, res.status);
-  return body;
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new ApiError(data?.error?.code ?? "RequestFailed", data?.error?.message ?? res.statusText, res.status);
+  return data as T;
 }
+
+/** "Explore items" for a DynamoDB table on this computer: the agent runs it on the table's file. */
+export const localTableItems = (info: LocalApiInfo, table: string, input: TableItemsInput) =>
+  localAgentCall<TableItemsResult>(info, "/dynamodb/explore", { ...input, table });
