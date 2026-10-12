@@ -13,7 +13,7 @@ import { LAMBDA_COMMANDS } from "./lambda";
 import { APIGATEWAY_COMMANDS } from "./apigateway";
 import { CLOUDWATCH_COMMANDS, LOGS_COMMANDS } from "./cloudwatch";
 import { ROUTE53_COMMANDS } from "./route53";
-import { SNS_COMMANDS } from "./sns";
+import { SNS_COMMANDS, textArg } from "./sns";
 import { SQS_COMMANDS } from "./sqs";
 import { DYNAMODB_COMMANDS } from "./dynamodb";
 import { CLOUDFORMATION_COMMANDS } from "./cloudformation";
@@ -743,7 +743,7 @@ export const COMMANDS: Command[] = [
     apiName: "RunInstances",
     summary: "Launch instances",
     usage:
-      "--image-id <ami> [--subnet-id <id>] [--security-group-ids <id> ...] [--instance-type t3.micro] [--count 1] [--key-name <name>] [--iam-instance-profile Name=<role>] [--associate-public-ip-address | --no-associate-public-ip-address]",
+      "--image-id <ami> [--subnet-id <id>] [--security-group-ids <id> ...] [--instance-type t3.micro] [--count 1] [--key-name <name>] [--iam-instance-profile Name=<role>] [--associate-public-ip-address | --no-associate-public-ip-address] [--user-data <script | file://script.sh>]",
     mutates: true,
     async run(args, ctx) {
       const imageId = args.one("image-id");
@@ -779,6 +779,7 @@ export const COMMANDS: Command[] = [
             iamRole: instanceProfile(args.one("iam-instance-profile")),
             associatePublicIp: pub === undefined ? "subnet-default" : pub ? "enable" : "disable",
             name: nameTag(args),
+            ...(args.one("user-data") !== undefined ? { userData: textArg(ctx, args.one("user-data")!) } : {}),
           }),
         );
       }

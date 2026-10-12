@@ -14,6 +14,13 @@ export const REGIONS: Region[] = [
   { code: "ap-south-1", name: "Asia Pacific (Mumbai)" },
 ];
 
+/**
+ * The learner's own computer. Resources here are made real by the CloudLab agent
+ * (containers, databases, files) instead of being simulated. Not offered in the
+ * region list until the agent can make its services real.
+ */
+export const LOCAL_REGION = "local-1";
+
 export const DEFAULT_REGION = "us-east-1";
 
 export function isRegion(code: string): boolean {

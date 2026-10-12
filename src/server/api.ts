@@ -4,6 +4,7 @@ import { unstable_rethrow } from "next/navigation";
 import { nanoid } from "nanoid";
 import { z } from "zod";
 import { getLocalStore, getStore } from "@/db/store";
+import { AgentBridge } from "@/local/bridge";
 import { LocalService } from "@/local/service";
 import { Engine, EngineError } from "@/engine";
 import { authorize, consoleChecks, parseIdentity, resolvePrincipal, type Principal } from "@/engine/iam/authorize";
@@ -12,10 +13,22 @@ import { getSignedInUser } from "./auth";
 const ACCOUNT_COOKIE = "cl_account";
 
 let engine: Engine | null = null;
+let bridge: AgentBridge | null = null;
 
 export function getEngine(): Engine {
-  engine ??= new Engine(getStore());
+  if (!engine) {
+    engine = new Engine(getStore());
+    // Resources in My computer (local) are made real by the account's agent.
+    bridge = new AgentBridge(getLocal(), engine);
+    engine.setBridge(bridge);
+  }
   return engine;
+}
+
+/** The bridge to learners' computers (for commands run on local instances). */
+export function getBridge(): AgentBridge {
+  getEngine();
+  return bridge!;
 }
 
 let local: LocalService | null = null;

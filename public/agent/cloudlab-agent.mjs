@@ -34,7 +34,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-export const AGENT_VERSION = "0.4.0";
+export const AGENT_VERSION = "0.5.0";
 const DEFAULT_SERVER = "https://cloud-lab-livid.vercel.app";
 const HOME = path.join(os.homedir(), ".cloudlab");
 const CONFIG = path.join(HOME, "agent.json");
@@ -282,6 +282,10 @@ class Api {
 
   report(appId, r) {
     return this.post(`/api/agent/apps/${encodeURIComponent(appId)}/report`, r).catch((e) => log("Couldn't report progress:", e.message));
+  }
+
+  reportResource(id, r) {
+    return this.post(`/api/agent/resources/${encodeURIComponent(id)}`, r).catch((e) => log("Couldn't report to CloudLab:", e.message));
   }
 
   finish(taskId, status, error) {
@@ -1180,6 +1184,266 @@ export class NativeGateway {
   }
 }
 
+// ---------- EC2 in My computer (local) ----------
+
+const EC2_DIR = path.join(HOME, "ec2");
+
+/**
+ * Runs when an instance's container starts, as its first process: the parts of an
+ * EC2 boot a plain container doesn't do. User data runs once, on the first boot (its
+ * output in /var/log/cloud-init-output.log); services enabled with systemctl start on
+ * every boot; sudo works.
+ */
+export const EC2_BOOT = `#!/bin/sh
+mkdir -p /var/lib/cloudlab /var/log /var/run
+cp /cloudlab/systemctl /usr/local/bin/systemctl 2>/dev/null && chmod +x /usr/local/bin/systemctl
+command -v sudo >/dev/null 2>&1 || { printf '#!/bin/sh\\nexec "$@"\\n' > /usr/local/bin/sudo; chmod +x /usr/local/bin/sudo; }
+# Debian and Ubuntu images stop services from starting; a server should start them.
+rm -f /usr/sbin/policy-rc.d
+if [ -f /cloudlab/user-data ] && [ ! -f /var/lib/cloudlab/user-data-done ]; then
+  touch /var/lib/cloudlab/user-data-done
+  cp /cloudlab/user-data /var/lib/cloudlab/user-data.sh && chmod +x /var/lib/cloudlab/user-data.sh
+  (
+    echo "Cloud-init: running user data at $(date)"
+    if head -1 /var/lib/cloudlab/user-data.sh | grep -q '^#!'; then /var/lib/cloudlab/user-data.sh; else sh /var/lib/cloudlab/user-data.sh; fi
+    echo "Cloud-init: user data finished with exit code $? at $(date)"
+  ) >> /var/log/cloud-init-output.log 2>&1 &
+fi
+if [ -f /var/lib/cloudlab/enabled ]; then
+  while read -r s; do [ -n "$s" ] && /usr/local/bin/systemctl start "$s" >/dev/null 2>&1; done < /var/lib/cloudlab/enabled
+fi
+trap 'exit 0' TERM INT
+while :; do sleep 3600 & wait $!; done
+`;
+
+/**
+ * A systemctl for containers, which have no systemd: start, stop, restart, enable,
+ * disable and status, through the service's init script or its unit file.
+ */
+export const EC2_SYSTEMCTL = `#!/bin/sh
+# CloudLab: a stand-in for systemctl (containers have no systemd).
+cmd="$1"; [ $# -gt 0 ] && shift
+now=""; svc=""
+for a in "$@"; do case "$a" in --now) now=1 ;; -*) ;; *) svc="\${a%.service}" ;; esac; done
+unit_file() { for d in /etc/systemd/system /lib/systemd/system /usr/lib/systemd/system; do [ -f "$d/$svc.service" ] && { echo "$d/$svc.service"; return; }; done; }
+pidfile="/var/run/cloudlab-$svc.pid"
+do_start() {
+  if [ -x "/etc/init.d/$svc" ]; then "/etc/init.d/$svc" start; return $?; fi
+  u=$(unit_file); [ -z "$u" ] && { echo "Failed to start $svc.service: Unit $svc.service not found." >&2; return 5; }
+  sed -n 's/^ExecStartPre=-\\{0,1\\}//p' "$u" | while read -r l; do sh -c "$l" >/dev/null 2>&1; done
+  start=$(sed -n 's/^ExecStart=//p' "$u" | head -1)
+  nohup sh -c "$start" >> "/var/log/$svc.log" 2>&1 &
+  echo $! > "$pidfile"
+}
+do_stop() {
+  if [ -x "/etc/init.d/$svc" ]; then "/etc/init.d/$svc" stop; return $?; fi
+  [ -f "$pidfile" ] && kill "$(cat "$pidfile")" 2>/dev/null; rm -f "$pidfile"
+  u=$(unit_file); [ -n "$u" ] && bin=$(sed -n 's/^ExecStart=//p' "$u" | head -1 | awk '{print $1}') && [ -n "$bin" ] && pkill -f "$bin" 2>/dev/null
+  return 0
+}
+case "$cmd" in
+  start) do_start ;;
+  stop) do_stop ;;
+  restart|reload|try-restart|reload-or-restart) do_stop; sleep 1; do_start ;;
+  enable)
+    mkdir -p /var/lib/cloudlab; touch /var/lib/cloudlab/enabled
+    grep -qx "$svc" /var/lib/cloudlab/enabled || echo "$svc" >> /var/lib/cloudlab/enabled
+    echo "Created symlink: $svc.service will start at boot (CloudLab)."
+    [ -n "$now" ] && do_start ;;
+  disable) [ -f /var/lib/cloudlab/enabled ] && sed -i "/^$svc\\$/d" /var/lib/cloudlab/enabled; [ -n "$now" ] && do_stop; true ;;
+  status|is-active)
+    if [ -x "/etc/init.d/$svc" ]; then "/etc/init.d/$svc" status; exit $?; fi
+    if [ -f "$pidfile" ] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then echo "active (running)"; exit 0; fi
+    echo "inactive (dead)"; exit 3 ;;
+  is-enabled) grep -qx "$svc" /var/lib/cloudlab/enabled 2>/dev/null && { echo enabled; exit 0; } || { echo disabled; exit 1; } ;;
+  daemon-reload|daemon-reexec) exit 0 ;;
+  *) echo "CloudLab's systemctl supports start, stop, restart, enable, disable and status." >&2; exit 1 ;;
+esac
+`;
+
+const ec2Container = (id) => `cloudlab-ec2-${id}`;
+const ec2Image = (id) => `cloudlab/ec2-${id}:saved`;
+
+/** EC2 instances as Linux containers. Reports go to CloudLab as the instance's real state and details. */
+export class Ec2Instances {
+  constructor(api) {
+    this.api = api;
+  }
+
+  report(id, r) {
+    return this.api.reportResource(id, r);
+  }
+
+  async inspect(id) {
+    const r = await docker(["inspect", "-f", `{{.State.Status}}|{{(index .NetworkSettings.Networks "${NETWORK}").IPAddress}}`, ec2Container(id)]);
+    if (r.code !== 0) return null;
+    const [status, ip] = r.out.trim().split("|");
+    return { status, ip: ip && ip !== "<no value>" ? ip : null };
+  }
+
+  /** Host ports for the instance's open ports: the same number when it's free, else from 8000 up. */
+  async portMap(ports, taken) {
+    const map = [];
+    for (const port of ports) {
+      let hostPort = port >= 1024 && !taken.includes(port) ? await freePort(port, taken).catch(() => null) : null;
+      if (hostPort !== port) hostPort = await freePort(8000, taken);
+      taken.push(hostPort);
+      map.push({ port, hostPort });
+    }
+    return map;
+  }
+
+  async takenPorts() {
+    const r = await docker(["ps", "-a", "--format", "{{.Ports}}"]);
+    return [...r.out.matchAll(/:(\d+)->/g)].map((m) => Number(m[1]));
+  }
+
+  /** Creates the container (not started) with the spec's ports, from `image`. */
+  async create(spec, image) {
+    const dir = path.join(EC2_DIR, spec.id);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path.join(dir, "boot.sh"), EC2_BOOT);
+    writeFileSync(path.join(dir, "systemctl"), EC2_SYSTEMCTL);
+    if (spec.userData) writeFileSync(path.join(dir, "user-data"), spec.userData);
+    else rmSync(path.join(dir, "user-data"), { force: true });
+    await ensureNetwork();
+    const map = await this.portMap(spec.ports, await this.takenPorts());
+    const args = [
+      "create",
+      "--name",
+      ec2Container(spec.id),
+      "--hostname",
+      spec.hostname,
+      "--label",
+      `cloudlab.ec2=${spec.id}`,
+      "--network",
+      NETWORK,
+      "--cpus",
+      String(Math.min(spec.cpus, os.cpus().length || 1)),
+      "--memory",
+      `${spec.memoryMb}m`,
+      "-v",
+      `${dir}:/cloudlab:ro`,
+      ...map.flatMap((m) => ["-p", `${m.hostPort}:${m.port}`]),
+      image,
+      "/bin/sh",
+      "/cloudlab/boot.sh",
+    ];
+    const r = await docker(args);
+    if (r.code !== 0) throw new Error(`Docker couldn't create the instance: ${tail(r.out, 400)}`);
+    return map;
+  }
+
+  /** The instance's details as CloudLab shows them, after a start. */
+  async running(spec, map) {
+    const info = await this.inspect(spec.id);
+    const lanIp = lanAddress();
+    return {
+      state: "running",
+      attributes: {
+        publicIp: lanIp,
+        localIp: info?.ip ?? null,
+        portMap: map,
+        container: ec2Container(spec.id),
+        localImage: spec.image,
+        localError: null,
+      },
+    };
+  }
+
+  fail(id, message) {
+    log(`  ${id}: ${message}`);
+    return this.report(id, { state: "terminated", attributes: { localError: message, stateReason: "Server.InternalError" } });
+  }
+
+  async launch(spec) {
+    const info = await dockerInfo();
+    if (!info.ok) return this.fail(spec.id, `EC2 instances run in Docker, and Docker isn't running on this computer. ${info.error}`);
+    // Getting the machine image can take a minute the first time.
+    if ((await docker(["image", "inspect", spec.image])).code !== 0) {
+      await this.report(spec.id, { attributes: { localStatus: `Downloading ${spec.imageName} (${spec.image})…` } });
+      const pull = await docker(["pull", spec.image], { timeoutMs: 20 * 60_000 });
+      if (pull.code !== 0) return this.fail(spec.id, `Couldn't download ${spec.image}: ${tail(pull.out, 300)}`);
+    }
+    await docker(["rm", "-f", ec2Container(spec.id)]);
+    let map;
+    try {
+      map = await this.create(spec, spec.image);
+    } catch (e) {
+      return this.fail(spec.id, e.message);
+    }
+    const r = await docker(["start", ec2Container(spec.id)]);
+    if (r.code !== 0) return this.fail(spec.id, `The instance didn't start: ${tail(r.out, 300)}`);
+    log(`EC2 ${spec.name} is running (${spec.image}).`);
+    const done = await this.running(spec, map);
+    await this.report(spec.id, { ...done, attributes: { ...done.attributes, localStatus: null } });
+  }
+
+  /** Recreates the container with new ports, keeping its disk (as a saved image). Running stays running. */
+  async ports(spec) {
+    const before = await this.inspect(spec.id);
+    if (!before) return;
+    const wasRunning = before.status === "running";
+    if (wasRunning) await docker(["stop", "-t", "10", ec2Container(spec.id)]);
+    const commit = await docker(["commit", ec2Container(spec.id), ec2Image(spec.id)]);
+    if (commit.code !== 0) return this.report(spec.id, { attributes: { localError: `Couldn't apply the security group change: ${tail(commit.out, 300)}` } });
+    await docker(["rm", "-f", ec2Container(spec.id)]);
+    const map = await this.create(spec, ec2Image(spec.id));
+    if (wasRunning) {
+      await docker(["start", ec2Container(spec.id)]);
+      await this.report(spec.id, await this.running(spec, map));
+    } else await this.report(spec.id, { attributes: { portMap: map } });
+    log(`EC2 ${spec.name}: ports now ${map.map((m) => `${m.port}→${m.hostPort}`).join(", ") || "none"}.`);
+  }
+
+  async handle(task) {
+    const { op, id, spec } = task;
+    if (op === "launch") return this.launch(spec);
+    const exists = await this.inspect(id);
+    if (!exists && op !== "terminate") return this.fail(id, "The instance's container isn't on this computer any more (removed outside CloudLab).");
+    if (op === "stop") {
+      await docker(["stop", "-t", "10", ec2Container(id)]);
+      return this.report(id, { state: "stopped", attributes: { localIp: null } });
+    }
+    if (op === "start") {
+      const r = await docker(["start", ec2Container(id)]);
+      if (r.code !== 0) return this.report(id, { state: "stopped", attributes: { localError: `It didn't start: ${tail(r.out, 300)}` } });
+      const portMap = (await this.portMapOf(id)) ?? [];
+      return this.report(id, await this.running(spec, portMap));
+    }
+    if (op === "reboot") {
+      await docker(["restart", "-t", "5", ec2Container(id)]);
+      return this.report(id, await this.running(spec, (await this.portMapOf(id)) ?? []));
+    }
+    if (op === "terminate") {
+      await docker(["rm", "-f", ec2Container(id)]);
+      await docker(["rmi", ec2Image(id)]);
+      rmSync(path.join(EC2_DIR, id), { recursive: true, force: true });
+      log(`EC2 ${id} terminated.`);
+      return this.report(id, { state: "terminated", attributes: { localIp: null, portMap: [] } });
+    }
+    if (op === "ports") return this.ports(spec);
+    if (op === "exec") return this.exec(id, task.command, task.execId);
+  }
+
+  async portMapOf(id) {
+    const r = await docker(["port", ec2Container(id)]);
+    if (r.code !== 0) return null;
+    const map = [];
+    for (const m of r.out.matchAll(/^(\d+)\/tcp -> [^:]*:(\d+)$/gm)) if (!map.some((x) => x.port === Number(m[1]))) map.push({ port: Number(m[1]), hostPort: Number(m[2]) });
+    return map;
+  }
+
+  /** Runs a command as root, like Systems Manager Run Command, and reports its output. */
+  async exec(id, command, execId) {
+    const shell = (await docker(["exec", ec2Container(id), "sh", "-c", "command -v bash"])).code === 0 ? "bash" : "sh";
+    const r = await docker(["exec", ec2Container(id), shell, "-lc", command], { timeoutMs: 5 * 60_000 });
+    await this.report(id, {
+      attributes: { lastCommand: { id: execId, command, status: r.code === 0 ? "Success" : "Failed", exitCode: r.code, output: tail(r.out, 24_000), at: new Date().toISOString() } },
+    });
+  }
+}
+
 // ---------- tasks ----------
 
 /**
@@ -1200,6 +1464,7 @@ export class Agent {
     this.lastLogs = 0;
     this.gateway = new Gateway();
     this.native = new NativeApps();
+    this.ec2 = new Ec2Instances(api);
     this.nativeGateway = new NativeGateway();
   }
 
@@ -1388,6 +1653,19 @@ export class Agent {
   }
 
   async handle(task) {
+    if (task.type === "resource") {
+      const r = task.payload.resource;
+      log(`${r.kind.toUpperCase()} ${r.op} ${r.spec?.name ?? r.id}`);
+      let error = null;
+      try {
+        if (r.kind === "ec2") await this.ec2.handle(r);
+      } catch (e) {
+        error = String(e.message ?? e);
+        log(`  failed: ${error}`);
+      }
+      await this.api.finish(task.id, error ? "failed" : "done", error ?? undefined);
+      return;
+    }
     log(`Task: ${task.type}${task.payload.name ? ` ${task.payload.name}` : ""}`);
     const error = task.type === "deploy" ? await this.deploy(task) : await this.lifecycle(task);
     await this.api.finish(task.id, error ? "failed" : "done", error ?? undefined);

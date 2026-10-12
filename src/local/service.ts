@@ -12,6 +12,7 @@ import {
   type DeployInput,
   type LocalApp,
   type LocalStatus,
+  type ResourceTask,
   type SyncBody,
   type TaskType,
 } from "./types";
@@ -174,6 +175,25 @@ export class LocalService {
     const updated: AppRecord = { ...app, detail: pending, ...(action === "redeploy" ? { status: "queued" as const } : {}), updatedAt: this.iso() };
     await this.store.putApp(updated);
     return publicApp(updated);
+  }
+
+  /** The account's connected computer, or AWS-style refusal to do anything in the local region without one. */
+  async requireAgent(accountId: string): Promise<AgentRecord> {
+    const agent = await this.store.agentForAccount(accountId);
+    if (!agent) {
+      throw new EngineError(
+        "AgentNotConnected",
+        "My computer (local) runs things on your own computer, and no computer is connected. Open Local mode, click Connect my computer and start the CloudLab agent.",
+        409,
+      );
+    }
+    return agent;
+  }
+
+  /** Queues work on a resource of the local region for the account's computer. */
+  async queueResource(accountId: string, resource: ResourceTask): Promise<void> {
+    const agent = await this.requireAgent(accountId);
+    await this.queue(agent, "resource", { resource });
   }
 
   /** Gives an app a name on the home network (or removes it, with null). The agent picks it up at its next check-in. */

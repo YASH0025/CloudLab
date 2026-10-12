@@ -1,5 +1,5 @@
 import type { z } from "zod";
-import { isRegion } from "./catalog";
+import { isRegion, LOCAL_REGION } from "./catalog";
 import { EngineError, errors } from "./errors";
 import { buildSchema, collectRefs, type IssueKind } from "./fields";
 import { generateId } from "./ids";
@@ -16,6 +16,7 @@ import {
   systemOf,
   type FieldDef,
   type HookContext,
+  type LocalBridge,
   type Resource,
   type ResourceDTO,
   type ResourceTypeDef,
@@ -137,6 +138,9 @@ export class Engine {
   /** CloudWatch Logs events. */
   readonly logs: Logs;
 
+  /** Makes local-region resources real on the learner's computer (none: they're simulated like any region). */
+  private bridge: LocalBridge | null = null;
+
   constructor(
     private store: ResourceStore,
     readonly now: () => Date = () => new Date(),
@@ -144,6 +148,37 @@ export class Engine {
     this.objects = new ObjectStorage(this, store, now);
     this.metrics = new Metrics(this, store, now);
     this.logs = new Logs(this, store, now);
+  }
+
+  setBridge(bridge: LocalBridge | null) {
+    this.bridge = bridge;
+  }
+
+  /** The bridge, when this resource is one the learner's computer makes real. */
+  private localFor(r: { region: string; service: string; type: string }): LocalBridge | null {
+    return this.bridge && r.region === LOCAL_REGION && this.bridge.handles(r.service, r.type) ? this.bridge : null;
+  }
+
+  /**
+   * The agent reports what really happened to a local resource: its state (ending any
+   * pending transition) and attributes such as the ports it got.
+   */
+  async settleLocal(accountId: string, id: string, report: { state?: string | null; attributes?: Record<string, unknown> }): Promise<Resource> {
+    const existing = await this.store.get(accountId, id);
+    if (!existing || existing.region !== LOCAL_REGION) throw errors.notFound("ResourceNotFound", `No resource '${id}' on this computer's account.`);
+    const updated: Resource = {
+      ...existing,
+      ...(report.state !== undefined ? { state: report.state, pendingState: null, transitionAt: null } : {}),
+      attributes: { ...existing.attributes, ...(report.attributes ?? {}) },
+      updatedAt: this.now().toISOString(),
+    };
+    await this.store.update(updated);
+    const def = getTypeDef(updated.service, updated.type);
+    if (report.state !== undefined && report.state !== existing.state && def.onSettled) {
+      await def.onSettled({ resource: updated, from: existing.state, system: this.systemApi(accountId, updated.region) });
+      return (await this.store.get(accountId, id)) ?? updated;
+    }
+    return updated;
   }
 
   private context(accountId: string, region: string): HookContext {
@@ -303,6 +338,8 @@ export class Engine {
     const def = getTypeDef(input.service, input.type);
     if (def.global) input = { ...input, region: "global" };
     else if (!isRegion(input.region)) throw errors.invalidParameter(`Invalid region: '${input.region}'`);
+    const local = this.localFor({ region: input.region, service: def.service, type: def.type });
+    if (local) await local.ready(accountId, { service: def.service, type: def.type, config: input.config ?? {} });
     const ctx = this.context(accountId, input.region);
     const config = await this.validateConfig(def, input.region, input.config ?? {}, null, ctx);
 
@@ -343,12 +380,16 @@ export class Engine {
     if (life) {
       resource =
         life.settlesTo && !options.settled
-          ? scheduleTransition(resource, { via: life.state, to: life.settlesTo, afterMs: life.afterMs }, this.now())
+          ? local
+            ? // On the learner's computer the agent says when it's ready, not a timer.
+              { ...resource, state: life.state, pendingState: life.settlesTo }
+            : scheduleTransition(resource, { via: life.state, to: life.settlesTo, afterMs: life.afterMs }, this.now())
           : { ...resource, state: life.settlesTo ?? life.state };
     }
 
     await this.store.insert(resource);
     if (def.afterCreate) await def.afterCreate({ resource, system: this.systemApi(accountId, input.region) });
+    if (local) await local.notify({ kind: "create", resource });
     return Object.keys(revealed).length > 0 ? { ...resource, attributes: { ...resource.attributes, ...revealed } } : resource;
   }
 
@@ -384,6 +425,7 @@ export class Engine {
     };
     await this.store.update(updated);
     if (def.afterUpdate) await def.afterUpdate({ resource: updated, previous: existing, system: this.systemApi(accountId, existing.region) });
+    await this.localFor(updated)?.notify({ kind: "update", resource: updated, previous: existing });
     return updated;
   }
 
@@ -405,10 +447,17 @@ export class Engine {
         actionDef.stateErrorMessage?.(existing) ?? `The ${def.apiNoun} '${id}' is not in a state from which it can be ${actionDef.pastTense}.`,
       );
     }
+    const local = this.localFor(existing);
+    if (local) await local.ready(accountId, existing);
     const patch = def.beforeAction ? await def.beforeAction({ resource: existing, action, ctx: this.context(accountId, existing.region) }) : undefined;
     const base = patch ? { ...existing, attributes: { ...existing.attributes, ...patch } } : existing;
-    const updated = scheduleTransition(base, actionDef, this.now());
+    const updated = local
+      ? actionDef.via
+        ? { ...base, state: actionDef.via, pendingState: actionDef.to, transitionAt: null, updatedAt: this.now().toISOString() }
+        : { ...base, state: actionDef.to, pendingState: null, transitionAt: null, updatedAt: this.now().toISOString() }
+      : scheduleTransition(base, actionDef, this.now());
     await this.store.update(updated);
+    if (local) await local.notify({ kind: "action", resource: updated, previous: existing, action });
     return updated;
   }
 
@@ -512,6 +561,7 @@ export class Engine {
 
     await this.store.delete(accountId, id);
     for (const o of owned) await this.store.delete(accountId, o.id);
+    await this.localFor(existing)?.notify({ kind: "delete", resource: existing });
     if (def.afterDelete) await def.afterDelete({ resource: existing, system: this.systemApi(accountId, existing.region) });
     for (const { resource, fields } of toPrune) {
       const config = { ...resource.config };

@@ -219,6 +219,20 @@ export interface Resource {
 
 export type ResourceDTO = Omit<Resource, "accountId" | "refs">;
 
+/**
+ * Makes resources in the local region real, through the agent on the learner's
+ * computer. The engine keeps the record (like AWS's own control plane); the
+ * bridge sends the work, and the agent reports the real state back.
+ */
+export interface LocalBridge {
+  /** Whether this type is made real on the computer (others are simulated there too). */
+  handles(service: string, type: string): boolean;
+  /** Throws (e.g. no computer connected, or something the computer can't run) before anything is created or changed. */
+  ready(accountId: string, resource: { service: string; type: string; config: Record<string, unknown> }): Promise<void>;
+  /** Something the computer must act on. */
+  notify(event: { kind: "create" | "update" | "action" | "delete"; resource: Resource; previous?: Resource; action?: string }): Promise<void>;
+}
+
 export interface HookContext {
   accountId: string;
   region: string;

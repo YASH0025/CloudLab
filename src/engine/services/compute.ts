@@ -176,6 +176,17 @@ const instance: ResourceTypeDef = {
       description: "Without a key pair you cannot SSH in. Deleting the key pair later doesn't affect the instance.",
     },
     {
+      key: "userData",
+      label: "User data",
+      type: "text",
+      maxLength: 16384,
+      param: "UserData",
+      mutableInStates: ["stopped"],
+      placeholder: "#!/bin/bash\napt-get update && apt-get install -y nginx",
+      description:
+        "A script that runs once, as root, the first time the instance boots: install packages, write config, start services. In My computer (local) it really runs; its output goes to /var/log/cloud-init-output.log.",
+    },
+    {
       key: "iamRole",
       label: "IAM role",
       type: "ref",

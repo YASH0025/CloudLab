@@ -165,13 +165,13 @@ export interface LocalStatus {
 
 // ---------- agent protocol ----------
 
-export const TASK_TYPES = ["deploy", "start", "stop", "restart", "remove"] as const;
+export const TASK_TYPES = ["deploy", "start", "stop", "restart", "remove", "resource"] as const;
 export type TaskType = (typeof TASK_TYPES)[number];
 
 export interface AgentTask {
   id: string;
   type: TaskType;
-  payload: { appId: string; name?: string; source?: AppSource; hostPort?: number; mode?: RunMode };
+  payload: { appId?: string; name?: string; source?: AppSource; hostPort?: number; mode?: RunMode; resource?: ResourceTask };
 }
 
 const report = z.object({
@@ -214,6 +214,41 @@ export const syncBody = z.object({
 });
 
 export type SyncBody = z.infer<typeof syncBody>;
+
+// ---------- resources in My computer (local) ----------
+
+/** An EC2 instance as the agent runs it: a Linux container. */
+export interface Ec2Spec {
+  id: string;
+  name: string;
+  /** The Docker image the machine image stands for (ubuntu:24.04…). */
+  image: string;
+  imageName: string;
+  cpus: number;
+  memoryMb: number;
+  userData: string | null;
+  /** TCP ports its security groups open to the network. */
+  ports: number[];
+  /** Like ip-10-0-1-25: AWS's hostname style, from the private IP. */
+  hostname: string;
+}
+
+/** Work on one resource of the local region. */
+export interface ResourceTask {
+  kind: "ec2";
+  op: "launch" | "start" | "stop" | "reboot" | "terminate" | "ports" | "exec";
+  id: string;
+  spec?: Ec2Spec;
+  /** For exec: the command and an ID to report the result under. */
+  command?: string;
+  execId?: string;
+}
+
+/** What the agent reports about a local resource. */
+export const resourceReport = z.object({
+  state: z.string().max(40).nullable().optional(),
+  attributes: z.record(z.string(), z.unknown()).optional(),
+});
 
 /** What the agent's gateway should serve: each app's domain. */
 export interface AgentRoute {
