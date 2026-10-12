@@ -27,7 +27,8 @@ jobs:
             ext=""; [ "$target" = "windows-x64" ] && ext=".exe"
             bun build --compile --minify --target=bun-$target public/agent/cloudlab-agent.mjs --outfile dist/cloudlab-agent-$target$ext
           done
-          cp public/agent/cloudlab-agent.mjs dist/
+          # The plain script too, as one file (it imports CloudLab's service code from lib/).
+          bun build --target=node public/agent/cloudlab-agent.mjs --outfile dist/cloudlab-agent.mjs
           ls -la dist
       - name: Publish to the agent-latest release
         env:

@@ -9,9 +9,11 @@ const ACCOUNT = "acct-bridge";
 const LOCAL = "local-1";
 let engine: Engine;
 let local: LocalService;
+let clock = Date.now();
 
 beforeEach(() => {
-  engine = new Engine(new MemoryStore());
+  clock = Date.now();
+  engine = new Engine(new MemoryStore(), () => new Date(clock));
   local = new LocalService(new MemoryLocalStore());
   engine.setBridge(new AgentBridge(local, engine));
 });
@@ -61,6 +63,29 @@ describe("My computer (local)", () => {
     await expect(
       engine.create(ACCOUNT, { service: "sqs", type: "queue", region: LOCAL, config: { name: "q" } }),
     ).rejects.toMatchObject({ code: "NotAvailableLocally" });
+  });
+
+  it("sends DynamoDB tables to the computer, and keeps their items there", async () => {
+    const config = { name: "Orders", partitionKey: "id", partitionKeyType: "S", billingMode: "PAY_PER_REQUEST" };
+    await expect(engine.create(ACCOUNT, { service: "dynamodb", type: "table", region: LOCAL, config })).rejects.toMatchObject({ code: "AgentNotConnected" });
+    const agent = await connect();
+    const t = await engine.create(ACCOUNT, { service: "dynamodb", type: "table", region: LOCAL, config });
+    clock += 5_000;
+    await engine.update(ACCOUNT, t.id, { ttlAttribute: "expiresAt" });
+    const { tasks } = await local.sync(agent, { info, apps: [], complete: false });
+    expect(tasks.map((x) => [x.payload.resource?.kind, x.payload.resource?.op])).toEqual([
+      ["dynamodb", "create-table"],
+      ["dynamodb", "configure-table"],
+    ]);
+    expect(tasks[1].payload.resource?.table).toMatchObject({ id: t.id, name: "Orders", config: { partitionKey: "id", ttlAttribute: "expiresAt" } });
+
+    await engine.settleLocal(ACCOUNT, t.id, { attributes: { itemCount: 3, tableSizeBytes: 120 } });
+    expect((await engine.get(ACCOUNT, t.id)).attributes).toMatchObject({ itemCount: 3, tableSizeBytes: 120 });
+    const { putItem } = await import("@/engine/dynamodb/items");
+    await expect(putItem(engine, await engine.get(ACCOUNT, t.id), { id: { S: "a" } })).rejects.toMatchObject({ code: "LocalTable" });
+
+    await engine.remove(ACCOUNT, t.id, { force: true });
+    expect((await local.sync(agent, { info, apps: [], complete: false })).tasks.map((x) => x.payload.resource?.op)).toEqual(["delete-table"]);
   });
 
   it("leaves other regions simulated", async () => {

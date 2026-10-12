@@ -1,4 +1,4 @@
-import type { Engine } from "../engine";
+import type { TableHost } from "./host";
 import { EngineError } from "../errors";
 import { indexesOf, tableKey, type KeyDef } from "../services/dynamodb";
 import type { Resource } from "../types";
@@ -371,7 +371,7 @@ function used(p: P, ...texts: (string | undefined)[]) {
   return { names: Object.keys(names).length ? names : undefined, values: Object.keys(values).length ? values : undefined };
 }
 
-async function findTable(engine: Engine, accountId: string, region: string, name: string): Promise<Resource> {
+async function findTable(engine: TableHost, accountId: string, region: string, name: string): Promise<Resource> {
   const t = (await engine.list(accountId, { service: "dynamodb", type: "table", region })).find((x) => x.name === name);
   if (!t) throw new EngineError("ResourceNotFoundException", "Requested resource not found", 400);
   return t;
@@ -403,12 +403,12 @@ function readable(p: P, r: StatementResult): StatementResult {
 }
 
 /** ExecuteStatement. */
-export async function executeStatement(engine: Engine, accountId: string, region: string, statement: string, params: AttributeValue[] = []): Promise<StatementResult> {
+export async function executeStatement(engine: TableHost, accountId: string, region: string, statement: string, params: AttributeValue[] = []): Promise<StatementResult> {
   const p = new P(tokenize(statement.trim() ? statement : "x"), params);
   return readable(p, await run(engine, accountId, region, statement, p));
 }
 
-async function run(engine: Engine, accountId: string, region: string, statement: string, p: P): Promise<StatementResult> {
+async function run(engine: TableHost, accountId: string, region: string, statement: string, p: P): Promise<StatementResult> {
   if (!statement.trim()) throw validation("1 validation error detected: Value '' at 'statement' failed to satisfy constraint: Member must have length greater than or equal to 1");
 
   if (p.kw("SELECT")) {

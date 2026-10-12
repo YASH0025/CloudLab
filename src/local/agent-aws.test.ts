@@ -3,7 +3,8 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { AwsEndpoint, decodeAwsChunked, LocalS3, S3Api, uriEncode, verifySigV4 } from "../../public/agent/cloudlab-agent.mjs";
+import { AwsEndpoint, decodeAwsChunked, DynamoApi, LocalS3, S3Api, uriEncode, verifySigV4 } from "../../public/agent/cloudlab-agent.mjs";
+import { FileTableHost } from "./dynamodb-host";
 
 // AWS's own worked examples for S3 Signature Version 4 (docs: "Examples: Signature calculations").
 const DOCS_ID = "AKIAIOSFODNN7EXAMPLE";
@@ -80,19 +81,20 @@ const SECRET = "test-secret";
 const hex = (d: string | Buffer) => createHash("sha256").update(d).digest("hex");
 const hmac = (k: string | Buffer, d: string) => createHmac("sha256", k).update(d).digest();
 
-async function s3(port: number, method: string, target: string, body?: string, extra: Record<string, string> = {}) {
+async function s3(port: number, method: string, target: string, body?: string, extra: Record<string, string> = {}, service = "s3") {
   const url = new URL(target, `http://localhost:${port}`);
   const amzDate = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+/, "");
   const payload = hex(body ?? "");
-  const headers: Record<string, string> = { host: `localhost:${port}`, "x-amz-content-sha256": payload, "x-amz-date": amzDate, ...extra };
+  // S3 clients send the body's hash as a header; other services' clients (botocore) only sign it.
+  const headers: Record<string, string> = { host: `localhost:${port}`, ...(service === "s3" ? { "x-amz-content-sha256": payload } : {}), "x-amz-date": amzDate, ...extra };
   const names = Object.keys(headers).sort();
   const query = [...url.searchParams.entries()]
     .map(([k, v]) => `${uriEncode(k)}=${uriEncode(v)}`)
     .sort()
     .join("&");
   const canonical = [method, url.pathname, query, names.map((n) => `${n}:${headers[n]}\n`).join(""), names.join(";"), payload].join("\n");
-  const scope = `${amzDate.slice(0, 8)}/local-1/s3/aws4_request`;
-  const key = hmac(hmac(hmac(hmac(`AWS4${SECRET}`, amzDate.slice(0, 8)), "local-1"), "s3"), "aws4_request");
+  const scope = `${amzDate.slice(0, 8)}/local-1/${service}/aws4_request`;
+  const key = hmac(hmac(hmac(hmac(`AWS4${SECRET}`, amzDate.slice(0, 8)), "local-1"), service), "aws4_request");
   const sig = createHmac("sha256", key).update(["AWS4-HMAC-SHA256", amzDate, scope, hex(canonical)].join("\n")).digest("hex");
   const { host: _host, ...send } = headers;
   void _host;
@@ -170,5 +172,51 @@ describe("the S3 API on the AWS endpoint", () => {
     const anon = await fetch(`http://localhost:${port}/errs/a.txt`);
     expect(anon.status).toBe(403);
     expect(await anon.text()).toContain("<Code>AccessDenied</Code>");
+  });
+});
+
+describe("DynamoDB on the AWS endpoint", () => {
+  let endpoint: InstanceType<typeof AwsEndpoint>;
+  let port: number;
+  const ddb = async (op: string, body: unknown) => {
+    const r = await s3(port, "POST", "/", JSON.stringify(body), { "content-type": "application/x-amz-json-1.0", "x-amz-target": `DynamoDB_20120810.${op}` }, "dynamodb");
+    return { status: r.status, json: JSON.parse(r.text) };
+  };
+
+  beforeAll(async () => {
+    const host = new FileTableHost(mkdtempSync(path.join(tmpdir(), "cl-ddb-api-")));
+    const api = new DynamoApi(host, {
+      createTable: async (config: Record<string, unknown>) => host.upsert({ id: `arn:aws:dynamodb:local-1:123456789012:table/${config.name}`, name: String(config.name), config }),
+      updateTable: async () => {
+        throw new Error("not used");
+      },
+      deleteTable: async (t: { name: string }) => host.remove(t.name),
+    });
+    endpoint = new AwsEndpoint({ keys: () => ({ [ID]: SECRET }), services: { dynamodb: api } });
+    port = (await endpoint.start(0))!;
+  });
+  afterAll(() => endpoint.server?.close());
+
+  it("answers DynamoDB's JSON API, with a body signed the way botocore signs it", async () => {
+    const created = await ddb("CreateTable", {
+      TableName: "Notes",
+      BillingMode: "PAY_PER_REQUEST",
+      AttributeDefinitions: [{ AttributeName: "user", AttributeType: "S" }],
+      KeySchema: [{ AttributeName: "user", KeyType: "HASH" }],
+    });
+    expect(created.status).toBe(200);
+    expect(created.json.TableDescription).toMatchObject({ TableName: "Notes", TableStatus: "CREATING", CreationDateTime: expect.any(Number) });
+    expect((await ddb("PutItem", { TableName: "Notes", Item: { user: { S: "ana" }, n: { N: "1" } } })).json).toEqual({});
+    expect((await ddb("GetItem", { TableName: "Notes", Key: { user: { S: "ana" } } })).json).toEqual({ Item: { user: { S: "ana" }, n: { N: "1" } } });
+  });
+
+  it("answers with DynamoDB's error shapes", async () => {
+    expect(await ddb("Scan", { TableName: "Nope" })).toEqual({
+      status: 400,
+      json: { __type: "com.amazonaws.dynamodb.v20120810#ResourceNotFoundException", message: "Requested resource not found: Table: Nope not found" },
+    });
+    expect((await ddb("CreateBackup", {})).json.__type).toBe("com.amazon.coral.service#UnknownOperationException");
+    const unsigned = await fetch(`http://localhost:${port}/`, { method: "POST", headers: { "x-amz-target": "DynamoDB_20120810.ListTables", "content-type": "application/x-amz-json-1.0" }, body: "{}" });
+    expect(await unsigned.json()).toMatchObject({ __type: expect.stringContaining("MissingAuthenticationTokenException") });
   });
 });

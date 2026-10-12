@@ -21,7 +21,8 @@
  * connects in to your computer. The agent only touches Docker containers and
  * images it created itself (labelled cloudlab.app), and its own folder ~/.cloudlab.
  *
- * Needs Node.js 18 or newer and Docker. No npm packages.
+ * Needs Node.js 20 or newer. Docker for apps that need it. No npm packages:
+ * CloudLab's own service code (DynamoDB…) comes along in ./lib/core.mjs.
  */
 
 import { spawn, spawnSync } from "node:child_process";
@@ -34,8 +35,9 @@ import os from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
+import { dynamodbApi, EngineError, explore, FileTableHost } from "./lib/core.mjs";
 
-export const AGENT_VERSION = "0.7.0";
+export const AGENT_VERSION = "0.8.0";
 const DEFAULT_SERVER = "https://cloud-lab-livid.vercel.app";
 const HOME = path.join(os.homedir(), ".cloudlab");
 const CONFIG = path.join(HOME, "agent.json");
@@ -1599,7 +1601,7 @@ export class LocalApi {
     const origin = req.headers.origin;
     return {
       ...(origin === this.origin ? { "access-control-allow-origin": origin, vary: "origin" } : {}),
-      "access-control-allow-methods": "GET, PUT, DELETE, OPTIONS",
+      "access-control-allow-methods": "GET, PUT, POST, DELETE, OPTIONS",
       "access-control-allow-headers": "content-type, x-cloudlab-key",
       "access-control-allow-private-network": "true",
       "access-control-max-age": "600",
@@ -1637,6 +1639,12 @@ export class LocalApi {
       const url = new URL(req.url ?? "/", "http://localhost");
       // The keys for AWS SDKs and the AWS CLI: only ever handed to the console on this computer.
       if (url.pathname === "/credentials" && req.method === "GET") return send(200, this.credentials?.() ?? null);
+      // A DynamoDB table's items, for the console's "Explore items".
+      if (url.pathname === "/dynamodb/explore" && req.method === "POST") {
+        if (!this.dynamodb) return send(404, { error: { code: "NotFound", message: "DynamoDB isn't running on this computer." } });
+        const input = JSON.parse((await readBody(req, 1024 * 1024)).toString("utf8") || "{}");
+        return send(200, await this.dynamodb.explore(input));
+      }
       const m = /^\/s3\/([^/]+)(?:\/(.*))?$/.exec(url.pathname);
       if (!m) return send(404, { error: { code: "NotFound", message: "Unknown path." } });
       const bucket = decodeURIComponent(m[1]);
@@ -1667,7 +1675,8 @@ export class LocalApi {
       }
       return send(405, { error: { code: "MethodNotAllowed", message: "The specified method is not allowed against this resource." } });
     } catch (e) {
-      if (e instanceof S3Error) return send(e.status, { error: { code: e.code, message: e.message } });
+      if (e instanceof S3Error || e instanceof EngineError) return send(e.status, { error: { code: e.code, message: e.message } });
+      if (e instanceof SyntaxError) return send(400, { error: { code: "BadRequest", message: "The request isn't valid JSON." } });
       return send(500, { error: { code: "InternalError", message: String(e.message ?? e) } });
     }
   }
@@ -1713,7 +1722,7 @@ export class AwsError extends Error {
  * URL's query string). Returns who signed it and for which service, or null for an
  * unsigned request. Throws AWS's errors for a bad one.
  */
-export function verifySigV4(req, url, keys, now = Date.now()) {
+export function verifySigV4(req, url, keys, now = Date.now(), bodyHash = null) {
   const q = url.searchParams;
   const auth = req.headers.authorization;
   let accessKeyId, scope, signedHeaders, signature, amzDate, payloadHash, presigned = false;
@@ -1722,7 +1731,8 @@ export function verifySigV4(req, url, keys, now = Date.now()) {
     if (!m) throw new AwsError("AuthorizationHeaderMalformed", "The authorization header is malformed.", 400);
     [, accessKeyId, scope, signedHeaders, signature] = m;
     amzDate = req.headers["x-amz-date"] ?? "";
-    payloadHash = req.headers["x-amz-content-sha256"] ?? sha256("");
+    // S3 clients send the body's hash as a header; other services' clients sign the body itself.
+    payloadHash = req.headers["x-amz-content-sha256"] ?? bodyHash ?? sha256("");
   } else if (q.get("X-Amz-Algorithm") === "AWS4-HMAC-SHA256") {
     presigned = true;
     const cred = q.get("X-Amz-Credential") ?? "";
@@ -1789,6 +1799,8 @@ function decodeURIComponentSafe(s) {
 
 /** Reads a request body, decoding aws-chunked uploads (what SDKs send for streams, with checksums in trailers). */
 export function readBody(req, limit = MAX_OBJECT_BYTES) {
+  // Already read to check its signature.
+  if (req.bufferedBody) return Promise.resolve(req.bufferedBody);
   return new Promise((resolve, reject) => {
     const parts = [];
     let size = 0;
@@ -2093,15 +2105,25 @@ export class AwsEndpoint {
       res.writeHead(200);
       return res.end();
     }
-    let service = "s3";
+    // Unsigned requests can't name a service in a signature: DynamoDB's say who they're for in X-Amz-Target.
+    let service = String(req.headers["x-amz-target"] ?? "").startsWith("DynamoDB_") ? "dynamodb" : "s3";
+    // Errors in the signature itself come back in the shape of the service it was for.
+    const scope = /Credential=[^/,]+\/\d{8}\/[^/]+\/([^/]+)\//.exec(String(req.headers.authorization ?? "")) ?? /^[^/]+\/\d{8}\/[^/]+\/([^/]+)\//.exec(url.searchParams.get("X-Amz-Credential") ?? "");
+    if (scope && this.services[scope[1]]) service = scope[1];
     try {
-      const who = verifySigV4(req, url, this.keys());
+      let bodyHash = null;
+      if (req.headers.authorization && !req.headers["x-amz-content-sha256"] && req.method !== "GET" && req.method !== "HEAD") {
+        req.bufferedBody = await readBody(req, 16 * 1024 * 1024);
+        bodyHash = sha256(req.bufferedBody);
+      }
+      const who = verifySigV4(req, url, this.keys(), Date.now(), bodyHash);
       if (who) service = who.service;
       const handler = this.services[service];
       if (!handler) throw new AwsError("NotImplemented", `CloudLab doesn't run ${service} on your computer yet.`, 501);
       await handler.handle(req, res, url, who);
     } catch (e) {
       if (res.headersSent) return res.end();
+      if (this.services[service]?.sendError) return this.services[service].sendError(res, e);
       const code = e.code ?? "InternalError";
       const status = e.status ?? 500;
       const extra = Object.entries(e.extra ?? {}).map(([k, v]) => tag(k, v)).join("");
@@ -2109,6 +2131,71 @@ export class AwsEndpoint {
       res.writeHead(status, { "content-type": "application/xml" });
       res.end(body);
     }
+  }
+}
+
+// ---------- DynamoDB ----------
+
+const DDB_PREFIX = "DynamoDB_20120810.";
+const DDB_ERROR_NS = "com.amazonaws.dynamodb.v20120810#";
+
+/**
+ * DynamoDB's API on the AWS endpoint (AWS's JSON protocol: POST / with
+ * X-Amz-Target: DynamoDB_20120810.<Operation>). The work is CloudLab's own
+ * DynamoDB code (lib/core.mjs) on tables kept as files on this computer.
+ * Creating, changing and deleting tables goes through CloudLab, so they show
+ * up in the console; items stay here.
+ */
+export class DynamoApi {
+  constructor(host, { createTable, updateTable, deleteTable }) {
+    this.host = host;
+    this.ctx = { host, accountId: "local", region: "local-1", createTable, updateTable, deleteTable };
+  }
+
+  async handle(req, res, url, who) {
+    if (!who) throw new AwsError("MissingAuthenticationTokenException", "Request is missing Authentication Token", 400);
+    if (req.method !== "POST" || url.pathname !== "/") throw new AwsError("UnknownOperationException", "", 400);
+    const target = String(req.headers["x-amz-target"] ?? "");
+    if (!target.startsWith(DDB_PREFIX)) throw new AwsError("UnknownOperationException", "", 400);
+    let body;
+    try {
+      const raw = (await readBody(req, 16 * 1024 * 1024)).toString("utf8");
+      body = raw ? JSON.parse(raw) : {};
+    } catch (e) {
+      if (e instanceof AwsError) throw e;
+      throw new AwsError("SerializationException", "Start of structure or map found where not expected.", 400);
+    }
+    const out = await dynamodbApi(target.slice(DDB_PREFIX.length), body, this.ctx);
+    const json = JSON.stringify(out ?? {});
+    res.writeHead(200, { "content-type": "application/x-amz-json-1.0", "x-amzn-requestid": randomBytes(16).toString("hex").toUpperCase(), "content-length": Buffer.byteLength(json) });
+    res.end(json);
+  }
+
+  /** DynamoDB's error shape: {"__type": "com.amazonaws.dynamodb.v20120810#Code", "message": "…"}. */
+  sendError(res, e) {
+    // DynamoDB names signature problems its own way.
+    const auth = {
+      SignatureDoesNotMatch: ["InvalidSignatureException", e.message],
+      InvalidAccessKeyId: ["UnrecognizedClientException", "The security token included in the request is invalid."],
+      RequestTimeTooSkewed: ["InvalidSignatureException", "Signature expired: the request's time is more than 15 minutes from this computer's time."],
+      AuthorizationHeaderMalformed: ["IncompleteSignatureException", e.message],
+    }[e.code];
+    if (auth) e = new AwsError(auth[0], auth[1], 400);
+    const code = e.code ?? "InternalServerError";
+    const known = e instanceof EngineError || e instanceof AwsError;
+    const ns = code === "UnknownOperationException" || code === "SerializationException" ? "com.amazon.coral.service#" : DDB_ERROR_NS;
+    const body = { __type: ns + (known ? code : "InternalServerError"), message: known ? e.message : "Internal server error", ...(e.extra ?? {}) };
+    if (!known) log("DynamoDB:", e.stack ?? e);
+    res.writeHead(known ? (e.status ?? 400) : 500, { "content-type": "application/x-amz-json-1.0", "x-amzn-requestid": randomBytes(16).toString("hex").toUpperCase() });
+    res.end(JSON.stringify(body));
+  }
+
+  /** The console's "Explore items" for a table on this computer. */
+  async explore(input) {
+    const t = this.host.byName(String(input?.table ?? ""));
+    const action = input?.action;
+    if (!["scan", "query", "put", "delete", "statement"].includes(action)) throw new EngineError("ValidationException", "Unknown action.", 400);
+    return explore(this.host, t, { limit: 100, forward: true, mustBeNew: false, ...input });
   }
 }
 
@@ -2397,6 +2484,9 @@ export class Agent {
     this.s3 = new LocalS3();
     this.localApi = null;
     this.bucketReports = new Map();
+    /** DynamoDB tables on this computer (set up in startLocal). */
+    this.tables = null;
+    this.tableReports = new Map();
   }
 
   /** Sets up and starts an app without Docker. Returns an error message, or null. */
@@ -2596,6 +2686,43 @@ export class Agent {
     );
   }
 
+  /** CloudLab created, changed or deleted a DynamoDB table on this computer. */
+  handleTable(r) {
+    if (!this.tables) throw new Error("DynamoDB isn't running on this computer.");
+    if (r.op === "delete-table") {
+      this.tables.remove(r.table.name);
+      log(`Table ${r.table.name} deleted.`);
+      return;
+    }
+    const isNew = !this.tables.has(r.table.name);
+    const t = this.tables.upsert(r.table);
+    if (isNew) log(`Table ${t.name} ready (${this.tables.pathOf(t.name)}).`);
+    this.reportTable(t.name);
+  }
+
+  /** A table's items changed: tell CloudLab its counts (never the items), once things settle. */
+  reportTable(name) {
+    clearTimeout(this.tableReports.get(name));
+    this.tableReports.set(
+      name,
+      setTimeout(async () => {
+        this.tableReports.delete(name);
+        const attributes = this.tables?.report(name);
+        if (!attributes) return;
+        await this.api.reportResource(this.tables.byName(name).id, { attributes });
+      }, 500),
+    );
+  }
+
+  /** Calls CloudLab for the AWS endpoint, turning its errors into the service's own. */
+  async viaCloudLab(pathname, body, method = "POST") {
+    try {
+      return await this.api.post(pathname, body, method);
+    } catch (e) {
+      throw new EngineError(e.code ?? "InternalServerError", e.message, e.status && e.status < 500 ? e.status : 500);
+    }
+  }
+
   /** Starts the API the console uses for this computer's S3 files, and the buckets' websites. */
   async startLocal(config) {
     this.localApi = new LocalApi(this.s3, { key: config.localKey, origin: new URL(config.server).origin, onChange: (b) => this.reportBucket(b) });
@@ -2621,12 +2748,22 @@ export class Agent {
       }
       this.s3.deleteBucket(name);
     };
+    this.tables = new FileTableHost(path.join(HOME, "dynamodb"), (t) => this.reportTable(t.name));
+    const dynamodb = new DynamoApi(this.tables, {
+      createTable: async (cfg) => this.tables.upsert(await this.viaCloudLab("/api/agent/dynamodb/tables", { config: cfg })),
+      updateTable: async (t, patch) => this.tables.upsert(await this.viaCloudLab(`/api/agent/dynamodb/tables/${encodeURIComponent(t.name)}`, { config: patch }, "PATCH")),
+      deleteTable: async (t) => {
+        await this.viaCloudLab(`/api/agent/dynamodb/tables/${encodeURIComponent(t.name)}`, {}, "DELETE");
+        this.tables.remove(t.name);
+      },
+    });
+    this.localApi.dynamodb = dynamodb;
     this.aws = new AwsEndpoint({
       keys: () => keys,
-      services: { s3: new S3Api(this.s3, { createBucket, deleteBucket, onChange: (b) => this.reportBucket(b), owner: config.awsAccessKeyId }) },
+      services: { s3: new S3Api(this.s3, { createBucket, deleteBucket, onChange: (b) => this.reportBucket(b), owner: config.awsAccessKeyId }), dynamodb },
     });
     const awsPort = await this.aws.start();
-    if (awsPort) log(`AWS endpoint for SDKs and the AWS CLI: http://localhost:${awsPort} (S3 today)`);
+    if (awsPort) log(`AWS endpoint for SDKs and the AWS CLI: http://localhost:${awsPort} (S3 and DynamoDB)`);
     else log(`Couldn't open the AWS endpoint: port ${AWS_PORT} is in use by another program.`);
     this.localApi.credentials = () =>
       awsPort ? { accessKeyId: config.awsAccessKeyId, secretAccessKey: config.awsSecretAccessKey, endpoint: `http://localhost:${awsPort}`, lanEndpoint: lanAddress() ? `http://${lanAddress()}:${awsPort}` : null, region: "local-1" } : null;
@@ -2639,6 +2776,27 @@ export class Agent {
    * the folders by hand, and add buckets the account doesn't have yet (made before
    * this computer was connected to it).
    */
+  async syncTables() {
+    for (const name of this.tables?.names() ?? []) {
+      const t = this.tables.byName(name);
+      try {
+        await this.api.post(`/api/agent/resources/${encodeURIComponent(t.id)}`, { attributes: this.tables.report(name) });
+      } catch (e) {
+        if (e.code !== "ResourceNotFound") {
+          log(`Couldn't report table ${name}:`, e.message);
+          continue;
+        }
+        try {
+          this.tables.upsert(await this.api.post("/api/agent/dynamodb/tables", { config: t.config }));
+          log(`Table ${name} is on this computer but wasn't in your CloudLab account, so it was added.`);
+          this.reportTable(name);
+        } catch (e2) {
+          log(`Table ${name} is on this computer but couldn't be added to your CloudLab account: ${e2.message}`);
+        }
+      }
+    }
+  }
+
   async syncBuckets() {
     for (const name of Object.keys(this.s3.meta.buckets)) {
       const attributes = await this.s3.report(name).catch(() => null);
@@ -2669,6 +2827,7 @@ export class Agent {
       try {
         if (r.kind === "ec2") await this.ec2.handle(r);
         else if (r.kind === "s3") await this.s3.handle(r, this.api);
+        else if (r.kind === "dynamodb") this.handleTable(r);
       } catch (e) {
         error = String(e.message ?? e);
         log(`  failed: ${error}`);
@@ -2712,6 +2871,7 @@ export class Agent {
     if (!this.bucketsSynced) {
       this.bucketsSynced = true;
       await this.syncBuckets();
+      await this.syncTables();
     }
     try {
       if (info.docker.ok) await this.gateway.update(routes, this.native.targets());

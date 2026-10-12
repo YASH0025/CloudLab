@@ -3,7 +3,7 @@ import { executeStatement } from "@/engine/dynamodb/partiql";
 import type { AttributeValue, Item } from "@/engine/dynamodb/values";
 import { EngineError } from "@/engine/errors";
 import { accountNumber } from "@/engine/ids";
-import { indexesOf, tableKey, tableNotFound } from "@/engine/services/dynamodb";
+import { describeTable as describe, tableNotFound } from "@/engine/services/dynamodb";
 import type { Resource } from "@/engine/types";
 import type { Args, CliContext, Command } from "./commands";
 import { ClientSideError, LocalPathError, parseShorthand, UsageError } from "./parse";
@@ -64,53 +64,6 @@ function expressionInput(ctx: CliContext, args: Args) {
   return {
     names: jsonArg<Record<string, string>>(ctx, args, "expression-attribute-names"),
     values: jsonArg<Record<string, AttributeValue>>(ctx, args, "expression-attribute-values"),
-  };
-}
-
-const keyFields = (t: Resource) => {
-  const key = tableKey(t);
-  return [
-    { AttributeName: key.partition.name, KeyType: "HASH" },
-    ...(key.sort ? [{ AttributeName: key.sort.name, KeyType: "RANGE" }] : []),
-  ];
-};
-
-function describe(t: Resource, status?: string) {
-  const key = tableKey(t);
-  const defs = new Map<string, string>([[key.partition.name, key.partition.type]]);
-  if (key.sort) defs.set(key.sort.name, key.sort.type);
-  const gsis = indexesOf(t);
-  for (const g of gsis) {
-    defs.set(g.partition.name, g.partition.type);
-    if (g.sort) defs.set(g.sort.name, g.sort.type);
-  }
-  const provisioned = t.config.billingMode === "PROVISIONED";
-  const throughput = { NumberOfDecreasesToday: 0, ReadCapacityUnits: provisioned ? Number(t.config.readCapacity) : 0, WriteCapacityUnits: provisioned ? Number(t.config.writeCapacity) : 0 };
-  return {
-    AttributeDefinitions: [...defs].map(([AttributeName, AttributeType]) => ({ AttributeName, AttributeType })),
-    TableName: t.name,
-    KeySchema: keyFields(t),
-    TableStatus: status ?? t.state,
-    CreationDateTime: t.createdAt,
-    ProvisionedThroughput: throughput,
-    TableSizeBytes: Number(t.attributes.tableSizeBytes ?? 0),
-    ItemCount: Number(t.attributes.itemCount ?? 0),
-    TableArn: t.id,
-    TableId: t.attributes.tableId,
-    ...(provisioned ? {} : { BillingModeSummary: { BillingMode: "PAY_PER_REQUEST", LastUpdateToPayPerRequestDateTime: t.createdAt } }),
-    ...(gsis.length
-      ? {
-          GlobalSecondaryIndexes: gsis.map((g) => ({
-            IndexName: g.name,
-            KeySchema: [{ AttributeName: g.partition.name, KeyType: "HASH" }, ...(g.sort ? [{ AttributeName: g.sort.name, KeyType: "RANGE" }] : [])],
-            Projection: { ProjectionType: "ALL" },
-            IndexStatus: "ACTIVE",
-            ProvisionedThroughput: throughput,
-            IndexArn: `${t.id}/index/${g.name}`,
-          })),
-        }
-      : {}),
-    DeletionProtectionEnabled: t.config.deletionProtection === true,
   };
 }
 

@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { api, ApiError, type MetricQuery, type QueueActionInput, type TableItemsInput } from "@/lib/api-client";
 import { queryKeys } from "@/lib/query-keys";
-import { serverObjects, type ObjectsBackend } from "@/lib/objects-backend";
+import { localTableItems, serverObjects, type ObjectsBackend } from "@/lib/objects-backend";
 import { LOCAL_REGION, REGIONS } from "@/engine/catalog";
 import { resolveServices } from "@/engine/registry";
 import { useConsoleStore } from "@/stores/console-store";
@@ -218,11 +218,24 @@ export function usePreviewChanges(id: string) {
   return useMutation({ mutationFn: (input: Parameters<typeof api.previewChanges>[1]) => api.previewChanges(id, input).then((r) => r.changes) });
 }
 
-/** Scan, query, save or delete items in a table. Errors show inline. */
-export function useTableItems(id: string) {
+/**
+ * Scan, query, save or delete items in a table. Errors show inline. A table on
+ * My computer (local) keeps its items there, so the agent on this computer runs it.
+ */
+export function useTableItems(table: Pick<ResourceDTO, "id" | "name" | "region">) {
   const qc = useQueryClient();
+  const isLocal = table.region === LOCAL_REGION;
+  const local = useLocal(isLocal);
+  const id = table.id;
   return useMutation({
-    mutationFn: (input: TableItemsInput) => api.tableItems(id, input),
+    mutationFn: (input: TableItemsInput) => {
+      if (!isLocal) return api.tableItems(id, input);
+      const info = local.data?.agent?.online ? local.data.agent.info?.localApi : null;
+      if (!info) {
+        throw new ApiError("AgentNotRunning", "This table's items are on your computer, and the CloudLab agent isn't running there. Start it (Local mode) and try again.", 0);
+      }
+      return localTableItems(info, table.name, input);
+    },
     onSettled: (_d, _e, input) => {
       if (input.action === "put" || input.action === "delete") {
         qc.invalidateQueries({ queryKey: queryKeys.resource(id) });

@@ -123,7 +123,7 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
       </nav>
       <p className="border-t border-white/10 px-4 py-3 text-xs text-sidebar-muted">
         {region === LOCAL_REGION
-          ? "My computer (local): S3 buckets here are real, with their files on your computer. Other services are on their way."
+          ? "My computer (local): S3 buckets and DynamoDB tables here are real, with their data on your computer. Other services are on their way."
           : "Everything here is simulated. Nothing is billed."}
       </p>
     </>

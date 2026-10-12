@@ -254,12 +254,34 @@ export interface S3BucketSpec {
   errorDocument: string | null;
 }
 
+/** A DynamoDB table on the learner's computer: its ARN, name and settings (the agent keeps the items). */
+export interface DynamoTableSpec {
+  id: string;
+  name: string;
+  config: Record<string, unknown>;
+  createdAt: string;
+}
+
 export interface ResourceTask {
-  kind: "ec2" | "s3";
-  op: "launch" | "start" | "stop" | "reboot" | "terminate" | "ports" | "exec" | "create-bucket" | "configure-bucket" | "delete-bucket";
+  kind: "ec2" | "s3" | "dynamodb";
+  op:
+    | "launch"
+    | "start"
+    | "stop"
+    | "reboot"
+    | "terminate"
+    | "ports"
+    | "exec"
+    | "create-bucket"
+    | "configure-bucket"
+    | "delete-bucket"
+    | "create-table"
+    | "configure-table"
+    | "delete-table";
   id: string;
   spec?: Ec2Spec;
   bucket?: S3BucketSpec;
+  table?: DynamoTableSpec;
   /** For exec: the command and an ID to report the result under. */
   command?: string;
   execId?: string;

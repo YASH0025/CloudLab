@@ -41,6 +41,54 @@ export const indexesOf = (t: Resource): IndexDef[] =>
     ...(g.sortKey ? { sort: { name: String(g.sortKey), type: String(g.sortKeyType ?? "S") } } : {}),
   }));
 
+const keyFields = (t: Resource) => {
+  const key = tableKey(t);
+  return [
+    { AttributeName: key.partition.name, KeyType: "HASH" },
+    ...(key.sort ? [{ AttributeName: key.sort.name, KeyType: "RANGE" }] : []),
+  ];
+};
+
+/** A table as DescribeTable (and CreateTable, DeleteTable…) shows it. */
+export function describeTable(t: Resource, status?: string) {
+  const key = tableKey(t);
+  const defs = new Map<string, string>([[key.partition.name, key.partition.type]]);
+  if (key.sort) defs.set(key.sort.name, key.sort.type);
+  const gsis = indexesOf(t);
+  for (const g of gsis) {
+    defs.set(g.partition.name, g.partition.type);
+    if (g.sort) defs.set(g.sort.name, g.sort.type);
+  }
+  const provisioned = t.config.billingMode === "PROVISIONED";
+  const throughput = { NumberOfDecreasesToday: 0, ReadCapacityUnits: provisioned ? Number(t.config.readCapacity) : 0, WriteCapacityUnits: provisioned ? Number(t.config.writeCapacity) : 0 };
+  return {
+    AttributeDefinitions: [...defs].map(([AttributeName, AttributeType]) => ({ AttributeName, AttributeType })),
+    TableName: t.name,
+    KeySchema: keyFields(t),
+    TableStatus: status ?? t.state,
+    CreationDateTime: t.createdAt,
+    ProvisionedThroughput: throughput,
+    TableSizeBytes: Number(t.attributes.tableSizeBytes ?? 0),
+    ItemCount: Number(t.attributes.itemCount ?? 0),
+    TableArn: t.id,
+    TableId: t.attributes.tableId,
+    ...(provisioned ? {} : { BillingModeSummary: { BillingMode: "PAY_PER_REQUEST", LastUpdateToPayPerRequestDateTime: t.createdAt } }),
+    ...(gsis.length
+      ? {
+          GlobalSecondaryIndexes: gsis.map((g) => ({
+            IndexName: g.name,
+            KeySchema: [{ AttributeName: g.partition.name, KeyType: "HASH" }, ...(g.sort ? [{ AttributeName: g.sort.name, KeyType: "RANGE" }] : [])],
+            Projection: { ProjectionType: "ALL" },
+            IndexStatus: "ACTIVE",
+            ProvisionedThroughput: throughput,
+            IndexArn: `${t.id}/index/${g.name}`,
+          })),
+        }
+      : {}),
+    DeletionProtectionEnabled: t.config.deletionProtection === true,
+  };
+}
+
 const NAME = "^[a-zA-Z0-9_.-]+$";
 
 const indexItem: FieldDef[] = [

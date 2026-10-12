@@ -156,8 +156,8 @@ function ConnectSteps({ token, agent }: { token: string | null; agent: AgentView
           </Select>
         </div>
         <p className="text-xs text-muted-foreground">
-          Have Node.js 18+? You can use{" "}
-          <a className="text-primary hover:underline" href="/agent/cloudlab-agent.mjs" download>
+          Have Node.js 20+? You can use{" "}
+          <a className="text-primary hover:underline" href={`${AGENT_RELEASE}/cloudlab-agent.mjs`} download>
             cloudlab-agent.mjs
           </a>{" "}
           instead: <span className="font-mono">node cloudlab-agent.mjs connect &lt;code&gt;</span>.
@@ -307,9 +307,17 @@ function ComputerCard() {
 
 const MASK = "••••••••••••••••••••••••••••••••••••••••";
 
-function sdkExamples(endpoint: string) {
+const SDK_SERVICES = [
+  { id: "s3", label: "S3" },
+  { id: "dynamodb", label: "DynamoDB" },
+] as const;
+type SdkService = (typeof SDK_SERVICES)[number]["id"];
+
+function sdkExamples(endpoint: string): Record<SdkService, { node: string; python: string; cli: string }> {
+  const e = `--endpoint-url ${endpoint}`;
   return {
-    node: `// npm install @aws-sdk/client-s3
+    s3: {
+      node: `// npm install @aws-sdk/client-s3
 import { S3Client, PutObjectCommand, ListObjectsV2Command } from "@aws-sdk/client-s3";
 
 const s3 = new S3Client({
@@ -322,7 +330,7 @@ const s3 = new S3Client({
 await s3.send(new PutObjectCommand({ Bucket: "my-bucket", Key: "hello.txt", Body: "Hello!" }));
 const { Contents } = await s3.send(new ListObjectsV2Command({ Bucket: "my-bucket" }));
 console.log(Contents.map((o) => o.Key));`,
-    python: `# pip install boto3
+      python: `# pip install boto3
 import boto3
 
 s3 = boto3.client("s3", region_name="local-1", endpoint_url="${endpoint}")
@@ -331,10 +339,41 @@ s3 = boto3.client("s3", region_name="local-1", endpoint_url="${endpoint}")
 s3.put_object(Bucket="my-bucket", Key="hello.txt", Body=b"Hello!")
 for o in s3.list_objects_v2(Bucket="my-bucket").get("Contents", []):
     print(o["Key"])`,
-    cli: `aws s3 mb s3://my-bucket --endpoint-url ${endpoint}
-aws s3 cp ./photo.jpg s3://my-bucket/photos/ --endpoint-url ${endpoint}
-aws s3 ls s3://my-bucket --recursive --endpoint-url ${endpoint}
-aws s3 sync ./site s3://my-bucket --endpoint-url ${endpoint}`,
+      cli: `aws s3 mb s3://my-bucket ${e}
+aws s3 cp ./photo.jpg s3://my-bucket/photos/ ${e}
+aws s3 ls s3://my-bucket --recursive ${e}
+aws s3 sync ./site s3://my-bucket ${e}`,
+    },
+    dynamodb: {
+      node: `// npm install @aws-sdk/client-dynamodb @aws-sdk/lib-dynamodb
+import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
+import { DynamoDBDocumentClient, PutCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
+
+const db = DynamoDBDocumentClient.from(new DynamoDBClient({ region: "local-1", endpoint: "${endpoint}" }));
+
+// A table "Orders" with partition key customer (String) and sort key orderId (Number)
+await db.send(new PutCommand({ TableName: "Orders", Item: { customer: "ana", orderId: 1, amount: 499 } }));
+const { Items } = await db.send(new QueryCommand({
+  TableName: "Orders",
+  KeyConditionExpression: "customer = :c",
+  ExpressionAttributeValues: { ":c": "ana" },
+}));
+console.log(Items);`,
+      python: `# pip install boto3
+import boto3
+from boto3.dynamodb.conditions import Key
+
+table = boto3.resource("dynamodb", region_name="local-1", endpoint_url="${endpoint}").Table("Orders")
+
+table.put_item(Item={"customer": "ana", "orderId": 1, "amount": 499})
+print(table.query(KeyConditionExpression=Key("customer").eq("ana"))["Items"])`,
+      cli: `aws dynamodb create-table --table-name Orders \\
+  --attribute-definitions AttributeName=customer,AttributeType=S AttributeName=orderId,AttributeType=N \\
+  --key-schema AttributeName=customer,KeyType=HASH AttributeName=orderId,KeyType=RANGE \\
+  --billing-mode PAY_PER_REQUEST ${e}
+aws dynamodb put-item --table-name Orders --item '{"customer":{"S":"ana"},"orderId":{"N":"1"}}' ${e}
+aws dynamodb scan --table-name Orders ${e}`,
+    },
   };
 }
 
@@ -350,6 +389,7 @@ function keysCommand(os: Os, id: string, secret: string) {
 function SdkAccessCard({ info }: { info: AgentInfo }) {
   const os = useOs();
   const [show, setShow] = useState(false);
+  const [svc, setSvc] = useState<SdkService>("s3");
   const api = info.localApi;
   const creds = useQuery({
     queryKey: ["local-credentials", api?.port, api?.key],
@@ -376,7 +416,7 @@ function SdkAccessCard({ info }: { info: AgentInfo }) {
   } else {
     const c = creds.data;
     const secret = show ? c.secretAccessKey : MASK;
-    const ex = sdkExamples(c.endpoint);
+    const ex = sdkExamples(c.endpoint)[svc];
     body = (
       <div className="space-y-4">
         <div className="grid gap-3 sm:grid-cols-2 [&>*]:min-w-0">
@@ -411,7 +451,16 @@ function SdkAccessCard({ info }: { info: AgentInfo }) {
           <CopyText text={keysCommand(os, c.accessKeyId, secret)} />
         </div>
         <div className="space-y-1">
-          <p className="font-medium">2. Point your code at {c.endpoint}</p>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="font-medium">2. Point your code at {c.endpoint}</p>
+            <div className="flex gap-1" role="group" aria-label="Service">
+              {SDK_SERVICES.map((x) => (
+                <Button key={x.id} type="button" size="sm" variant={svc === x.id ? "secondary" : "ghost"} aria-pressed={svc === x.id} onClick={() => setSvc(x.id)}>
+                  {x.label}
+                </Button>
+              ))}
+            </div>
+          </div>
           <Tabs defaultValue="node">
             <TabsList>
               <TabsTrigger value="node">Node.js</TabsTrigger>
@@ -430,8 +479,9 @@ function SdkAccessCard({ info }: { info: AgentInfo }) {
           </Tabs>
         </div>
         <p className="text-xs text-muted-foreground">
-          Works today: S3 (buckets, uploads, downloads, multipart, copy, presigned URLs). Buckets your code creates show up in the S3 console under My computer
-          (local). Keep the secret to yourself: anyone with it, on your network, can use these buckets.
+          Works today: S3 (buckets, uploads, downloads, multipart, copy, presigned URLs) and DynamoDB (tables, items, queries, indexes, batches, transactions,
+          PartiQL). Buckets and tables your code creates show up in the console under My computer (local). Keep the secret to yourself: anyone with it, on
+          your network, can use them.
         </p>
       </div>
     );

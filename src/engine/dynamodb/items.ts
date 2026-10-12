@@ -1,4 +1,5 @@
-import type { Engine } from "../engine";
+import type { TableHost } from "./host";
+import { LOCAL_REGION } from "../catalog";
 import { EngineError } from "../errors";
 import { indexesOf, tableKey, tableNotFound, type KeyDef } from "../services/dynamodb";
 import type { Resource } from "../types";
@@ -65,9 +66,16 @@ function context(input: ExpressionInput): ExprContext {
 }
 
 /** The table, refusing tables that aren't ACTIVE yet, and dropping items whose time to live has passed. */
-async function load(engine: Engine, table: Resource): Promise<Resource> {
+async function load(engine: TableHost, table: Resource): Promise<Resource> {
   const t = await engine.get(table.accountId, table.id).catch(() => null);
   if (!t) throw tableNotFound(table.name);
+  if (t.region === LOCAL_REGION && !engine.holdsLocalItems) {
+    throw new EngineError(
+      "LocalTable",
+      `The items of ${t.name} are on your computer (My computer (local)), not on CloudLab's servers. Open the table in the console on that computer, or use an AWS SDK or the AWS CLI with the endpoint http://localhost:4566.`,
+      400,
+    );
+  }
   if (t.state === "CREATING") throw new EngineError("ResourceNotFoundException", "Requested resource not found", 400);
   const ttl = t.config.ttlAttribute ? String(t.config.ttlAttribute) : null;
   if (ttl) {
@@ -85,14 +93,14 @@ async function load(engine: Engine, table: Resource): Promise<Resource> {
   return engine.get(t.accountId, t.id);
 }
 
-async function save(engine: Engine, t: Resource, items: Record<string, Item>, add: Partial<TableStats> = {}) {
+async function save(engine: TableHost, t: Resource, items: Record<string, Item>, add: Partial<TableStats> = {}) {
   const stats = statsOf(t);
   for (const [k, v] of Object.entries(add)) stats[k as keyof TableStats] += v ?? 0;
   const bytes = Object.values(items).reduce((n, it) => n + itemSize(it), 0);
   await engine.setAttributes(t.accountId, t.id, { items, itemCount: Object.keys(items).length, tableSizeBytes: bytes, stats });
 }
 
-async function bump(engine: Engine, t: Resource, add: Partial<TableStats>) {
+async function bump(engine: TableHost, t: Resource, add: Partial<TableStats>) {
   const stats = statsOf(t);
   for (const [k, v] of Object.entries(add)) stats[k as keyof TableStats] += v ?? 0;
   await engine.setAttributes(t.accountId, t.id, { stats });
@@ -102,7 +110,7 @@ async function bump(engine: Engine, t: Resource, add: Partial<TableStats>) {
  * Capacity: units consumed by a request, recorded as metrics. On a provisioned
  * table, more units in one second than provisioned are throttled.
  */
-async function consume(engine: Engine, t: Resource, kind: "read" | "write", units: number) {
+async function consume(engine: TableHost, t: Resource, kind: "read" | "write", units: number) {
   const dims = { TableName: t.name };
   const metric = kind === "read" ? "ConsumedReadCapacityUnits" : "ConsumedWriteCapacityUnits";
   if (t.config.billingMode === "PROVISIONED") {
@@ -165,7 +173,7 @@ function conditionCheck(t: Resource, existing: Item | undefined, condition: stri
   }
 }
 
-async function failOnCondition<T>(engine: Engine, t: Resource, fn: () => T): Promise<T> {
+async function failOnCondition<T>(engine: TableHost, t: Resource, fn: () => T): Promise<T> {
   try {
     return fn();
   } catch (e) {
@@ -184,7 +192,7 @@ export interface WriteInput extends ExpressionInput {
   returnValues?: string;
 }
 
-export async function putItem(engine: Engine, table: Resource, itemInput: unknown, input: WriteInput = {}): Promise<{ Attributes?: Item }> {
+export async function putItem(engine: TableHost, table: Resource, itemInput: unknown, input: WriteInput = {}): Promise<{ Attributes?: Item }> {
   const t = await load(engine, table);
   const item = checkItem(itemInput);
   checkKeyAttributes(t, item);
@@ -210,7 +218,7 @@ export interface ReadInput extends ExpressionInput {
   consistentRead?: boolean;
 }
 
-export async function getItem(engine: Engine, table: Resource, keyInput: unknown, input: ReadInput = {}): Promise<{ Item?: Item }> {
+export async function getItem(engine: TableHost, table: Resource, keyInput: unknown, input: ReadInput = {}): Promise<{ Item?: Item }> {
   const t = await load(engine, table);
   const key = checkKey(t, keyInput);
   const ctx = context(input);
@@ -223,7 +231,7 @@ export async function getItem(engine: Engine, table: Resource, keyInput: unknown
   return { Item: paths ? project(item, paths) : item };
 }
 
-export async function deleteItem(engine: Engine, table: Resource, keyInput: unknown, input: WriteInput = {}): Promise<{ Attributes?: Item }> {
+export async function deleteItem(engine: TableHost, table: Resource, keyInput: unknown, input: WriteInput = {}): Promise<{ Attributes?: Item }> {
   const t = await load(engine, table);
   const key = checkKey(t, keyInput);
   const rv = input.returnValues ?? "NONE";
@@ -246,7 +254,7 @@ export interface UpdateInput extends WriteInput {
   update: string;
 }
 
-export async function updateItem(engine: Engine, table: Resource, keyInput: unknown, input: UpdateInput): Promise<{ Attributes?: Item }> {
+export async function updateItem(engine: TableHost, table: Resource, keyInput: unknown, input: UpdateInput): Promise<{ Attributes?: Item }> {
   const t = await load(engine, table);
   const key = checkKey(t, keyInput);
   const rv = input.returnValues ?? "NONE";
@@ -284,6 +292,15 @@ export async function updateItem(engine: Engine, table: Resource, keyInput: unkn
   const pick = (it: Item | undefined) => (it ? Object.fromEntries(Object.entries(it).filter(([n]) => touched.has(n))) : undefined);
   const out = rv === "ALL_NEW" ? updated : rv === "UPDATED_NEW" ? pick(updated) : rv === "ALL_OLD" ? old : rv === "UPDATED_OLD" ? pick(old) : undefined;
   return out && Object.keys(out).length ? { Attributes: out } : {};
+}
+
+/** TransactWriteItems' ConditionCheck: a condition on an item, with no write. */
+export async function checkItemCondition(engine: TableHost, table: Resource, keyInput: unknown, input: WriteInput & { condition: string }): Promise<void> {
+  const t = await load(engine, table);
+  const key = checkKey(t, keyInput);
+  const ctx = context(input);
+  const existing = itemsOf(t)[keyString(tableKey(t), key)];
+  await failOnCondition(engine, t, () => conditionCheck(t, existing, input.condition, ctx, false));
 }
 
 // ---------- Query and Scan ----------
@@ -352,7 +369,7 @@ function sortItems(items: Item[], sortName: string | undefined, forward: boolean
   });
 }
 
-export async function query(engine: Engine, table: Resource, input: QueryInput): Promise<PageResult> {
+export async function query(engine: TableHost, table: Resource, input: QueryInput): Promise<PageResult> {
   const t = await load(engine, table);
   const ctx = context(input);
   let key: KeyDef = tableKey(t);
@@ -387,7 +404,7 @@ export interface ScanInput extends ReadInput {
   select?: string;
 }
 
-export async function scan(engine: Engine, table: Resource, input: ScanInput = {}): Promise<PageResult> {
+export async function scan(engine: TableHost, table: Resource, input: ScanInput = {}): Promise<PageResult> {
   const t = await load(engine, table);
   const ctx = context(input);
   let all = Object.values(itemsOf(t));

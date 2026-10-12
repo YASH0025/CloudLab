@@ -1,4 +1,4 @@
-import { api, ApiError, identityHeader, type ObjectInfo } from "@/lib/api-client";
+import { api, ApiError, identityHeader, type ObjectInfo, type TableItemsInput, type TableItemsResult } from "@/lib/api-client";
 
 /**
  * Where a bucket's objects live. Buckets in simulated regions keep them on
@@ -103,4 +103,21 @@ export function localObjects(info: LocalApiInfo): ObjectsBackend {
       return (await call(path(bucket, key))).blob();
     },
   };
+}
+
+/** "Explore items" for a DynamoDB table on this computer: the agent runs it on the table's file. */
+export async function localTableItems(info: LocalApiInfo, table: string, input: TableItemsInput): Promise<TableItemsResult> {
+  let res: Response;
+  try {
+    res = await fetch(`http://127.0.0.1:${info.port}/dynamodb/explore`, {
+      method: "POST",
+      headers: { "x-cloudlab-key": info.key, "content-type": "application/json" },
+      body: JSON.stringify({ ...input, table }),
+    });
+  } catch {
+    throw unreachable();
+  }
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new ApiError(body?.error?.code ?? "RequestFailed", body?.error?.message ?? res.statusText, res.status);
+  return body;
 }

@@ -40,7 +40,7 @@ const typedValue = (v: string, type: string | undefined) => (type === "N" && v.t
 
 /** PartiQL: SQL-like statements, with what each one ran as and how many items it read. */
 export function PartiqlCard({ table }: { table: ResourceDTO }) {
-  const run = useTableItems(table.id);
+  const run = useTableItems(table);
   const [statement, setStatement] = useState(`SELECT * FROM "${table.name}" WHERE "${String(table.config.partitionKey)}" = 'value'`);
   const r = run.data;
   const pk = String(table.config.partitionKey);
@@ -149,8 +149,8 @@ export function TablePanel({ table }: { table: ResourceDTO }) {
     ...Object.fromEntries(indexes.map((g) => [g.indexName, { partition: g.partitionKey, partitionType: g.partitionKeyType ?? "S", sort: g.sortKey || undefined, sortType: g.sortKeyType }])),
   };
   const tableKey = keys[""];
-  const read = useTableItems(table.id);
-  const write = useTableItems(table.id);
+  const read = useTableItems(table);
+  const write = useTableItems(table);
   const [mode, setMode] = useState<"scan" | "query">("scan");
   const [index, setIndex] = useState("");
   const [pv, setPv] = useState("");
