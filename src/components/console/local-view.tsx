@@ -544,7 +544,38 @@ function DomainLine({ app, gateway }: { app: LocalApp; gateway: AgentInfo["gatew
   );
 }
 
-function AppCard({ app, gateway }: { app: LocalApp; gateway: AgentInfo["gateway"] }) {
+/** One way to open the app: the address as a link, with a copy button. */
+function AddressLine({ label, url }: { label: string; url: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+      <span className="w-full text-xs text-muted-foreground sm:w-52">{label}</span>
+      <a className="font-mono text-primary hover:underline" href={url} target="_blank" rel="noreferrer">
+        {url}
+      </a>
+      <Button
+        type="button"
+        size="icon"
+        variant="ghost"
+        className="size-6"
+        aria-label={`Copy ${url}`}
+        onClick={() =>
+          navigator.clipboard?.writeText(url).then(
+            () => {
+              setCopied(true);
+              setTimeout(() => setCopied(false), 1500);
+            },
+            () => undefined,
+          )
+        }
+      >
+        {copied ? <CheckIcon className="size-3.5" /> : <CopyIcon className="size-3.5" />}
+      </Button>
+    </p>
+  );
+}
+
+function AppCard({ app, gateway, lanIp }: { app: LocalApp; gateway: AgentInfo["gateway"]; lanIp: string | null }) {
   const action = useLocalAction();
   const busy = BUSY.includes(app.status);
   return (
@@ -578,7 +609,12 @@ function AppCard({ app, gateway }: { app: LocalApp; gateway: AgentInfo["gateway"
           </div>
         </div>
         {app.detail && <p className={cn("text-sm", app.status === "failed" ? "text-destructive" : "text-muted-foreground")}>{app.detail}</p>}
-        {app.url && <p className="text-xs text-muted-foreground">{app.url} opens on the computer running the agent.</p>}
+        {app.url && (
+          <div className="space-y-1">
+            <AddressLine label="On the computer running the agent" url={app.url} />
+            {lanIp && app.hostPort && <AddressLine label="On other devices on the same Wi-Fi" url={`http://${lanIp}:${app.hostPort}`} />}
+          </div>
+        )}
         <DomainLine app={app} gateway={gateway} />
         <div className="space-y-2">
           <Logs title="App logs" text={app.logs} />
@@ -676,7 +712,7 @@ export function LocalView() {
             <section className="space-y-3">
               <h2 className="font-medium">Your apps ({data.apps.length})</h2>
               {data.apps.map((a) => (
-                <AppCard key={a.id} app={a} gateway={data.agent?.info?.gateway ?? null} />
+                <AppCard key={a.id} app={a} gateway={data.agent?.info?.gateway ?? null} lanIp={data.agent?.info?.lanIp ?? null} />
               ))}
             </section>
           )}
