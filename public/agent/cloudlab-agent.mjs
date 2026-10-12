@@ -33,7 +33,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-export const AGENT_VERSION = "0.2.0";
+export const AGENT_VERSION = "0.2.1";
 const DEFAULT_SERVER = "https://cloud-lab-livid.vercel.app";
 const HOME = path.join(os.homedir(), ".cloudlab");
 const CONFIG = path.join(HOME, "agent.json");
@@ -96,8 +96,14 @@ let dockerStartedAt = 0;
 /** Where Docker Desktop is, to start it when it isn't running. */
 export function dockerDesktopCommand(platform = process.platform, env = process.env) {
   if (platform === "win32") {
-    const exe = path.join(env.ProgramFiles ?? "C:\\Program Files", "Docker", "Docker", "Docker Desktop.exe");
-    return existsSync(exe) ? { cmd: exe, args: [] } : null;
+    // Installed for everyone (Program Files) or just for this user (AppData).
+    const roots = [env.ProgramFiles, env.ProgramW6432, "C:\\Program Files", env.LOCALAPPDATA && path.join(env.LOCALAPPDATA, "Programs")].filter(Boolean);
+    for (const root of roots) {
+      const exe = path.join(root, "Docker", "Docker", "Docker Desktop.exe");
+      if (existsSync(exe)) return { cmd: exe, args: [] };
+    }
+    // Recent Docker Desktop versions can be started from the command line.
+    return { cmd: "docker", args: ["desktop", "start", "--detach"] };
   }
   if (platform === "darwin") return { cmd: "open", args: ["-a", "Docker"] };
   // Docker Desktop for Linux runs as a user service; Docker Engine needs root, so it's left to the system.
@@ -133,11 +139,12 @@ async function dockerInfo() {
     return { ok: false, error: "Docker isn't installed. Install Docker Desktop (or Docker Engine on Linux), start it, then restart the agent." };
   }
   const starting = startDockerDesktop();
+  const detail = tail(r.out.trim().split("\n").pop() ?? "", 200);
   return {
     ok: false,
     error: starting
       ? "Docker wasn't running, so the agent is starting Docker Desktop. Give it a minute or two."
-      : "Docker is installed but not running. Start Docker Desktop (or the docker service) and wait until it's ready.",
+      : `Docker is installed but not running. Start Docker Desktop (or the docker service) and wait until it's ready.${detail ? ` (Docker said: ${detail})` : ""}`,
   };
 }
 

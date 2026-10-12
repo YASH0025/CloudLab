@@ -79,7 +79,7 @@ describe("agent", () => {
 
   it("knows how to start Docker Desktop on each system", () => {
     const programFiles = mkdtempSync(path.join(tmpdir(), "cl-pf-"));
-    expect(dockerDesktopCommand("win32", { ProgramFiles: programFiles } as never)).toBeNull();
+    expect(dockerDesktopCommand("win32", { ProgramFiles: programFiles } as never)).toEqual({ cmd: "docker", args: ["desktop", "start", "--detach"] });
     const exe = path.join(programFiles, "Docker", "Docker", "Docker Desktop.exe");
     mkdirSync(path.dirname(exe), { recursive: true });
     writeFileSync(exe, "");
