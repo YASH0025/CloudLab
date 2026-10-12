@@ -119,6 +119,11 @@ export interface AgentInfo {
   agentVersion: string;
   /** The computer's address on its home network, which other devices use. */
   lanIp?: string | null;
+  /**
+   * The agent's own API on this computer (S3 files and more for My computer (local)).
+   * The console in the browser calls it directly, with this key, so files never leave the computer.
+   */
+  localApi?: { port: number; key: string } | null;
   /** The agent's DNS server and web gateway for app domains, when any app has one. */
   gateway?: { running: boolean; dns: boolean; httpPort: number | null; error?: string | null } | null;
   /** Where the CloudLab folder is on the computer, and the project folders in it. */
@@ -201,6 +206,7 @@ export const syncBody = z.object({
     agentVersion: z.string().max(20),
     workspace: z.string().max(500).optional(),
     lanIp: z.string().max(64).nullable().optional(),
+    localApi: z.object({ port: z.number().int().min(1).max(65535), key: z.string().max(100) }).nullable().optional(),
     gateway: z
       .object({ running: z.boolean(), dns: z.boolean(), httpPort: z.number().int().nullable(), error: z.string().max(500).nullable().optional() })
       .nullable()
@@ -234,11 +240,23 @@ export interface Ec2Spec {
 }
 
 /** Work on one resource of the local region. */
+/** An S3 bucket as the agent keeps it: a folder, and the settings that decide who may read it. */
+export interface S3BucketSpec {
+  name: string;
+  versioning: string;
+  blockPublicAccess: boolean;
+  publicRead: boolean;
+  websiteEnabled: boolean;
+  indexDocument: string | null;
+  errorDocument: string | null;
+}
+
 export interface ResourceTask {
-  kind: "ec2";
-  op: "launch" | "start" | "stop" | "reboot" | "terminate" | "ports" | "exec";
+  kind: "ec2" | "s3";
+  op: "launch" | "start" | "stop" | "reboot" | "terminate" | "ports" | "exec" | "create-bucket" | "configure-bucket" | "delete-bucket";
   id: string;
   spec?: Ec2Spec;
+  bucket?: S3BucketSpec;
   /** For exec: the command and an ID to report the result under. */
   command?: string;
   execId?: string;

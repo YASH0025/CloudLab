@@ -330,7 +330,7 @@ export function ResourceDetailView() {
       )}
       {item.service === "storage" && item.type === "bucket" && (
         <>
-          <ObjectsPanel bucket={item.id} />
+          <ObjectsPanel bucket={item.id} region={item.region} />
           <WebsiteCard bucket={item} />
         </>
       )}

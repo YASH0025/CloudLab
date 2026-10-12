@@ -12,6 +12,7 @@ export const REGIONS: Region[] = [
   { code: "us-west-2", name: "US West (Oregon)" },
   { code: "eu-west-1", name: "Europe (Ireland)" },
   { code: "ap-south-1", name: "Asia Pacific (Mumbai)" },
+  { code: "local-1", name: "My computer (local)" },
 ];
 
 /**

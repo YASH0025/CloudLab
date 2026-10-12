@@ -225,8 +225,10 @@ export type ResourceDTO = Omit<Resource, "accountId" | "refs">;
  * bridge sends the work, and the agent reports the real state back.
  */
 export interface LocalBridge {
-  /** Whether this type is made real on the computer (others are simulated there too). */
+  /** Whether the bridge looks at this type in the local region (it may refuse it in `ready`). */
   handles(service: string, type: string): boolean;
+  /** Whether the agent drives this type's states (pending → running…), rather than a timer. */
+  realizes(service: string, type: string): boolean;
   /** Throws (e.g. no computer connected, or something the computer can't run) before anything is created or changed. */
   ready(accountId: string, resource: { service: string; type: string; config: Record<string, unknown> }): Promise<void>;
   /** Something the computer must act on. */

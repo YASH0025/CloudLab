@@ -380,7 +380,7 @@ export class Engine {
     if (life) {
       resource =
         life.settlesTo && !options.settled
-          ? local
+          ? local?.realizes(def.service, def.type)
             ? // On the learner's computer the agent says when it's ready, not a timer.
               { ...resource, state: life.state, pendingState: life.settlesTo }
             : scheduleTransition(resource, { via: life.state, to: life.settlesTo, afterMs: life.afterMs }, this.now())
@@ -451,7 +451,7 @@ export class Engine {
     if (local) await local.ready(accountId, existing);
     const patch = def.beforeAction ? await def.beforeAction({ resource: existing, action, ctx: this.context(accountId, existing.region) }) : undefined;
     const base = patch ? { ...existing, attributes: { ...existing.attributes, ...patch } } : existing;
-    const updated = local
+    const updated = local?.realizes(existing.service, existing.type)
       ? actionDef.via
         ? { ...base, state: actionDef.via, pendingState: actionDef.to, transitionAt: null, updatedAt: this.now().toISOString() }
         : { ...base, state: actionDef.to, pendingState: null, transitionAt: null, updatedAt: this.now().toISOString() }

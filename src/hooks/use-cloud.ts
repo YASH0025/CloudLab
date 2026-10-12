@@ -4,7 +4,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { api, ApiError, type MetricQuery, type QueueActionInput, type TableItemsInput } from "@/lib/api-client";
 import { queryKeys } from "@/lib/query-keys";
-import { REGIONS } from "@/engine/catalog";
+import { serverObjects, type ObjectsBackend } from "@/lib/objects-backend";
+import { LOCAL_REGION, REGIONS } from "@/engine/catalog";
 import { resolveServices } from "@/engine/registry";
 import { useConsoleStore } from "@/stores/console-store";
 import { useGuideStore } from "@/stores/guide-store";
@@ -54,7 +55,7 @@ export function useResources(service?: string, type?: string, options: { live?: 
   return useQuery({
     queryKey: queryKeys.resources(filter),
     queryFn: async () => (await api.listResources(filter)).items,
-    refetchInterval: (query) => (options.live ? 2500 : transitionInterval(query.state.data)),
+    refetchInterval: (query) => (options.live || region === LOCAL_REGION ? 2500 : transitionInterval(query.state.data)),
   });
 }
 
@@ -64,7 +65,8 @@ export function useResource(id: string) {
     queryFn: () => api.getResource(id),
     refetchInterval: (query) => {
       const item = query.state.data?.item;
-      if (item && LIVE_TYPES.has(item.type)) return 2500;
+      // Live types change on their own; on My computer (local) the agent reports what really happened (files, addresses).
+      if (item && (LIVE_TYPES.has(item.type) || item.region === LOCAL_REGION)) return 2500;
       return transitionInterval(item ? [item] : undefined);
     },
   });
@@ -417,8 +419,15 @@ export function useDeleteResource() {
 
 // ---------- bucket objects ----------
 
-export function useObjects(bucket: string, prefix: string) {
-  return useQuery({ queryKey: queryKeys.objects(bucket, prefix), queryFn: () => api.listObjects(bucket, prefix) });
+export function useObjects(bucket: string, prefix: string, backend: ObjectsBackend | null = serverObjects) {
+  return useQuery({
+    queryKey: [...queryKeys.objects(bucket, prefix), backend?.id ?? "none"],
+    queryFn: () => backend!.list(bucket, prefix),
+    // No backend yet: the agent on this computer hasn't been found.
+    enabled: !!backend,
+    // Files on the learner's computer can change there (added by hand): keep the listing fresh.
+    refetchInterval: backend === serverObjects ? false : 5_000,
+  });
 }
 
 /** Refreshes everything that shows a bucket's objects: the listing, the bucket's counts and the guide. */
@@ -433,7 +442,7 @@ function useObjectsChanged() {
 }
 
 /** Uploads files into a "folder" (key prefix), one after another. */
-export function useUploadObjects(bucket: string) {
+export function useUploadObjects(bucket: string, backend: ObjectsBackend = serverObjects) {
   const changed = useObjectsChanged();
   return useMutation({
     mutationFn: async ({ files, prefix }: { files: File[]; prefix: string }) => {
@@ -441,7 +450,7 @@ export function useUploadObjects(bucket: string) {
       for (const file of files) {
         // Folders dropped or picked keep their structure (webkitRelativePath is "folder/file.txt").
         const rel = (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name;
-        await api.putObject(bucket, prefix + rel, file);
+        await backend.put(bucket, prefix + rel, file);
         done.push(rel);
       }
       return done;
@@ -452,23 +461,23 @@ export function useUploadObjects(bucket: string) {
   });
 }
 
-export function useCreateFolder(bucket: string) {
+export function useCreateFolder(bucket: string, backend: ObjectsBackend = serverObjects) {
   const changed = useObjectsChanged();
   return useMutation({
     // The console makes a folder the way S3's does: an empty object whose key ends in "/".
-    mutationFn: (key: string) => api.putObject(bucket, key.endsWith("/") ? key : `${key}/`, new Blob([]), "application/x-directory"),
+    mutationFn: (key: string) => backend.put(bucket, key.endsWith("/") ? key : `${key}/`, new Blob([]), "application/x-directory"),
     onSuccess: (r) => toast.success(`Created folder ${r.object.key}`),
     onError,
     onSettled: changed,
   });
 }
 
-export function useDeleteObjects(bucket: string) {
+export function useDeleteObjects(bucket: string, backend: ObjectsBackend = serverObjects) {
   const changed = useObjectsChanged();
   return useMutation({
     mutationFn: async ({ keys, prefixes }: { keys: string[]; prefixes: string[] }) => {
-      for (const key of keys) await api.deleteObject(bucket, key);
-      for (const p of prefixes) await api.deletePrefix(bucket, p);
+      for (const key of keys) await backend.remove(bucket, key);
+      for (const p of prefixes) await backend.removePrefix(bucket, p);
       return keys.length + prefixes.length;
     },
     onSuccess: (n) => toast.success(n === 1 ? "Deleted" : `Deleted ${n} items`),
@@ -501,8 +510,8 @@ export function useSimulate() {
 // ---------- Local mode ----------
 
 /** The connected computer and its apps. Polls while anything could change. */
-export function useLocal() {
-  return useQuery({ queryKey: ["local"], queryFn: api.localStatus, refetchInterval: 3_000 });
+export function useLocal(enabled = true) {
+  return useQuery({ queryKey: ["local"], queryFn: api.localStatus, refetchInterval: 3_000, enabled });
 }
 
 export function usePairComputer() {

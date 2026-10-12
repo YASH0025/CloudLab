@@ -25,8 +25,8 @@
  */
 
 import { spawn, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
-import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { cpSync, createReadStream, createWriteStream, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import readline from "node:readline";
 import http from "node:http";
 import net from "node:net";
@@ -34,7 +34,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-export const AGENT_VERSION = "0.5.0";
+export const AGENT_VERSION = "0.6.0";
 const DEFAULT_SERVER = "https://cloud-lab-livid.vercel.app";
 const HOME = path.join(os.homedir(), ".cloudlab");
 const CONFIG = path.join(HOME, "agent.json");
@@ -1184,6 +1184,472 @@ export class NativeGateway {
   }
 }
 
+// ---------- S3 on this computer ----------
+
+/** Buckets are folders here, so you can see and change the files yourself. */
+export const S3_ROOT = path.join(WORKSPACE, "s3");
+const S3_META = path.join(HOME, "s3.json");
+const MAX_OBJECT_BYTES = 5 * 1024 ** 3;
+const WEBSITE_PORTS_FROM = 9100;
+
+const S3_MIME = {
+  html: "text/html", htm: "text/html", css: "text/css", js: "text/javascript", mjs: "text/javascript", json: "application/json",
+  txt: "text/plain", md: "text/markdown", csv: "text/csv", xml: "application/xml", svg: "image/svg+xml", png: "image/png",
+  jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", ico: "image/x-icon", pdf: "application/pdf",
+  zip: "application/zip", woff2: "font/woff2", mp4: "video/mp4", mp3: "audio/mpeg",
+};
+const guessType = (key) => S3_MIME[key.toLowerCase().split(".").pop() ?? ""] ?? "binary/octet-stream";
+
+export class S3Error extends Error {
+  constructor(code, message, status) {
+    super(message);
+    this.code = code;
+    this.status = status;
+  }
+}
+const noSuchBucket = (b) => new S3Error("NoSuchBucket", `The specified bucket does not exist: ${b}`, 404);
+const noSuchKey = () => new S3Error("NoSuchKey", "The specified key does not exist.", 404);
+
+/**
+ * CloudLab's own S3, on this computer. Each bucket is a folder under ~/CloudLab/s3,
+ * each object a file (keys with slashes are subfolders). The bucket's settings come
+ * from CloudLab; content types and ETags are remembered in ~/.cloudlab/s3.json.
+ * Files added to the folder by hand are objects too.
+ */
+export class LocalS3 {
+  constructor(root = S3_ROOT, metaFile = S3_META) {
+    this.root = root;
+    this.metaFile = metaFile;
+    this.websites = new Map();
+    try {
+      this.meta = JSON.parse(readFileSync(metaFile, "utf8"));
+    } catch {
+      this.meta = {};
+    }
+    this.meta.buckets ??= {};
+    this.meta.objects ??= {};
+    this.meta.folders ??= {};
+  }
+
+  save() {
+    mkdirSync(path.dirname(this.metaFile), { recursive: true });
+    writeFileSync(this.metaFile, JSON.stringify(this.meta));
+  }
+
+  spec(bucket) {
+    const s = this.meta.buckets[bucket];
+    if (!s) throw noSuchBucket(bucket);
+    return s;
+  }
+
+  dir(bucket) {
+    this.spec(bucket);
+    return path.join(this.root, bucket);
+  }
+
+  /** The file for a key. Keys that can't be a file inside the bucket's folder are refused. */
+  file(bucket, key) {
+    if (!key) throw new S3Error("InvalidArgument", "Object key must not be empty.", 400);
+    if (Buffer.byteLength(key) > 1024) throw new S3Error("KeyTooLongError", "Your key is too long", 400);
+    const parts = key.split("/");
+    if (key.startsWith("/") || key.includes("\\") || key.includes("\0") || parts.some((p) => p === ".." || p === ".")) {
+      throw new S3Error("InvalidArgument", "On your computer, keys can't contain '..', '.', backslashes or start with '/', since each key is a file path.", 400);
+    }
+    if (IS_WINDOWS && /[<>:"|?*]/.test(key)) {
+      throw new S3Error("InvalidArgument", 'Windows can\'t store file names with < > : " | ? *, so these keys can\'t be used on this computer.', 400);
+    }
+    const dir = this.dir(bucket);
+    const f = path.join(dir, ...parts.filter(Boolean));
+    if (f !== dir && !f.startsWith(dir + path.sep)) throw new S3Error("InvalidArgument", "Invalid key.", 400);
+    return f;
+  }
+
+  // ---- buckets (sent by CloudLab) ----
+
+  createBucket(spec) {
+    mkdirSync(path.join(this.root, spec.name), { recursive: true });
+    this.meta.buckets[spec.name] = { ...this.meta.buckets[spec.name], ...spec };
+    this.save();
+  }
+
+  configureBucket(spec) {
+    if (!this.meta.buckets[spec.name]) return this.createBucket(spec);
+    this.meta.buckets[spec.name] = { ...this.meta.buckets[spec.name], ...spec };
+    this.save();
+  }
+
+  /** CloudLab only deletes empty buckets; a folder that still has files (added by hand) is kept. */
+  deleteBucket(name) {
+    const dir = path.join(this.root, name);
+    let kept = false;
+    try {
+      rmdirSync(dir);
+    } catch {
+      kept = existsSync(dir) && this.walk(name).length > 0;
+      if (!kept) rmSync(dir, { recursive: true, force: true });
+    }
+    delete this.meta.buckets[name];
+    delete this.meta.objects[name];
+    delete this.meta.folders[name];
+    this.save();
+    this.stopWebsite(name);
+    return kept;
+  }
+
+  // ---- objects ----
+
+  /** Every object: files, and folders created as objects (keys ending in "/"). */
+  walk(bucket) {
+    const dir = this.dir(bucket);
+    const out = [];
+    const visit = (d, prefix) => {
+      let entries = [];
+      try {
+        entries = readdirSync(d, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const e of entries) {
+        if (e.isSymbolicLink()) continue;
+        const key = prefix + e.name;
+        if (e.isDirectory()) {
+          if ((this.meta.folders[bucket] ?? []).includes(`${key}/`)) out.push({ key: `${key}/`, folder: true });
+          visit(path.join(d, e.name), `${key}/`);
+        } else if (e.isFile()) out.push({ key });
+      }
+    };
+    visit(dir, "");
+    return out;
+  }
+
+  info(bucket, key) {
+    if (key.endsWith("/")) {
+      return { key, size: 0, etag: "d41d8cd98f00b204e9800998ecf8427e", contentType: "application/x-directory", lastModified: new Date(lstatSync(this.file(bucket, key.slice(0, -1))).mtimeMs).toISOString() };
+    }
+    const f = this.file(bucket, key);
+    let st;
+    try {
+      st = lstatSync(f);
+    } catch {
+      throw noSuchKey();
+    }
+    if (!st.isFile()) throw noSuchKey();
+    const m = (this.meta.objects[bucket] ??= {})[key];
+    let etag = m && m.size === st.size && m.mtime === st.mtimeMs ? m.etag : null;
+    if (!etag) {
+      // A file changed or added outside CloudLab: work its ETag out again.
+      etag = createHash("md5").update(readFileSync(f)).digest("hex");
+      this.meta.objects[bucket][key] = { ...m, etag, size: st.size, mtime: st.mtimeMs };
+      this.dirty = true;
+    }
+    return { key, size: st.size, etag, contentType: m?.contentType ?? guessType(key), lastModified: new Date(st.mtimeMs).toISOString() };
+  }
+
+  list(bucket, prefix = "", delimiter = "") {
+    const objects = [];
+    const prefixes = new Set();
+    for (const o of this.walk(bucket).sort((a, b) => (a.key < b.key ? -1 : 1))) {
+      if (!o.key.startsWith(prefix)) continue;
+      const rest = o.key.slice(prefix.length);
+      const cut = delimiter ? rest.indexOf(delimiter) : -1;
+      if (cut >= 0 && cut < rest.length - delimiter.length) prefixes.add(prefix + rest.slice(0, cut + delimiter.length));
+      else if (cut >= 0 && o.folder) prefixes.add(o.key);
+      else if (rest) objects.push(this.info(bucket, o.key));
+    }
+    if (this.dirty) {
+      this.dirty = false;
+      this.save();
+    }
+    return { objects, prefixes: [...prefixes].sort() };
+  }
+
+  /** Writes an object from a stream (an HTTP request), checking its size and working out its ETag on the way. */
+  async put(bucket, key, stream, contentType) {
+    if (key.endsWith("/")) {
+      mkdirSync(this.file(bucket, key.slice(0, -1)), { recursive: true });
+      const folders = (this.meta.folders[bucket] ??= []);
+      if (!folders.includes(key)) folders.push(key);
+      this.save();
+      return this.info(bucket, key);
+    }
+    const f = this.file(bucket, key);
+    mkdirSync(path.dirname(f), { recursive: true });
+    const tmp = `${f}.cloudlab-upload`;
+    const hash = createHash("md5");
+    let size = 0;
+    await new Promise((resolve, reject) => {
+      const out = createWriteStream(tmp);
+      stream.on("data", (chunk) => {
+        size += chunk.length;
+        if (size > MAX_OBJECT_BYTES) {
+          stream.destroy();
+          out.destroy();
+          reject(new S3Error("EntityTooLarge", "Your proposed upload exceeds the maximum allowed size", 400));
+          return;
+        }
+        hash.update(chunk);
+        out.write(chunk);
+      });
+      stream.on("end", () => out.end(resolve));
+      stream.on("error", reject);
+      out.on("error", reject);
+    }).catch((e) => {
+      rmSync(tmp, { force: true });
+      throw e;
+    });
+    renameSync(tmp, f);
+    const st = lstatSync(f);
+    (this.meta.objects[bucket] ??= {})[key] = { etag: hash.digest("hex"), size: st.size, mtime: st.mtimeMs, contentType: contentType || guessType(key) };
+    this.save();
+    return this.info(bucket, key);
+  }
+
+  delete(bucket, key) {
+    if (key.endsWith("/")) {
+      this.meta.folders[bucket] = (this.meta.folders[bucket] ?? []).filter((k) => k !== key);
+      try {
+        rmdirSync(this.file(bucket, key.slice(0, -1)));
+      } catch {
+        // not empty: other objects still live under it
+      }
+    } else {
+      rmSync(this.file(bucket, key), { force: true });
+      delete (this.meta.objects[bucket] ?? {})[key];
+      this.prune(bucket, key);
+    }
+    this.save();
+  }
+
+  /** Folders exist only while something is in them, unless they were created as folders. */
+  prune(bucket, key) {
+    const folders = this.meta.folders[bucket] ?? [];
+    const parts = key.split("/").slice(0, -1);
+    while (parts.length) {
+      const k = `${parts.join("/")}/`;
+      if (folders.includes(k)) break;
+      try {
+        rmdirSync(this.file(bucket, parts.join("/")));
+      } catch {
+        break;
+      }
+      parts.pop();
+    }
+  }
+
+  deletePrefix(bucket, prefix) {
+    const keys = this.walk(bucket).map((o) => o.key).filter((k) => k.startsWith(prefix));
+    for (const k of keys.filter((x) => !x.endsWith("/"))) this.delete(bucket, k);
+    for (const k of keys.filter((x) => x.endsWith("/")).sort((a, b) => b.length - a.length)) this.delete(bucket, k);
+    return keys;
+  }
+
+  stats(bucket) {
+    let objectCount = 0;
+    let totalBytes = 0;
+    for (const o of this.walk(bucket)) {
+      objectCount++;
+      if (!o.folder) totalBytes += lstatSync(this.file(bucket, o.key)).size;
+    }
+    return { objectCount, totalBytes };
+  }
+
+  // ---- static website hosting ----
+
+  /** Answers a website request the way S3 website endpoints do (index documents, the error document, 403 when not public). */
+  website(bucket, urlPath) {
+    const s = this.meta.buckets[bucket];
+    const page = (status, code, message) => ({
+      status,
+      contentType: "text/html",
+      body: Buffer.from(`<html><head><title>${status} ${status === 403 ? "Forbidden" : "Not Found"}</title></head><body><h1>${status} ${status === 403 ? "Forbidden" : "Not Found"}</h1><ul><li>Code: ${code}</li><li>Message: ${message}</li></ul><hr/></body></html>`),
+    });
+    if (!s) return page(404, "NoSuchBucket", "The specified bucket does not exist");
+    if (!s.websiteEnabled) return page(404, "NoSuchWebsiteConfiguration", "The specified bucket does not have a website configuration");
+    if (s.blockPublicAccess || !s.publicRead) return page(403, "AccessDenied", "Access Denied");
+    const index = s.indexDocument || "index.html";
+    const load = (key) => {
+      try {
+        const i = this.info(bucket, key);
+        return { status: 200, contentType: i.contentType, body: readFileSync(this.file(bucket, key)) };
+      } catch {
+        return null;
+      }
+    };
+    let p;
+    try {
+      p = decodeURIComponent(urlPath.split("?")[0]).replace(/^\/+/, "");
+    } catch {
+      p = "";
+    }
+    const key = p === "" || p.endsWith("/") ? p + index : p;
+    const found = load(key);
+    if (found) return found;
+    if (p && !p.endsWith("/") && load(`${p}/${index}`)) return { status: 302, contentType: "text/plain", body: Buffer.from(""), location: `/${p}/` };
+    const custom = s.errorDocument ? load(s.errorDocument) : null;
+    if (custom) return { ...custom, status: 404 };
+    return page(404, "NoSuchKey", "The specified key does not exist.");
+  }
+
+  /** Each website bucket gets its own port, so the site works at http://<this computer>:<port>/ with its own paths. */
+  async ensureWebsite(bucket) {
+    const s = this.meta.buckets[bucket];
+    if (!s?.websiteEnabled) return this.stopWebsite(bucket);
+    if (this.websites.has(bucket)) return this.websites.get(bucket).port;
+    const used = new Set(Object.values(this.meta.buckets).map((b) => b.websitePort).filter(Boolean));
+    let port = s.websitePort;
+    if (!port) {
+      port = WEBSITE_PORTS_FROM;
+      while (used.has(port)) port++;
+    }
+    const server = http.createServer((req, res) => {
+      const r = this.website(bucket, req.url ?? "/");
+      res.writeHead(r.status, { "content-type": r.contentType, server: "CloudLab S3", ...(r.location ? { location: r.location } : {}) });
+      res.end(r.body);
+    });
+    const ok = await new Promise((resolve) => {
+      server.once("error", () => resolve(false));
+      server.listen(port, "0.0.0.0", () => resolve(true));
+    });
+    if (!ok) {
+      if (!s.websitePort) return null;
+      return null;
+    }
+    s.websitePort = port;
+    this.save();
+    this.websites.set(bucket, { port, server });
+    return port;
+  }
+
+  stopWebsite(bucket) {
+    const w = this.websites.get(bucket);
+    if (w) w.server.close();
+    this.websites.delete(bucket);
+    return null;
+  }
+
+  /** What CloudLab shows for a bucket: where its files are, how many, and its website's address. */
+  async report(bucket) {
+    if (!this.meta.buckets[bucket]) return null;
+    const port = await this.ensureWebsite(bucket);
+    const lan = lanAddress();
+    return {
+      ...this.stats(bucket),
+      localPath: path.join(this.root, bucket),
+      websiteUrl: port ? `http://${lan ?? "localhost"}:${port}/` : null,
+      websiteLocalUrl: port ? `http://localhost:${port}/` : null,
+    };
+  }
+
+  /** Work CloudLab sends about buckets. */
+  async handle(task, api) {
+    const spec = task.bucket;
+    if (task.op === "create-bucket") this.createBucket(spec);
+    else if (task.op === "configure-bucket") this.configureBucket(spec);
+    else if (task.op === "delete-bucket") {
+      const kept = this.deleteBucket(spec.name);
+      log(kept ? `Bucket ${spec.name} deleted in CloudLab; its folder still has files, so it was kept: ${path.join(this.root, spec.name)}` : `Bucket ${spec.name} deleted.`);
+      return;
+    }
+    await api.reportResource(spec.name, { attributes: await this.report(spec.name) });
+  }
+
+  /** After the agent starts: serve the website buckets again. */
+  async restore() {
+    for (const name of Object.keys(this.meta.buckets)) await this.ensureWebsite(name);
+  }
+}
+
+/**
+ * The agent's own API on this computer, for the CloudLab console in your browser:
+ * S3 objects are listed, uploaded and downloaded here directly, so files never go
+ * through CloudLab's servers. Only answers 127.0.0.1, only the CloudLab site, and
+ * only with this agent's key.
+ */
+export class LocalApi {
+  constructor(s3, { key, origin, onChange }) {
+    this.s3 = s3;
+    this.key = key;
+    this.origin = origin;
+    this.onChange = onChange;
+    this.port = null;
+  }
+
+  cors(req) {
+    const origin = req.headers.origin;
+    return {
+      ...(origin === this.origin ? { "access-control-allow-origin": origin, vary: "origin" } : {}),
+      "access-control-allow-methods": "GET, PUT, DELETE, OPTIONS",
+      "access-control-allow-headers": "content-type, x-cloudlab-key",
+      "access-control-allow-private-network": "true",
+      "access-control-max-age": "600",
+    };
+  }
+
+  async start(from = 4510) {
+    for (let port = from; port < from + 20; port++) {
+      const server = http.createServer((req, res) => this.serve(req, res));
+      const ok = await new Promise((resolve) => {
+        server.once("error", () => resolve(false));
+        server.listen(port, "127.0.0.1", () => resolve(true));
+      });
+      if (ok) {
+        this.port = port;
+        this.server = server;
+        return port;
+      }
+    }
+    return null;
+  }
+
+  async serve(req, res) {
+    const headers = this.cors(req);
+    const send = (status, body, extra = {}) => {
+      res.writeHead(status, { ...headers, "content-type": "application/json", ...extra });
+      res.end(body === undefined ? "" : JSON.stringify(body));
+    };
+    if (req.method === "OPTIONS") return send(204);
+    if (req.headers.origin && req.headers.origin !== this.origin) return send(403, { error: { code: "Forbidden", message: "Only the CloudLab console may use this." } });
+    const given = Buffer.from(String(req.headers["x-cloudlab-key"] ?? ""));
+    const want = Buffer.from(this.key);
+    if (given.length !== want.length || !timingSafeEqual(given, want)) return send(401, { error: { code: "Unauthorized", message: "Wrong key." } });
+    try {
+      const url = new URL(req.url ?? "/", "http://localhost");
+      const m = /^\/s3\/([^/]+)(?:\/(.*))?$/.exec(url.pathname);
+      if (!m) return send(404, { error: { code: "NotFound", message: "Unknown path." } });
+      const bucket = decodeURIComponent(m[1]);
+      const key = m[2] !== undefined ? decodeURIComponent(m[2]) : "";
+      if (!key) {
+        if (req.method === "GET") return send(200, this.s3.list(bucket, url.searchParams.get("prefix") ?? "", url.searchParams.get("delimiter") ?? ""));
+        if (req.method === "DELETE") {
+          const deleted = this.s3.deletePrefix(bucket, url.searchParams.get("prefix") ?? "");
+          this.onChange(bucket);
+          return send(200, { deleted });
+        }
+      } else {
+        if (req.method === "PUT") {
+          const object = await this.s3.put(bucket, key, req, req.headers["content-type"]);
+          this.onChange(bucket);
+          return send(200, { object });
+        }
+        if (req.method === "GET") {
+          const info = this.s3.info(bucket, key);
+          res.writeHead(200, { ...headers, "content-type": info.contentType, "content-length": String(info.size), etag: `"${info.etag}"` });
+          return createReadStream(this.s3.file(bucket, key)).pipe(res);
+        }
+        if (req.method === "DELETE") {
+          this.s3.delete(bucket, key);
+          this.onChange(bucket);
+          return send(204);
+        }
+      }
+      return send(405, { error: { code: "MethodNotAllowed", message: "The specified method is not allowed against this resource." } });
+    } catch (e) {
+      if (e instanceof S3Error) return send(e.status, { error: { code: e.code, message: e.message } });
+      return send(500, { error: { code: "InternalError", message: String(e.message ?? e) } });
+    }
+  }
+}
+
 // ---------- EC2 in My computer (local) ----------
 
 const EC2_DIR = path.join(HOME, "ec2");
@@ -1466,6 +1932,9 @@ export class Agent {
     this.native = new NativeApps();
     this.ec2 = new Ec2Instances(api);
     this.nativeGateway = new NativeGateway();
+    this.s3 = new LocalS3();
+    this.localApi = null;
+    this.bucketReports = new Map();
   }
 
   /** Sets up and starts an app without Docker. Returns an error message, or null. */
@@ -1652,6 +2121,29 @@ export class Agent {
     return null;
   }
 
+  /** A bucket's files changed: tell CloudLab its counts (once things settle for half a second). */
+  reportBucket(bucket) {
+    clearTimeout(this.bucketReports.get(bucket));
+    this.bucketReports.set(
+      bucket,
+      setTimeout(async () => {
+        this.bucketReports.delete(bucket);
+        const attributes = await this.s3.report(bucket).catch(() => null);
+        if (attributes) await this.api.reportResource(bucket, { attributes });
+      }, 500),
+    );
+  }
+
+  /** Starts the API the console uses for this computer's S3 files, and the buckets' websites. */
+  async startLocal(config) {
+    this.localApi = new LocalApi(this.s3, { key: config.localKey, origin: new URL(config.server).origin, onChange: (b) => this.reportBucket(b) });
+    const port = await this.localApi.start();
+    if (!port) log("Couldn't open the local API (ports 4510–4529 are all in use): S3 files on this computer won't show in the console.");
+    await this.s3.restore();
+    // Files added to bucket folders by hand show up in CloudLab's counts too.
+    for (const name of Object.keys(this.s3.meta.buckets)) this.reportBucket(name);
+  }
+
   async handle(task) {
     if (task.type === "resource") {
       const r = task.payload.resource;
@@ -1659,6 +2151,7 @@ export class Agent {
       let error = null;
       try {
         if (r.kind === "ec2") await this.ec2.handle(r);
+        else if (r.kind === "s3") await this.s3.handle(r, this.api);
       } catch (e) {
         error = String(e.message ?? e);
         log(`  failed: ${error}`);
@@ -1675,7 +2168,12 @@ export class Agent {
   /** One check-in: report the computer and its apps, and do whatever work comes back. */
   async tick() {
     const base = await computerInfo();
-    const info = { ...base, lanIp: lanAddress(), gateway: base.docker.ok ? this.gateway.state : this.nativeGateway.state };
+    const info = {
+      ...base,
+      lanIp: lanAddress(),
+      gateway: base.docker.ok ? this.gateway.state : this.nativeGateway.state,
+      localApi: this.localApi?.port ? { port: this.localApi.port, key: this.localApi.key } : null,
+    };
     const found = info.docker.ok ? await inventory() : null;
     const withLogs = Date.now() - this.lastLogs > LOGS_EVERY_MS;
     if (withLogs) this.lastLogs = Date.now();
@@ -1780,7 +2278,12 @@ async function main(argv) {
     return;
   }
 
+  if (!config.localKey) {
+    config.localKey = randomBytes(24).toString("base64url");
+    saveConfig(config);
+  }
   const agent = new Agent(new Api(config.server, config.token));
+  await agent.startLocal(config);
   const info = await computerInfo();
   console.log(`CloudLab agent ${AGENT_VERSION} on ${info.hostname} (${info.platform}, ${info.cpus} CPUs, ${(info.memTotal / 2 ** 30).toFixed(1)} GB RAM)`);
   console.log(info.docker.ok ? `Docker ${info.docker.version} is ready.` : `${info.docker.error}`);

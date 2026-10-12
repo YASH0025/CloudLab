@@ -1,3 +1,4 @@
+import { LOCAL_REGION } from "../catalog";
 import { EngineError } from "../errors";
 import { s3BucketArn } from "../iam/arns";
 import type { ResourceTypeDef, ServiceDef } from "../types";
@@ -45,6 +46,9 @@ const bucket: ResourceTypeDef = {
     arn: s3BucketArn,
   },
   dependencyError: () => new EngineError("BucketNotEmpty", "The bucket you tried to delete is not empty", 409),
+  // On My computer (local) the objects are files the agent keeps; it reports how many there are.
+  canDelete: (r) =>
+    r.region === LOCAL_REGION && Number(r.attributes.objectCount ?? 0) > 0 ? new EngineError("BucketNotEmpty", "The bucket you tried to delete is not empty", 409) : undefined,
   fields: [
     {
       key: "name",
@@ -168,9 +172,10 @@ const bucket: ResourceTypeDef = {
     const isPublic = !config.blockPublicAccess && config.publicRead === true;
     return {
       arn: `arn:lab:s3:::${id}`,
-      endpoint: `https://${id}.storage.cloudlab.local`,
+      // On My computer (local), the agent reports where the files are and the website's address instead.
+      endpoint: ctx.region === LOCAL_REGION ? null : `https://${id}.storage.cloudlab.local`,
       access: isPublic ? "Public" : config.blockPublicAccess ? "Blocked" : "Objects can be public",
-      websiteEndpoint: config.websiteEnabled ? `http://${id}.s3-website.${ctx.region}.cloudlab.local` : null,
+      websiteEndpoint: config.websiteEnabled && ctx.region !== LOCAL_REGION ? `http://${id}.s3-website.${ctx.region}.cloudlab.local` : null,
       objectCount: existing?.attributes.objectCount ?? 0,
       totalBytes: existing?.attributes.totalBytes ?? 0,
     };

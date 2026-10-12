@@ -14,28 +14,43 @@ import {
   UploadIcon,
   XCircleIcon,
 } from "lucide-react";
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import type { ResourceDTO } from "@/engine/types";
-import { useCreateFolder, useDeleteObjects, useObjects, useUploadObjects } from "@/hooks/use-cloud";
+import { LOCAL_REGION } from "@/engine/catalog";
+import { useCreateFolder, useDeleteObjects, useLocal, useObjects, useUploadObjects } from "@/hooks/use-cloud";
 import { toast } from "sonner";
-import { api, identityHeader } from "@/lib/api-client";
+import { ApiError } from "@/lib/api-client";
+import { localObjects, serverObjects, type ObjectsBackend } from "@/lib/objects-backend";
 import { cn } from "@/lib/utils";
 import { ConfirmDialog, type ConfirmRequest } from "./confirm-dialog";
 
-/** Downloads through fetch, so the request carries the IAM identity being acted as (s3:GetObject is checked). */
-async function downloadObject(bucket: string, key: string) {
-  const res = await fetch(api.objectDownloadUrl(bucket, key), { headers: identityHeader() });
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    toast.error(body?.error?.code ?? "Download failed", { description: body?.error?.message });
+/** Where this bucket's objects are: CloudLab's servers, or (My computer (local)) the agent on this computer. */
+export function useObjectsBackend(region: string): { backend: ObjectsBackend | null; problem: string | null } {
+  const local = useLocal(region === LOCAL_REGION);
+  const info = local.data?.agent?.info?.localApi;
+  return useMemo(() => {
+    if (region !== LOCAL_REGION) return { backend: serverObjects, problem: null };
+    if (local.isLoading) return { backend: null, problem: null };
+    if (!local.data?.agent?.online) return { backend: null, problem: "The CloudLab agent isn't running, so this bucket's files can't be shown. Start the agent on your computer (Local mode)." };
+    if (!info) return { backend: null, problem: "The CloudLab agent on your computer is too old for S3: download the latest from Local mode and start it again." };
+    return { backend: localObjects(info), problem: null };
+  }, [region, local.isLoading, local.data?.agent?.online, info]);
+}
+
+async function downloadObject(backend: ObjectsBackend, bucket: string, key: string) {
+  let blob: Blob;
+  try {
+    blob = await backend.download(bucket, key);
+  } catch (e) {
+    toast.error(e instanceof ApiError ? e.code : "Download failed", { description: e instanceof Error ? e.message : undefined });
     return;
   }
-  const url = URL.createObjectURL(await res.blob());
+  const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
   a.download = key.split("/").filter(Boolean).pop() ?? "download";
@@ -49,17 +64,33 @@ export function formatBytes(n: number): string {
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
 
+/** The bucket's files, wherever they live. */
+export function ObjectsPanel({ bucket, region }: { bucket: string; region: string }) {
+  const { backend, problem } = useObjectsBackend(region);
+  if (!backend) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>Objects</CardTitle>
+          <CardDescription>{problem ?? "Connecting to the CloudLab agent on your computer…"}</CardDescription>
+        </CardHeader>
+      </Card>
+    );
+  }
+  return <ObjectsList bucket={bucket} backend={backend} local={region === LOCAL_REGION} />;
+}
+
 /** The bucket's files, with folders, upload (button or drag and drop), download and delete. */
-export function ObjectsPanel({ bucket }: { bucket: string }) {
+function ObjectsList({ bucket, backend, local }: { bucket: string; backend: ObjectsBackend; local: boolean }) {
   const [prefix, setPrefix] = useState("");
   const [folderName, setFolderName] = useState<string | null>(null);
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null);
   const [dragging, setDragging] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
-  const list = useObjects(bucket, prefix);
-  const upload = useUploadObjects(bucket);
-  const createFolder = useCreateFolder(bucket);
-  const remove = useDeleteObjects(bucket);
+  const list = useObjects(bucket, prefix, backend);
+  const upload = useUploadObjects(bucket, backend);
+  const createFolder = useCreateFolder(bucket, backend);
+  const remove = useDeleteObjects(bucket, backend);
 
   const crumbs = prefix.split("/").filter(Boolean);
   // The folder's own marker object ("photos/") isn't listed inside it.
@@ -91,7 +122,15 @@ export function ObjectsPanel({ bucket }: { bucket: string }) {
             <CardTitle>Objects</CardTitle>
             <CardDescription>
               Files in this bucket. Folders are just key prefixes: photos/cat.png is the object &quot;cat.png&quot; in
-              the folder &quot;photos/&quot;. Drop files here to upload (up to 1 MB each).
+              the folder &quot;photos/&quot;.{" "}
+              {local ? (
+                <>
+                  They&apos;re real files on your computer, in the folder <span className="font-mono">CloudLab/s3/{bucket}</span> in your home folder: files
+                  you put there yourself show up here too. Drop files here to upload.
+                </>
+              ) : (
+                "Drop files here to upload (up to 1 MB each)."
+              )}
             </CardDescription>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -219,7 +258,7 @@ export function ObjectsPanel({ bucket }: { bucket: string }) {
                     <TableCell className="text-right text-xs tabular-nums">{formatBytes(o.size)}</TableCell>
                     <TableCell className="text-xs text-muted-foreground">{format(new Date(o.lastModified), "PP p")}</TableCell>
                     <TableCell className="text-right whitespace-nowrap">
-                      <Button size="icon" variant="ghost" aria-label={`Download ${o.key}`} onClick={() => downloadObject(bucket, o.key)}>
+                      <Button size="icon" variant="ghost" aria-label={`Download ${o.key}`} onClick={() => downloadObject(backend, bucket, o.key)}>
                         <DownloadIcon />
                       </Button>
                       <Button
@@ -266,13 +305,18 @@ function Check({ ok, children }: { ok: boolean; children: React.ReactNode }) {
 
 /** Static website status: the three things S3 needs, and a link to the live site. */
 export function WebsiteCard({ bucket }: { bucket: ResourceDTO }) {
-  const root = useObjects(bucket.id, "");
+  const local = bucket.region === LOCAL_REGION;
+  const { backend } = useObjectsBackend(bucket.region);
+  const root = useObjects(bucket.id, "", backend);
   const c = bucket.config;
   const index = String(c.indexDocument || "index.html");
   const hasIndex = !!root.data?.objects.some((o) => o.key === index);
   const isPublic = !c.blockPublicAccess && c.publicRead === true;
   const live = c.websiteEnabled === true && isPublic && hasIndex;
-  const url = `/website/${encodeURIComponent(bucket.id)}/`;
+  // On My computer (local) the agent serves the site on its own port: from this computer, and from others on the Wi-Fi.
+  const localUrl = typeof bucket.attributes.websiteLocalUrl === "string" ? bucket.attributes.websiteLocalUrl : null;
+  const lanUrl = typeof bucket.attributes.websiteUrl === "string" ? bucket.attributes.websiteUrl : null;
+  const url = local ? localUrl : `/website/${encodeURIComponent(bucket.id)}/`;
 
   return (
     <Card>
@@ -281,8 +325,8 @@ export function WebsiteCard({ bucket }: { bucket: ResourceDTO }) {
           <GlobeIcon className="size-4 text-primary" /> Static website hosting
         </CardTitle>
         <CardDescription>
-          Serve this bucket&apos;s files as a website. Change these settings under Edit settings below. Pages run without
-          JavaScript in CloudLab, for safety.
+          Serve this bucket&apos;s files as a website. Change these settings under Edit settings below.{" "}
+          {local ? "The CloudLab agent serves it from your computer, to your other devices too." : "Pages run without JavaScript in CloudLab, for safety."}
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -296,14 +340,20 @@ export function WebsiteCard({ bucket }: { bucket: ResourceDTO }) {
           </Check>
         </ul>
         <div className="flex flex-wrap items-center gap-3">
-          <Button asChild variant={live ? "default" : "outline"} size="sm">
-            <a href={url} target="_blank" rel="noreferrer">
-              <ExternalLinkIcon /> Open website
-            </a>
-          </Button>
-          {typeof bucket.attributes.websiteEndpoint === "string" && (
-            <span className="font-mono text-xs break-all text-muted-foreground">{bucket.attributes.websiteEndpoint}</span>
+          {url ? (
+            <Button asChild variant={live ? "default" : "outline"} size="sm">
+              <a href={url} target="_blank" rel="noreferrer">
+                <ExternalLinkIcon /> Open website
+              </a>
+            </Button>
+          ) : (
+            local && c.websiteEnabled === true && <span className="text-xs text-muted-foreground">Waiting for the agent to start the website…</span>
           )}
+          {local
+            ? lanUrl && <span className="font-mono text-xs break-all text-muted-foreground">On other devices on the same Wi-Fi: {lanUrl}</span>
+            : typeof bucket.attributes.websiteEndpoint === "string" && (
+                <span className="font-mono text-xs break-all text-muted-foreground">{bucket.attributes.websiteEndpoint}</span>
+              )}
         </div>
         {!live && (
           <p className="text-xs text-muted-foreground">

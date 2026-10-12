@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Engine } from "./engine";
+import { LOCAL_REGION } from "./catalog";
 import { EngineError } from "./errors";
 import type { ResourceStore } from "./store";
 import type { Resource } from "./types";
@@ -85,9 +86,17 @@ export class ObjectStorage {
     private now: () => Date,
   ) {}
 
-  /** The account's bucket, or NoSuchBucket. */
-  bucket(accountId: string, name: string): Promise<Resource> {
-    return this.engine.getTyped(accountId, name, "storage", "bucket");
+  /** The account's bucket, or NoSuchBucket. Buckets in My computer (local) keep their files on that computer, not here. */
+  async bucket(accountId: string, name: string): Promise<Resource> {
+    const b = await this.engine.getTyped(accountId, name, "storage", "bucket");
+    if (b.region === LOCAL_REGION) {
+      throw new EngineError(
+        "LocalBucket",
+        `The bucket ${name} is in My computer (local): its files are on your computer. Open it in the console there (in My computer (local)), or look in the CloudLab/s3/${name} folder.`,
+        400,
+      );
+    }
+    return b;
   }
 
   private async objectsIn(accountId: string, bucket: string): Promise<Resource[]> {
@@ -245,6 +254,9 @@ export class ObjectStorage {
     const bucket = await this.store.getAny(bucketName);
     if (!bucket || bucket.service !== "storage" || bucket.type !== "bucket") {
       return errorPage(404, "NoSuchBucket", "The specified bucket does not exist", { BucketName: bucketName });
+    }
+    if (bucket.region === LOCAL_REGION) {
+      return errorPage(404, "NoSuchWebsiteConfiguration", "This bucket is in My computer (local): its website is served by the CloudLab agent on that computer", { BucketName: bucketName });
     }
     if (!bucket.config.websiteEnabled) {
       return errorPage(404, "NoSuchWebsiteConfiguration", "The specified bucket does not have a website configuration", {

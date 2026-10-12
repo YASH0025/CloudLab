@@ -24,7 +24,9 @@ import { usePathname } from "next/navigation";
 import { useState, type ComponentType } from "react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { LOCAL_REGION } from "@/engine/catalog";
 import { useServices } from "@/hooks/use-cloud";
+import { useConsoleStore } from "@/stores/console-store";
 import { routes } from "@/lib/routes";
 import { cn } from "@/lib/utils";
 
@@ -42,6 +44,7 @@ const icons: Record<string, ComponentType<{ className?: string }>> = {
 function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname();
   const { data, isLoading } = useServices();
+  const region = useConsoleStore((s) => s.region);
 
   return (
     <>
@@ -119,7 +122,9 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
         })}
       </nav>
       <p className="border-t border-white/10 px-4 py-3 text-xs text-sidebar-muted">
-        Everything here is simulated. Nothing is billed.
+        {region === LOCAL_REGION
+          ? "My computer (local): S3 buckets here are real, with their files on your computer. Other services are on their way."
+          : "Everything here is simulated. Nothing is billed."}
       </p>
     </>
   );
