@@ -33,7 +33,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-export const AGENT_VERSION = "0.1.0";
+export const AGENT_VERSION = "0.2.0";
 const DEFAULT_SERVER = "https://cloud-lab-livid.vercel.app";
 const HOME = path.join(os.homedir(), ".cloudlab");
 const CONFIG = path.join(HOME, "agent.json");
@@ -90,13 +90,66 @@ const docker = (args, opts) => run("docker", args, opts);
 
 // ---------- what this computer is ----------
 
+const START_RETRY_MS = 3 * 60_000;
+let dockerStartedAt = 0;
+
+/** Where Docker Desktop is, to start it when it isn't running. */
+export function dockerDesktopCommand(platform = process.platform, env = process.env) {
+  if (platform === "win32") {
+    const exe = path.join(env.ProgramFiles ?? "C:\\Program Files", "Docker", "Docker", "Docker Desktop.exe");
+    return existsSync(exe) ? { cmd: exe, args: [] } : null;
+  }
+  if (platform === "darwin") return { cmd: "open", args: ["-a", "Docker"] };
+  // Docker Desktop for Linux runs as a user service; Docker Engine needs root, so it's left to the system.
+  if (platform === "linux") return { cmd: "systemctl", args: ["--user", "start", "docker-desktop"] };
+  return null;
+}
+
+/** Starts Docker Desktop in the background (at most every few minutes). True if it tried. */
+function startDockerDesktop() {
+  if (Date.now() - dockerStartedAt < START_RETRY_MS) return dockerStartedAt > 0;
+  const c = dockerDesktopCommand();
+  if (!c) return false;
+  try {
+    const child = spawn(c.cmd, c.args, { detached: true, stdio: "ignore", windowsHide: true });
+    child.on("error", () => undefined);
+    child.unref();
+    dockerStartedAt = Date.now();
+    log("Docker isn't running: starting Docker Desktop. It takes a minute or two.");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function dockerInfo() {
   const r = await docker(["version", "--format", "{{.Server.Version}}"], { timeoutMs: 15000 });
-  if (r.code === 0) return { ok: true, version: r.out.trim() };
-  const why = /isn't installed/.test(r.out)
-    ? "Docker isn't installed. Install Docker Desktop (or Docker Engine on Linux), start it, then restart the agent."
-    : "Docker is installed but not running. Start Docker Desktop (or the docker service) and wait until it's ready.";
-  return { ok: false, error: why };
+  if (r.code === 0) {
+    if (dockerStartedAt) log("Docker is ready.");
+    dockerStartedAt = 0;
+    return { ok: true, version: r.out.trim() };
+  }
+  if (/isn't installed/.test(r.out)) {
+    return { ok: false, error: "Docker isn't installed. Install Docker Desktop (or Docker Engine on Linux), start it, then restart the agent." };
+  }
+  const starting = startDockerDesktop();
+  return {
+    ok: false,
+    error: starting
+      ? "Docker wasn't running, so the agent is starting Docker Desktop. Give it a minute or two."
+      : "Docker is installed but not running. Start Docker Desktop (or the docker service) and wait until it's ready.",
+  };
+}
+
+/** Waits for Docker to be ready (after the agent started it), up to `ms`. */
+async function waitForDocker(ms = 120_000) {
+  const until = Date.now() + ms;
+  let info = await dockerInfo();
+  while (!info.ok && dockerStartedAt && Date.now() < until) {
+    await sleep(5000);
+    info = await dockerInfo();
+  }
+  return info;
 }
 
 export async function computerInfo() {
@@ -740,7 +793,7 @@ export class Agent {
       }
     };
     try {
-      const info = await dockerInfo();
+      const info = await waitForDocker();
       if (!info.ok) throw new Error(info.error);
 
       // 1. Get the code into a fresh folder.

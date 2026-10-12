@@ -4,7 +4,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 // The agent is plain JavaScript that runs on the learner's computer; these test its pure parts.
 import { Script } from "node:vm";
-import { appState, copyProject, detect, GATEWAY_JS, lanAddress, projectFolders, SAMPLE_FILES } from "../../public/agent/cloudlab-agent.mjs";
+import { appState, copyProject, detect, dockerDesktopCommand, GATEWAY_JS, lanAddress, projectFolders, SAMPLE_FILES } from "../../public/agent/cloudlab-agent.mjs";
 
 const dir = (files: Record<string, string>) => {
   const d = mkdtempSync(path.join(tmpdir(), "cl-agent-"));
@@ -75,5 +75,16 @@ describe("agent", () => {
     ).toBe("192.168.1.23");
     expect(lanAddress({ eth0: [v4("10.0.0.5")] })).toBe("10.0.0.5");
     expect(lanAddress({ lo: [v4("127.0.0.1", true)] })).toBeNull();
+  });
+
+  it("knows how to start Docker Desktop on each system", () => {
+    const programFiles = mkdtempSync(path.join(tmpdir(), "cl-pf-"));
+    expect(dockerDesktopCommand("win32", { ProgramFiles: programFiles } as never)).toBeNull();
+    const exe = path.join(programFiles, "Docker", "Docker", "Docker Desktop.exe");
+    mkdirSync(path.dirname(exe), { recursive: true });
+    writeFileSync(exe, "");
+    expect(dockerDesktopCommand("win32", { ProgramFiles: programFiles } as never)).toEqual({ cmd: exe, args: [] });
+    expect(dockerDesktopCommand("darwin")).toEqual({ cmd: "open", args: ["-a", "Docker"] });
+    expect(dockerDesktopCommand("linux")).toEqual({ cmd: "systemctl", args: ["--user", "start", "docker-desktop"] });
   });
 });
