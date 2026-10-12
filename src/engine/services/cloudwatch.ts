@@ -16,7 +16,7 @@ export const COMPARISONS = [
   { value: "LessThanOrEqualToThreshold", label: "<=", hint: "Less than or equal to" },
 ];
 
-export const NAMESPACES = ["AWS/EC2", "AWS/Lambda", "AWS/ApiGateway", "AWS/ApplicationELB", "AWS/RDS", "AWS/AutoScaling", "AWS/SNS"];
+export const NAMESPACES = ["AWS/EC2", "AWS/Lambda", "AWS/ApiGateway", "AWS/ApplicationELB", "AWS/RDS", "AWS/AutoScaling", "AWS/SNS", "AWS/SQS"];
 
 const dimensionItem: FieldDef[] = [
   { key: "name", label: "Name", type: "string", required: true, maxLength: 255, placeholder: "FunctionName" },

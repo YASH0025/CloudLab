@@ -11,7 +11,7 @@ import type { Resource, ResourceTypeDef, ServiceDef } from "../types";
  * straight away, as on AWS.
  */
 
-export const PROTOCOLS = ["email", "email-json", "lambda"] as const;
+export const PROTOCOLS = ["email", "email-json", "lambda", "sqs"] as const;
 export type Protocol = (typeof PROTOCOLS)[number];
 
 /** Recent deliveries kept on a topic, and emails kept in a subscription's inbox. */
@@ -252,6 +252,7 @@ const subscription: ResourceTypeDef = {
         { value: "email", label: "Email", hint: "A readable email per message" },
         { value: "email-json", label: "Email-JSON", hint: "The full SNS message as JSON, for programs reading a mailbox" },
         { value: "lambda", label: "AWS Lambda", hint: "Runs a function with each message" },
+        { value: "sqs", label: "Amazon SQS", hint: "Puts each message in a queue, for a worker to process at its own pace" },
       ],
     },
     {
@@ -262,8 +263,16 @@ const subscription: ResourceTypeDef = {
       immutable: true,
       maxLength: 512,
       param: "Endpoint",
-      placeholder: "you@example.com  or  arn:aws:lambda:us-east-1:123456789012:function:hello",
-      description: "For email: the address. For Lambda: the function's ARN (on its page). In CloudLab no real email is sent: it lands in the subscription's inbox.",
+      placeholder: "you@example.com  or  arn:aws:lambda:…:function:hello  or  arn:aws:sqs:…:orders-queue",
+      description: "For email: the address. For Lambda: the function's ARN. For SQS: the queue's ARN (both on their pages). In CloudLab no real email is sent: it lands in the subscription's inbox.",
+    },
+    {
+      key: "rawMessageDelivery",
+      label: "Raw message delivery",
+      type: "boolean",
+      param: "RawMessageDelivery",
+      showWhen: { field: "protocol", in: ["sqs"] },
+      description: "On: the queue gets just your message text. Off: it gets SNS's JSON envelope (with Message, TopicArn, MessageAttributes…) around it.",
     },
     {
       key: "filterPolicy",
@@ -293,7 +302,7 @@ const subscription: ResourceTypeDef = {
     arn: (r) => r.id,
   },
   invalidValue({ field }) {
-    if (field.key === "protocol") return invalid("Invalid protocol type (CloudLab supports email, email-json and lambda)");
+    if (field.key === "protocol") return invalid("Invalid protocol type (CloudLab supports email, email-json, lambda and sqs)");
     if (field.key === "endpoint") return invalid("Endpoint");
     if (field.key === "filterPolicy") return invalid("FilterPolicy: failed to parse JSON.");
     return undefined;
@@ -307,6 +316,8 @@ const subscription: ResourceTypeDef = {
       if (!EMAIL.test(endpoint)) throw invalid("Email address");
     } else if (config.protocol === "lambda") {
       if (!LAMBDA_ARN.test(endpoint)) throw invalid("Lambda endpoint ARN");
+    } else if (config.protocol === "sqs") {
+      if (!/^arn:aws:sqs:[a-z0-9-]+:\d{12}:[A-Za-z0-9_-]{1,80}$/.test(endpoint)) throw invalid("SQS endpoint ARN");
     }
     if (config.filterPolicy) checkFilterPolicy(String(config.filterPolicy));
     if (!existing) {
@@ -329,7 +340,7 @@ const subscription: ResourceTypeDef = {
   async afterCreate({ resource, system }) {
     // Deleted with its topic, as on AWS.
     await system.setAttributes(resource.id, { system: { ownedBy: String(resource.config.topicArn) } });
-    if (resource.config.protocol === "lambda") {
+    if (resource.config.protocol === "lambda" || resource.config.protocol === "sqs") {
       await system.runAction(resource.id, "confirm");
       return;
     }

@@ -16,6 +16,8 @@ import {
   type InboxEmail,
   type MessageAttribute,
 } from "../services/sns";
+import { policyAllowsService, sendMessage } from "../sqs/queue";
+import { urlFromArn } from "../services/sqs";
 import type { Resource } from "../types";
 
 /**
@@ -162,6 +164,29 @@ async function deliverOne(
       const r = await invokeFunction(engine, sub.accountId, fn, event, `sns:${topicNameOf(topic.id)}`);
       // An asynchronous invoke: SNS's job is done once Lambda accepts the event, even if the code throws.
       return r.functionError ? { status: "delivered", reason: `Delivered, but the function failed (see its logs, request ${r.requestId}).` } : { status: "delivered" };
+    } catch (e) {
+      return { status: "failed", reason: e instanceof EngineError ? `${e.code}: ${e.message}` : String(e) };
+    }
+  }
+  if (protocol === "sqs") {
+    const arn = String(sub.config.endpoint);
+    const q = await engine.get(sub.accountId, urlFromArn(arn)).catch(() => null);
+    if (!q || q.type !== "queue") return { status: "failed", reason: `The queue ${arn.split(":").pop()} doesn't exist (or is in another account).` };
+    if (!policyAllowsService(q, "sns.amazonaws.com", "sqs:SendMessage", topic.id)) {
+      return {
+        status: "failed",
+        reason: `SNS isn't allowed to send to ${q.name}: the queue's access policy needs to allow sns.amazonaws.com to sqs:SendMessage, with this topic as aws:SourceArn.`,
+      };
+    }
+    const raw = sub.config.rawMessageDelivery === true;
+    try {
+      await sendMessage(engine, q, {
+        body: raw ? text : JSON.stringify(envelope(topic, m.messageId, text, m.subject, m.attributes, m.at, sub), null, 2),
+        attributes: raw ? Object.fromEntries(Object.entries(m.attributes).filter(([, a]) => a.DataType !== "String.Array")) : {},
+        senderId: "AIDAIT2UOQQY3AUEKVGXU",
+        delaySeconds: undefined,
+      });
+      return { status: "delivered" };
     } catch (e) {
       return { status: "failed", reason: e instanceof EngineError ? `${e.code}: ${e.message}` : String(e) };
     }
