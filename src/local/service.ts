@@ -90,7 +90,7 @@ export class LocalService {
     // Work queued for the old computer went with it: deploys that hadn't finished start again on this one.
     for (const app of await this.store.listApps(accountId)) {
       if (["queued", "downloading", "building", "starting"].includes(app.status)) {
-        await this.queue(agent, "deploy", { appId: app.id, name: app.name, source: app.source, hostPort: app.hostPort ?? undefined });
+        await this.queue(agent, "deploy", { appId: app.id, name: app.name, source: app.source, hostPort: app.hostPort ?? undefined, mode: app.mode ?? "auto" });
         await this.store.putApp({ ...app, agentId: agent.id, status: "queued", detail: "Queued. It starts when your computer's agent is running.", updatedAt: this.iso() });
       }
     }
@@ -141,6 +141,7 @@ export class LocalService {
       detail: this.view(agent).online ? "Waiting for your computer to pick it up…" : "Queued. It starts when your computer's agent is running.",
       runtime: null,
       hostPort: input.hostPort ?? null,
+      mode: input.mode ?? "auto",
       containerPort: null,
       url: null,
       domain: input.domain ?? null,
@@ -150,7 +151,7 @@ export class LocalService {
       updatedAt: at,
     };
     await this.store.putApp(app);
-    await this.queue(agent, "deploy", { appId: app.id, name: app.name, source, hostPort: input.hostPort });
+    await this.queue(agent, "deploy", { appId: app.id, name: app.name, source, hostPort: input.hostPort, mode: app.mode });
     return publicApp(app);
   }
 
@@ -167,7 +168,7 @@ export class LocalService {
     if (!agent) throw noAgent();
     const type: TaskType = action === "redeploy" ? "deploy" : action;
     const payload: AgentTask["payload"] =
-      action === "redeploy" ? { appId, name: app.name, source: app.source, hostPort: app.hostPort ?? undefined } : { appId };
+      action === "redeploy" ? { appId, name: app.name, source: app.source, hostPort: app.hostPort ?? undefined, mode: app.mode ?? "auto" } : { appId };
     await this.queue(agent, type, payload);
     const pending = { start: "Starting…", stop: "Stopping…", restart: "Restarting…", redeploy: "Waiting for your computer to pick it up…" }[action];
     const updated: AppRecord = { ...app, detail: pending, ...(action === "redeploy" ? { status: "queued" as const } : {}), updatedAt: this.iso() };

@@ -84,9 +84,13 @@ export const deployInput = z.object({
   domain: domainSchema.optional().or(z.literal("").transform(() => undefined)),
   /** Port on the learner's computer (http://localhost:<port>). Picked automatically when empty. */
   hostPort: z.coerce.number().int().min(1024).max(65535).optional(),
+  /** Docker, straight on the computer, or whichever is available (Docker first). */
+  mode: z.enum(["auto", "docker", "native"]).default("auto"),
 });
 
-export type DeployInput = z.infer<typeof deployInput>;
+/** What a deploy asks for. `mode` may be left out, meaning auto. */
+export type DeployInput = Omit<z.infer<typeof deployInput>, "mode"> & { mode?: RunMode };
+export type RunMode = "auto" | "docker" | "native";
 export type AppSource = DeployInput["source"];
 
 export const APP_ACTIONS = ["start", "stop", "restart", "redeploy", "delete"] as const;
@@ -144,6 +148,8 @@ export interface LocalApp {
   url: string | null;
   /** Name on the home network (myshop.home), served by the agent's gateway. */
   domain?: string | null;
+  /** How it was asked to run: auto (Docker if available), docker, or native (without Docker). */
+  mode?: RunMode;
   /** Last lines of the build output. */
   buildLog: string;
   /** Last lines of the running app's output. */
@@ -165,7 +171,7 @@ export type TaskType = (typeof TASK_TYPES)[number];
 export interface AgentTask {
   id: string;
   type: TaskType;
-  payload: { appId: string; name?: string; source?: AppSource; hostPort?: number };
+  payload: { appId: string; name?: string; source?: AppSource; hostPort?: number; mode?: RunMode };
 }
 
 const report = z.object({

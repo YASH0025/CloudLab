@@ -34,7 +34,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-export const AGENT_VERSION = "0.3.0";
+export const AGENT_VERSION = "0.4.0";
 const DEFAULT_SERVER = "https://cloud-lab-livid.vercel.app";
 const HOME = path.join(os.homedir(), ".cloudlab");
 const CONFIG = path.join(HOME, "agent.json");
@@ -132,7 +132,11 @@ function startDockerDesktop() {
   if (!c) return false;
   try {
     const child = spawn(c.cmd, c.args, { detached: true, stdio: "ignore", windowsHide: true });
-    child.on("error", () => undefined);
+    // If the start command itself fails (no Docker Desktop to start), don't wait for it.
+    child.on("error", () => (dockerGaveUp = true));
+    child.on("exit", (code) => {
+      if (code) dockerGaveUp = true;
+    });
     child.unref();
     dockerStartedAt = Date.now();
     log("Docker isn't running: starting Docker Desktop. It takes a minute or two.");
@@ -163,6 +167,12 @@ async function dockerInfo() {
         ? "Docker Desktop didn't start (it says why: often virtualization is turned off). Apps run without Docker meanwhile."
         : `Docker is installed but not running. Start Docker Desktop (or the docker service) and wait until it's ready.${detail ? ` (Docker said: ${detail})` : ""}`,
   };
+}
+
+/** Whether Docker is up, without starting it. */
+async function dockerInfoQuiet() {
+  const r = await docker(["version", "--format", "{{.Server.Version}}"], { timeoutMs: 15000 });
+  return r.code === 0 ? { ok: true, version: r.out.trim() } : { ok: false, error: "" };
 }
 
 /** Waits for Docker to be ready (after the agent started it), up to `ms`. */
@@ -687,13 +697,15 @@ export class Gateway {
     this.retryAt = 0;
   }
 
-  async update(routes) {
+  async update(routes, nativeTargets = {}) {
     const lanIp = lanAddress();
     const found = (await inventory()) ?? [];
     const table = {};
     for (const r of routes) {
       const c = found.find((x) => x.id === r.appId);
       if (c && c.containerPort) table[r.domain] = `${c.container}:${c.containerPort}`;
+      // An app running without Docker is reached on this computer, from inside the gateway's container.
+      else if (nativeTargets[r.appId]) table[r.domain] = nativeTargets[r.appId].replace("127.0.0.1", "host.docker.internal");
     }
     const key = JSON.stringify({ lanIp, table, names: routes.map((r) => r.domain) });
     mkdirSync(path.join(GATEWAY_DIR, "routes"), { recursive: true });
@@ -753,6 +765,8 @@ export class Gateway {
         GATEWAY,
         "--label",
         "cloudlab.gateway=1",
+        "--add-host",
+        "host.docker.internal:host-gateway",
         "--network",
         NETWORK,
         "--restart",
@@ -1215,6 +1229,7 @@ export class Agent {
 
   async deploy(task) {
     const { appId, name, source, hostPort } = task.payload;
+    const mode = task.payload.mode ?? "auto";
     if (!NAME.test(name ?? "")) throw new Error("Invalid app name.");
     this.busy.add(appId);
     let buildLog = "";
@@ -1229,9 +1244,15 @@ export class Agent {
       }
     };
     try {
-      const info = await waitForDocker();
+      // "native" never touches Docker; "docker" and "auto" use it when it's there (starting it if needed).
+      const info = mode === "native" ? await dockerInfoQuiet() : await waitForDocker();
+      if (mode === "docker" && !info.ok) {
+        throw new Error('You chose Docker, but Docker isn\'t running on this computer. Start Docker Desktop and redeploy, or redeploy with "Without Docker".');
+      }
+      const useDocker = mode !== "native" && info.ok;
       // A redeploy starts from scratch, whichever way it ran before.
       await this.native.remove(appId);
+      if (!useDocker && info.ok) await docker(["rm", "-f", containerName(name)]);
 
       // 1. Get the code into a fresh folder.
       const dir = path.join(APPS_DIR, appId, "src");
@@ -1256,7 +1277,7 @@ export class Agent {
         const where = source.type === "folder" ? `the folder ${source.folder}` : "the repository";
         throw new Error(`Couldn't tell how to run this code: there's no Dockerfile, package.json, requirements.txt or index.html at the top of ${where}. Add a Dockerfile.`);
       }
-      if (!info.ok) return await this.deployNative({ appId, name, source, hostPort, plan, dir, report, progress, getBuildLog: () => buildLog });
+      if (!useDocker) return await this.deployNative({ appId, name, source, hostPort, plan, dir, report, progress, getBuildLog: () => buildLog });
       if (plan.dockerfile && !existsSync(path.join(dir, "Dockerfile"))) writeFileSync(path.join(dir, "Dockerfile"), plan.dockerfile);
       if (!existsSync(path.join(dir, ".dockerignore"))) writeFileSync(path.join(dir, ".dockerignore"), "node_modules\n.git\n");
       await report({ status: "building", detail: `Building the image (${plan.runtime})…`, runtime: plan.runtime });
@@ -1396,7 +1417,7 @@ export class Agent {
     const { tasks, routes = [] } = await this.api.sync({ info, apps, complete: found !== null && this.busy.size === 0 });
     for (const t of tasks) await this.handle(t);
     try {
-      if (info.docker.ok) await this.gateway.update(routes);
+      if (info.docker.ok) await this.gateway.update(routes, this.native.targets());
       else await this.nativeGateway.update(routes, this.native.targets());
     } catch (e) {
       log("Gateway:", e.message);

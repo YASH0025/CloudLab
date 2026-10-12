@@ -38,6 +38,7 @@ import {
   type AgentView,
   type AppAction,
   type LocalApp,
+  type RunMode,
   type SampleId,
 } from "@/local/types";
 import { cn } from "@/lib/utils";
@@ -313,6 +314,7 @@ function DeployCard() {
   const [folder, setFolder] = useState("");
   const [port, setPort] = useState("");
   const [domain, setDomain] = useState("");
+  const [mode, setMode] = useState<RunMode>("auto");
   const [invalid, setInvalid] = useState<string | null>(null);
   const agent = data?.agent;
   const folders = agent?.info?.folders ?? [];
@@ -322,7 +324,7 @@ function DeployCard() {
     e.preventDefault();
     setInvalid(null);
     const source = kind === "sample" ? { type: "sample", sample } : kind === "github" ? { type: "github", repo, branch } : { type: "folder", folder };
-    const parsed = deployInput.safeParse({ name, source, hostPort: port || undefined, domain });
+    const parsed = deployInput.safeParse({ name, source, hostPort: port || undefined, domain, mode });
     if (!parsed.success) {
       setInvalid(parsed.error.issues[0]?.message ?? "Check the form.");
       return;
@@ -422,6 +424,31 @@ function DeployCard() {
                 </p>
               </div>
             )}
+
+            <div className="space-y-1.5">
+              <Label htmlFor="app-mode">Run with</Label>
+              <Select value={mode} onValueChange={(v) => setMode(v as RunMode)}>
+                <SelectTrigger id="app-mode" className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="auto">Auto: Docker if it&apos;s running, else without</SelectItem>
+                  <SelectItem value="docker">Docker</SelectItem>
+                  <SelectItem value="native">Without Docker</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                {mode === "docker"
+                  ? agent?.info?.docker.ok === false
+                    ? "Docker isn't running on your computer right now: this deploy would fail. Start Docker first, or pick Without Docker."
+                    : "The app runs in a container, isolated from the rest of your computer: the way clouds run apps."
+                  : mode === "native"
+                    ? "The app runs straight on your computer: static sites, Node.js, and Python if it's installed. Code from GitHub only if it's a static site."
+                    : agent?.info?.docker.ok
+                      ? "Docker is running, so the app will run in a container."
+                      : "Docker isn't running, so the app will run straight on your computer."}
+              </p>
+            </div>
 
             <div className="space-y-1.5">
               <Label htmlFor="app-domain">Name on your network (optional)</Label>
