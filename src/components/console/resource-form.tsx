@@ -193,7 +193,7 @@ function FieldControl({ field, name, control, errors, disabled, lockReason, comp
         control={control}
         name={name}
         render={({ field: f }) => {
-          if (field.type === "json") {
+          if (field.type === "json" || field.type === "text") {
             return (
               <textarea
                 id={id}
@@ -201,7 +201,7 @@ function FieldControl({ field, name, control, errors, disabled, lockReason, comp
                 aria-invalid={!!message}
                 disabled={disabled}
                 spellCheck={false}
-                rows={Math.min(18, Math.max(6, String(f.value ?? "").split("\n").length + 1))}
+                rows={Math.min(field.type === "text" ? 28 : 18, Math.max(6, String(f.value ?? "").split("\n").length + 1))}
                 className="w-full rounded-md border bg-background px-3 py-2 font-mono text-xs leading-relaxed shadow-xs outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 aria-invalid:border-destructive disabled:opacity-60"
                 value={f.value === undefined || f.value === null ? "" : String(f.value)}
                 onChange={(e) => f.onChange(e.target.value)}

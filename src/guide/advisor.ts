@@ -26,6 +26,7 @@ import { dnsAdvice } from "./advisor-route53";
 import { snsAdvice } from "./advisor-sns";
 import { sqsAdvice } from "./advisor-sqs";
 import { dynamodbAdvice } from "./advisor-dynamodb";
+import { cloudFormationAdvice } from "./advisor-cloudformation";
 import { storageAdvice } from "./advisor-ebs";
 import { vpcxAdvice } from "./advisor-vpcx";
 
@@ -520,10 +521,12 @@ export async function advise(engine: Engine, accountId: string, region: string):
   const sns = await snsAdvice(engine, accountId, region);
   const sqs = await sqsAdvice(engine, accountId, region);
   const ddb = await dynamodbAdvice(engine, accountId, region);
-  out.unshift(...vpcx.problems, ...rds.problems, ...sls.problems, ...sns.problems, ...sqs.problems, ...ddb.problems, ...cw.problems, ...dns.problems, ...elb.problems);
+  const own = [...s.vpcs, ...s.subnets, ...s.groups, ...s.instances, ...s.buckets].filter((r) => isOwn(r)).length;
+  const cfn = await cloudFormationAdvice(engine, accountId, region, own);
+  out.unshift(...vpcx.problems, ...rds.problems, ...sls.problems, ...sns.problems, ...sqs.problems, ...ddb.problems, ...cfn.problems, ...cw.problems, ...dns.problems, ...elb.problems);
   out.push(...vpcx.suggestions);
   const ebs = await storageAdvice(engine, accountId, region);
-  out.push(...sls.suggestions, ...sns.suggestions, ...sqs.suggestions, ...ddb.suggestions, ...rds.suggestions, ...dns.suggestions, ...ebs.suggestions);
+  out.push(...sls.suggestions, ...sns.suggestions, ...sqs.suggestions, ...ddb.suggestions, ...cfn.suggestions, ...rds.suggestions, ...dns.suggestions, ...ebs.suggestions);
   if (sls.hasFunction && !cw.hasAlarm) {
     out.push({
       id: "watch-your-app",

@@ -14,6 +14,7 @@ import { route53Service } from "./services/route53";
 import { snsService } from "./services/sns";
 import { sqsService } from "./services/sqs";
 import { dynamodbService } from "./services/dynamodb";
+import { cloudFormationService } from "./services/cloudformation";
 import { objectType, storageService } from "./services/storage";
 import { progressType } from "./services/progress";
 import type { FieldDef, ResolvedServiceDef, ResolvedTypeDef, ResourceTypeDef, ServiceDef } from "./types";
@@ -35,6 +36,7 @@ export const SERVICES: ServiceDef[] = [
   iamService,
   cloudWatchService,
   logsService,
+  cloudFormationService,
 ];
 
 /** Types managed through their own screens rather than the generic console pages (bucket objects). */

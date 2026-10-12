@@ -15,7 +15,18 @@ export function StateBadge({ state, pending }: { state: string | null; pending?:
       </Badge>
     );
   }
-  const variant = GOOD.includes(state) ? "success" : BAD.includes(state) ? "destructive" : IDLE.includes(state) ? "secondary" : "default";
+  const lower = state.toLowerCase();
+  // CloudFormation and DynamoDB use upper-case statuses (CREATE_COMPLETE, ROLLBACK_COMPLETE, ACTIVE…).
+  const variant =
+    GOOD.includes(lower) || /^(create|update)_complete$|^confirmed$/.test(lower)
+      ? "success"
+      : BAD.includes(lower) || /rollback|failed/.test(lower)
+        ? "destructive"
+        : /_in_progress$|^creating$|^pending/.test(lower)
+          ? "warning"
+          : IDLE.includes(lower)
+            ? "secondary"
+            : "default";
   return (
     <Badge variant={variant}>
       <span className="size-1.5 rounded-full bg-current" />

@@ -117,6 +117,12 @@ function fieldSchema(field: FieldDef): z.ZodType {
       if (!required) return files.optional();
       return files.refine((f) => Object.keys(f).length > 0, { message: `${field.label} is required.`, params: kind("missing") });
     }
+    case "text": {
+      let str = z.string();
+      if (field.maxLength !== undefined) str = str.max(field.maxLength, `${field.label} must be at most ${field.maxLength} characters.`);
+      schema = str;
+      break;
+    }
     case "json": {
       schema = z.string().refine(
         (v) => {

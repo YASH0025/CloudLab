@@ -1,5 +1,5 @@
 /** Which skill each tutorial and challenge trains, for the progress page. */
-export const TOPICS = ["Networking", "Compute", "Storage", "Databases", "Security", "Serverless", "Monitoring", "Messaging", "DNS"] as const;
+export const TOPICS = ["Networking", "Compute", "Storage", "Databases", "Security", "Serverless", "Monitoring", "Messaging", "DNS", "Infrastructure as code"] as const;
 export type Topic = (typeof TOPICS)[number];
 
 export const TOPIC_OF: Record<string, Topic> = {
@@ -17,6 +17,7 @@ export const TOPIC_OF: Record<string, Topic> = {
   "get-alerted": "Messaging",
   "decouple-with-a-queue": "Messaging",
   "nosql-table": "Databases",
+  "infrastructure-as-code": "Infrastructure as code",
   "managed-database": "Databases",
   "website-real-name": "DNS",
   "disks-and-backups": "Storage",
@@ -35,4 +36,5 @@ export const TOPIC_OF: Record<string, Topic> = {
   "silent-orders": "Messaging",
   "double-charged": "Messaging",
   "orders-by-customer": "Databases",
+  "stack-rolled-back": "Infrastructure as code",
 };

@@ -71,6 +71,7 @@ describe("tutorials", () => {
       "disks-and-backups",
       "highly-available-website",
       "connect-and-protect",
+      "infrastructure-as-code",
     ]);
     expect(listTutorials().filter((t) => t.level === "intermediate")).toHaveLength(12);
     expect(listTutorials().find((t) => t.id === "troubleshoot-reachability")?.nextId).toBe("static-website");
@@ -248,6 +249,26 @@ describe("tutorials", () => {
       },
     });
     expect(steps).toBe(7);
+  });
+
+  it("completes 'Infrastructure as code': create, update in place, replace, roll back, delete", { timeout: 60_000 }, async () => {
+    const stackOf = async () => (await engine.list(ACCOUNT, { service: "cloudformation", type: "stack", region: REGION }))[0];
+    const steps = await play("infrastructure-as-code", {
+      explore: async () => undefined,
+      update: async () => {
+        const s = await stackOf();
+        await engine.update(ACCOUNT, s.id, { templateBody: String(s.config.templateBody).replace("VisibilityTimeout: 60", "VisibilityTimeout: 120") });
+      },
+      replace: async () => engine.update(ACCOUNT, (await stackOf()).id, { parameters: [{ key: "Env", value: "prod" }] }),
+      rollback: async () => {
+        const s = await stackOf();
+        await engine.update(ACCOUNT, s.id, { templateBody: String(s.config.templateBody).replace("\nOutputs:", "\n  BadQueue:\n    Type: AWS::SQS::Queue\n    Properties:\n      VisibilityTimeout: 99999\n\nOutputs:") });
+        expect((await stackOf()).state).toBe("UPDATE_ROLLBACK_COMPLETE");
+      },
+      delete: async () => engine.remove(ACCOUNT, (await stackOf()).id),
+    });
+    expect(steps).toBe(6);
+    expect(await engine.list(ACCOUNT, { service: "sqs", type: "queue", region: REGION })).toHaveLength(0);
   });
 
   it("completes 'Give your website a real name': zone, A record, a visit, an apex alias, a health check", { timeout: 60_000 }, async () => {

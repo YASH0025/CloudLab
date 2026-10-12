@@ -96,8 +96,8 @@ export const launchTemplate: ResourceTypeDef = {
   },
 };
 
-// The "json" field type validates JSON; user data is plain text, so override it to a string field.
-launchTemplate.fields = launchTemplate.fields.map((f) => (f.key === "userData" ? { ...f, type: "string", maxLength: 16384 } : f));
+// User data is a script: plain multi-line text, not JSON.
+launchTemplate.fields = launchTemplate.fields.map((f) => (f.key === "userData" ? { ...f, type: "text", maxLength: 16384 } : f));
 
 // ---------- Auto Scaling groups ----------
 

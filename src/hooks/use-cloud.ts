@@ -211,6 +211,11 @@ export function useQueueAction(id: string) {
   });
 }
 
+/** What a stack update would change. Errors show inline. */
+export function usePreviewChanges(id: string) {
+  return useMutation({ mutationFn: (input: Parameters<typeof api.previewChanges>[1]) => api.previewChanges(id, input).then((r) => r.changes) });
+}
+
 /** Scan, query, save or delete items in a table. Errors show inline. */
 export function useTableItems(id: string) {
   const qc = useQueryClient();

@@ -580,6 +580,67 @@ const ORDERS_BY_CUSTOMER: ChallengeDef = {
   },
 };
 
+const NETWORK_STACK = `AWSTemplateFormatVersion: "2010-09-09"
+Description: Network for the new shop
+Resources:
+  ShopVpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.40.0.0/16
+      Tags: [{ Key: Name, Value: shop-vpc }]
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref ShopVpc
+      CidrBlock: 10.4.1.0/24
+      MapPublicIpOnLaunch: true
+  PrivateSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref ShopVpc
+      CidrBlock: 10.40.11.0/24
+Outputs:
+  VpcId:
+    Value: !Ref ShopVpc
+`;
+
+const STACK_ROLLED_BACK: ChallengeDef = {
+  id: "stack-rolled-back",
+  title: "The network stack won't deploy",
+  level: "advanced",
+  minutes: 10,
+  summary: "A teammate's CloudFormation stack ends in ROLLBACK_COMPLETE every time, and now it can't even be updated.",
+  story:
+    "A teammate wrote a template for the new shop's network (a VPC with a public and a private subnet) and created the stack shop-network. It went to ROLLBACK_COMPLETE, nothing was left behind, and now every update attempt says the stack “can not be updated”. They're sure the template is fine because CloudFormation accepted it.",
+  goal: "The stack shop-network exists and is in CREATE_COMPLETE (or UPDATE_COMPLETE), with its VPC 10.40.0.0/16 and both subnets.",
+  tools: ["shop-network → Events (and the Why it failed box)", "aws cloudformation describe-stack-events --stack-name shop-network", "aws cloudformation get-template --stack-name shop-network"],
+  hints: [
+    "CloudFormation only checks a template's format up front. Whether each resource can be created is up to the service: read the CREATE_FAILED event for the service's own error.",
+    "PublicSubnet failed with InvalidSubnet.Range. Compare its CidrBlock with the VPC's: is it inside 10.40.0.0/16? And a stack in ROLLBACK_COMPLETE can't be updated at all.",
+    "Copy the template (get-template, or the Template field), fix PublicSubnet's CidrBlock to 10.40.1.0/24, delete the stack, and create shop-network again with the fixed template.",
+  ],
+  explanation:
+    "The template was valid YAML with valid references, so CreateStack accepted it. Creating the resources is where it failed: PublicSubnet's 10.4.1.0/24 (a typo for 10.40.1.0/24) isn't inside the VPC's 10.40.0.0/16, EC2 refused it with InvalidSubnet.Range, and CloudFormation rolled back everything it had made. A stack whose very first create failed ends in ROLLBACK_COMPLETE, a dead end: it can only be deleted, then created again. The first CREATE_FAILED event (not the last one) always names the real cause.",
+  async setup(b) {
+    await b.make("cloudformation", "stack", { name: "shop-network", templateBody: NETWORK_STACK });
+  },
+  async facts(engine, accountId) {
+    const s = await named(engine, accountId, "cloudformation", "stack", "shop-network");
+    return [`Stack: shop-network (${s?.state ?? "missing"})`];
+  },
+  async check(engine, accountId) {
+    const s = await named(engine, accountId, "cloudformation", "stack", "shop-network");
+    if (!s) return { solved: false, status: "There's no stack named shop-network right now." };
+    if (!["CREATE_COMPLETE", "UPDATE_COMPLETE"].includes(String(s.state))) return { solved: false, status: `shop-network is in ${s.state}.` };
+    const resources = (s.attributes.resources as { type: string; resourceId?: string }[] | undefined) ?? [];
+    const vpcRes = resources.find((r) => r.type === "AWS::EC2::VPC");
+    const vpc = vpcRes?.resourceId ? await engine.get(accountId, vpcRes.resourceId).catch(() => null) : null;
+    if (!vpc || vpc.config.cidrBlock !== "10.40.0.0/16") return { solved: false, status: "The stack is up, but its VPC isn't 10.40.0.0/16." };
+    if (resources.filter((r) => r.type === "AWS::EC2::Subnet").length < 2) return { solved: false, status: "The stack is up, but it doesn't have both subnets." };
+    return { solved: true };
+  },
+};
+
 const UNHEALTHY: ChallengeDef = {
   id: "unhealthy-targets",
   title: "Every server behind the load balancer is unhealthy",
@@ -783,7 +844,7 @@ const PEERING_ONE_WAY: ChallengeDef = {
   },
 };
 
-const CHALLENGES: ChallengeDef[] = [SITE_DOWN, NO_UPDATES, ACCESS_DENIED, DB_CONNECT, API_500, DISK_ZONE, PEERING_ONE_WAY, ACL_REPLIES, SILENT_ORDERS, DOUBLE_CHARGED, ORDERS_BY_CUSTOMER, UNHEALTHY];
+const CHALLENGES: ChallengeDef[] = [SITE_DOWN, NO_UPDATES, ACCESS_DENIED, DB_CONNECT, API_500, DISK_ZONE, PEERING_ONE_WAY, ACL_REPLIES, SILENT_ORDERS, DOUBLE_CHARGED, ORDERS_BY_CUSTOMER, UNHEALTHY, STACK_ROLLED_BACK];
 
 const info = (c: ChallengeDef): ChallengeInfo => ({ id: c.id, title: c.title, level: c.level, minutes: c.minutes, summary: c.summary });
 

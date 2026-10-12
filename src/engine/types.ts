@@ -1,3 +1,4 @@
+import type { Engine } from "./engine";
 import type { EngineError } from "./errors";
 
 /**
@@ -20,6 +21,8 @@ export type FieldType =
   | "list"
   /** A JSON document edited as text, e.g. an IAM policy. */
   | "json"
+  /** Multi-line plain text (a template, a script), edited in a monospace box. */
+  | "text"
   /** IAM policy ARNs to attach (AWS managed and the account's own). */
   | "policies"
   /** Source files, as { "path": "contents" } (a Lambda function's code). */
@@ -152,6 +155,9 @@ export interface SystemInfo {
   ownedBy?: string;
   /** Launched and looked after by an Auto Scaling group (its ID). */
   managedBy?: string;
+  /** Created by a CloudFormation stack (its ID), as the template's resource `logicalId`. */
+  stack?: string;
+  logicalId?: string;
 }
 
 export function systemOf(r: { attributes: Record<string, unknown> }): SystemInfo {
@@ -173,6 +179,9 @@ export interface SystemApi {
   remove(id: string): Promise<void>;
   /** Deletes a log group's events. */
   purgeLogs(group: string): Promise<void>;
+  /** The engine itself and whose resources these are, for hooks that orchestrate others (CloudFormation). */
+  engine: Engine;
+  accountId: string;
 }
 
 /**

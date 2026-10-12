@@ -396,10 +396,6 @@ const EXPLANATIONS: Record<string, ErrorExplanation> = {
     meaning: "Something with that key already exists, e.g. a second GET /hello route or a stage name that's taken.",
     fix: "Change the existing one instead, or use another key.",
   },
-  ValidationError: {
-    meaning: "One of the values you entered isn't valid.",
-    fix: "Check the highlighted field's message.",
-  },
   InvalidParameterValue: {
     meaning: "A value is valid on its own but doesn't fit this situation (e.g. resources in different VPCs).",
     fix: "Read the message: it names the conflicting resources.",
@@ -434,6 +430,19 @@ const EXPLANATIONS: Record<string, ErrorExplanation> = {
   ConditionalCheckFailedException: {
     meaning: "The write had a condition (e.g. attribute_not_exists, so it never overwrites) and the condition was false, so nothing was written.",
     fix: "That's often the point: the item already exists. Read it first, or change the condition.",
+  },
+  ValidationError: {
+    meaning:
+      "One of the values isn't valid, so nothing was done. In a console form, the highlighted field says which. For CloudFormation: the template's format, a missing parameter, a reference to something that doesn't exist, a stack in a state that can't be updated (ROLLBACK_COMPLETE), or no changes to make.",
+    fix: "Read the message: \"Template format error\" points at the template, \"Parameters: […]\" at --parameters. A stack in ROLLBACK_COMPLETE must be deleted and created again.",
+  },
+  AlreadyExistsException: {
+    meaning: "A stack (or change set) with that name already exists in this region.",
+    fix: "Update the existing stack, delete it first, or pick another name.",
+  },
+  InsufficientCapabilitiesException: {
+    meaning: "The template creates IAM resources, and you have to acknowledge that explicitly: IAM changes who can do what in the account.",
+    fix: "Add --capabilities CAPABILITY_IAM (or CAPABILITY_NAMED_IAM if the roles have names), or tick the acknowledgement box in the console.",
   },
   DuplicateItemException: {
     meaning: "A PartiQL INSERT found an item with the same key already in the table. INSERT never overwrites.",

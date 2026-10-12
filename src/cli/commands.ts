@@ -16,6 +16,7 @@ import { ROUTE53_COMMANDS } from "./route53";
 import { SNS_COMMANDS } from "./sns";
 import { SQS_COMMANDS } from "./sqs";
 import { DYNAMODB_COMMANDS } from "./dynamodb";
+import { CLOUDFORMATION_COMMANDS } from "./cloudformation";
 import { EBS_COMMANDS } from "./ebs";
 import { VPC_EXTRA_COMMANDS } from "./vpc-extras";
 
@@ -1049,6 +1050,9 @@ export const COMMANDS: Command[] = [
 
   // --- S3 (buckets, objects, websites) ---
   ...S3_COMMANDS,
+
+  // --- CloudFormation ---
+  ...CLOUDFORMATION_COMMANDS,
 
   // --- IAM and STS ---
   ...IAM_COMMANDS,

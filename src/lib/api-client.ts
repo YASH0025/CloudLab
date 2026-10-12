@@ -111,6 +111,7 @@ import type { DbConnectInput, DbConnectResult } from "@/engine/analysis/dbconnec
 import type { InvokeResult } from "@/engine/lambda/invoke";
 import type { PublishResult } from "@/engine/sns/publish";
 import type { QueueCounts, ReceivedMessage } from "@/engine/sqs/queue";
+import type { PlannedChange } from "@/engine/cloudformation/deploy";
 
 export type { ObjectInfo };
 
@@ -252,6 +253,9 @@ export const api = {
       method: "POST",
       body: JSON.stringify(input),
     }),
+
+  previewChanges: (id: string, input: { templateBody: string; parameters: { key: string; value?: string }[] }) =>
+    request<{ changes: PlannedChange[] }>(`/api/resources/${encodeURIComponent(id)}/changes`, { method: "POST", body: JSON.stringify(input) }),
 
   tableItems: (id: string, input: TableItemsInput) =>
     request<TableItemsResult>(`/api/resources/${encodeURIComponent(id)}/items`, { method: "POST", body: JSON.stringify(input) }),

@@ -243,6 +243,8 @@ export class Engine {
       runAction: (id, action) => this.runAction(accountId, id, action),
       remove: (id) => this.remove(accountId, id),
       purgeLogs: (group) => this.store.deleteLogEvents(accountId, region, group),
+      engine: this,
+      accountId,
       setAttributes: async (id, patch) => {
         const r = await this.store.get(accountId, id);
         if (!r) return;

@@ -42,7 +42,7 @@ beforeEach(() => {
 
 describe("challenges", { timeout: 60_000 }, () => {
   it("lists them, and scores fewer points per hint", () => {
-    expect(listChallenges().map((c) => c.id)).toEqual(["site-down", "no-updates", "access-denied", "db-connect", "api-500", "disk-wrong-zone", "peering-one-way", "acl-replies", "silent-orders", "double-charged", "orders-by-customer", "unhealthy-targets"]);
+    expect(listChallenges().map((c) => c.id)).toEqual(["site-down", "no-updates", "access-denied", "db-connect", "api-500", "disk-wrong-zone", "peering-one-way", "acl-replies", "silent-orders", "double-charged", "orders-by-customer", "unhealthy-targets", "stack-rolled-back"]);
     expect([0, 1, 2, 3].map(challengeScore)).toEqual([100, 90, 70, 40]);
   });
 
@@ -84,6 +84,19 @@ describe("challenges", { timeout: 60_000 }, () => {
         status: /not newest first/,
       },
     );
+  });
+
+  it("stack-rolled-back: fix the subnet's range, delete and recreate the stack", async () => {
+    const stack = () => find("cloudformation", "stack", "shop-network");
+    expect(await startChallenge(engine, ACCOUNT, "stack-rolled-back")).toBe(true);
+    expect((await stack()).state).toBe("ROLLBACK_COMPLETE");
+    await play("stack-rolled-back", async () => {
+      const s = await stack();
+      const fixed = String(s.config.templateBody).replace("10.4.1.0/24", "10.40.1.0/24");
+      await engine.remove(ACCOUNT, s.id);
+      await engine.create(ACCOUNT, { service: "cloudformation", type: "stack", region: R, config: { name: "shop-network", templateBody: fixed } });
+      expect((await stack()).state).toBe("CREATE_COMPLETE");
+    });
   });
 
   it("silent-orders: fix the filter's case and let only this topic invoke the function", async () => {

@@ -26,6 +26,7 @@ import { loadWatch, WATCHED_FUNCTION, type WatchState } from "./watch";
 import { ALERTS_EMAIL, ALERTS_TOPIC, loadAlerts, type AlertsState } from "./alerts";
 import { loadQueues, TUTORIAL_DLQ, TUTORIAL_QUEUE, type QueuesState } from "./queues";
 import { loadNosql, TUTORIAL_TABLE, type NosqlState } from "./nosql";
+import { loadIac, TUTORIAL_STACK, type IacState } from "./iac";
 import { loadDns, TUTORIAL_DOMAIN, type DnsState } from "./dns";
 import { DATA_FILE, loadStorage, type StorageState } from "./storage";
 import { loadVpcx, type VpcxState } from "./vpcx";
@@ -112,6 +113,10 @@ interface Ctx {
   watch(): Promise<WatchState>;
   /** The same, preloaded for tutorials that declare `needsWatch`. */
   watchState?: WatchState;
+  /** The CloudFormation tutorial's stack (loaded once, on demand). */
+  iac(): Promise<IacState>;
+  /** The same, preloaded for tutorials that declare `needsIac`. */
+  iacState?: IacState;
   /** The DynamoDB tutorial's table (loaded once, on demand). */
   nosql(): Promise<NosqlState>;
   /** The same, preloaded for tutorials that declare `needsNosql`. */
@@ -167,6 +172,8 @@ interface TutorialDef {
   needsServerless?: boolean;
   /** Load the monitoring state before resolving links and text. */
   needsWatch?: boolean;
+  /** Load the CloudFormation state before resolving links and text. */
+  needsIac?: boolean;
   /** Load the DynamoDB state before resolving links and text. */
   needsNosql?: boolean;
   /** Load the SQS state before resolving links and text. */
@@ -240,6 +247,7 @@ async function buildCtx(engine: Engine, accountId: string, region: string, ident
   let alertsData: Promise<AlertsState> | null = null;
   let queuesData: Promise<QueuesState> | null = null;
   let nosqlData: Promise<NosqlState> | null = null;
+  let iacData: Promise<IacState> | null = null;
   let dnsData: Promise<DnsState> | null = null;
   let storageData: Promise<StorageState> | null = null;
   let vpcxData: Promise<VpcxState> | null = null;
@@ -273,6 +281,10 @@ async function buildCtx(engine: Engine, accountId: string, region: string, ident
     nosql() {
       nosqlData ??= loadNosql(engine, accountId, region);
       return nosqlData;
+    },
+    iac() {
+      iacData ??= loadIac(engine, accountId, region);
+      return iacData;
     },
     vpcx() {
       vpcxData ??= loadVpcx(engine, accountId, region, vpc, instance);
@@ -2261,6 +2273,7 @@ const CONNECT_AND_PROTECT: TutorialDef = {
   level: "advanced",
   summary:
     "Link your VPC to a second one with peering (and see why routes must go both ways), put a network ACL in front of your web subnet (and see why stateless rules break replies), then reach S3 privately through a VPC endpoint.",
+  nextId: "infrastructure-as-code",
   minutes: 15,
   needsVpcx: true,
   steps: [
@@ -2711,7 +2724,94 @@ const NOSQL: TutorialDef = {
   ],
 };
 
-TUTORIALS.push(SERVERLESS_API, WATCH_YOUR_APP, GET_ALERTED, DECOUPLE, NOSQL, MANAGED_DATABASE, REAL_NAME, DISKS_AND_BACKUPS, HIGHLY_AVAILABLE, CONNECT_AND_PROTECT);
+// ---------- CloudFormation: infrastructure as code ----------
+
+const stackLink = (c: Ctx): GuideLink | undefined => (c.iacState?.stack ? { service: "cloudformation", type: "stack", mode: "detail", id: c.iacState.stack.id } : undefined);
+
+const IAC: TutorialDef = {
+  id: "infrastructure-as-code",
+  title: "Infrastructure as code: CloudFormation",
+  level: "advanced",
+  summary:
+    "Clicking through the console is fine once. Teams describe their infrastructure in a template instead, so it can be reviewed, repeated and rolled back. Create a stack, update it (in place and by replacement), watch a broken update roll back, and delete everything in one go.",
+  minutes: 15,
+  needsIac: true,
+  steps: [
+    {
+      id: "create",
+      title: `Create the stack ${TUTORIAL_STACK}`,
+      why: "A template lists resources and how they connect (!Ref, !GetAtt). CloudFormation works out the order, creates them, and remembers them as one stack.",
+      instructions: [
+        "Click Take me there.",
+        "Pre-filled: a template with an SNS topic, an SQS queue and a subscription between them, and a parameter Env = dev. Read it: the subscription refers to the other two.",
+        "Click Create stack. The status goes to CREATE_COMPLETE.",
+      ],
+      link: (c) => stackLink(c) ?? { service: "cloudformation", type: "stack", mode: "create", prefill: { name: TUTORIAL_STACK } },
+      cli: () => `aws cloudformation create-stack --stack-name ${TUTORIAL_STACK} --template-body file://template.yaml --parameters ParameterKey=Env,ParameterValue=dev`,
+      check: async (c) => ["CREATE_COMPLETE", "UPDATE_COMPLETE", "UPDATE_ROLLBACK_COMPLETE"].includes(String((await c.iac()).stack?.state)),
+    },
+    {
+      id: "explore",
+      title: "Read the events and resources",
+      why: "Events are the stack's diary, newest first: each resource's CREATE_IN_PROGRESS and CREATE_COMPLETE, in dependency order. Resources maps each logical ID in the template to the real thing.",
+      instructions: [
+        "On the stack's page, open Events: the topic and queue were created before the subscription that needs them.",
+        "Open Resources and click the queue's physical ID: its page says it belongs to this stack. Outputs shows the queue URL.",
+      ],
+      link: stackLink,
+      cli: () => `aws cloudformation describe-stack-events --stack-name ${TUTORIAL_STACK}`,
+      check: async (c) => ((await c.iac()).stack?.attributes.outputs as unknown[] | undefined)?.length !== undefined,
+    },
+    {
+      id: "update",
+      title: "Update in place",
+      why: "Change the template, not the resource. Some properties change in place: same resource, same ID.",
+      instructions: [
+        "Under Update stack, change the queue's VisibilityTimeout from 60 to 120.",
+        "Click Preview changes: OrdersQueue, Modify, Replacement False. Click Apply update.",
+        "The queue's page now shows 120. (Change it directly on the queue instead, and the next stack update puts it back: that's drift.)",
+      ],
+      link: stackLink,
+      cli: () => `aws cloudformation update-stack --stack-name ${TUTORIAL_STACK} --template-body file://template.yaml --parameters ParameterKey=Env,UsePreviousValue=true`,
+      check: async (c) => {
+        const s = await c.iac();
+        return s.updated && s.queue !== undefined && Number(s.queue.config.visibilityTimeout) !== 60;
+      },
+    },
+    {
+      id: "replace",
+      title: "An update that replaces a resource",
+      why: "Some properties can't change on a live resource, like a topic's name. CloudFormation creates a new one, points everything at it, then deletes the old one. Anything that stored the old ARN breaks: always check the Replacement column.",
+      instructions: ["Under Update stack, change the parameter Env from dev to prod.", "Preview: OrdersTopic is replaced (its name becomes orders-prod), and so is the subscription that points at it. Apply."],
+      link: stackLink,
+      cli: () => `aws cloudformation update-stack --stack-name ${TUTORIAL_STACK} --use-previous-template --parameters ParameterKey=Env,ParameterValue=prod`,
+      check: async (c) => (await c.iac()).replaced,
+    },
+    {
+      id: "rollback",
+      title: "Break an update, and watch it roll back",
+      why: "If any resource fails, CloudFormation undoes the whole update: the stack ends up exactly as it was, in UPDATE_ROLLBACK_COMPLETE. No half-finished changes.",
+      instructions: [
+        "Under Update stack, add this resource at the end of Resources (indented like the others):",
+        "  BadQueue:\n    Type: AWS::SQS::Queue\n    Properties:\n      VisibilityTimeout: 99999",
+        "Apply. The update fails (the maximum is 43200 seconds) and rolls back. Read the reason in Events.",
+      ],
+      link: stackLink,
+      check: async (c) => (await c.iac()).rolledBack,
+    },
+    {
+      id: "delete",
+      title: "Delete the stack, and everything with it",
+      why: "One delete removes every resource the stack made, in reverse order. That's how you tear down a test environment without leaving anything behind (and paying for it).",
+      instructions: ["Delete the stack (Delete, at the top of its page).", "The topic, queue and subscription are gone too."],
+      link: stackLink,
+      cli: () => `aws cloudformation delete-stack --stack-name ${TUTORIAL_STACK}`,
+      check: async (c) => !(await c.iac()).stack,
+    },
+  ],
+};
+
+TUTORIALS.push(SERVERLESS_API, WATCH_YOUR_APP, GET_ALERTED, DECOUPLE, NOSQL, MANAGED_DATABASE, REAL_NAME, DISKS_AND_BACKUPS, HIGHLY_AVAILABLE, CONNECT_AND_PROTECT, IAC);
 
 const info = (t: TutorialDef): TutorialInfo => ({
   id: t.id,
@@ -2753,6 +2853,7 @@ export async function viewTutorial(
   if (t.needsAlerts) c.alertsState = await c.alerts();
   if (t.needsQueues) c.queuesState = await c.queues();
   if (t.needsNosql) c.nosqlState = await c.nosql();
+  if (t.needsIac) c.iacState = await c.iac();
   const steps = await Promise.all(
     t.steps.map(async (st) => ({
       id: st.id,

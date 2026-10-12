@@ -26,6 +26,7 @@ import { ObjectsPanel, WebsiteCard } from "./objects-panel";
 import { SubscriptionPanel, TopicPanel } from "./sns-panels";
 import { QueuePanel } from "./sqs-panels";
 import { PartiqlCard, TablePanel } from "./dynamodb-panels";
+import { StackPanel } from "./cloudformation-panels";
 import { PermissionChecker } from "./permission-checker";
 import { ReachabilityPanel } from "./reachability-panel";
 import { ResourceForm } from "./resource-form";
@@ -70,6 +71,9 @@ function FieldValue({ field, value }: { field: FieldDef; value: unknown }) {
         ))}
       </span>
     );
+  }
+  if (field.type === "text") {
+    return <pre className="max-h-96 overflow-auto rounded-md bg-muted/60 p-3 font-mono text-xs leading-relaxed whitespace-pre">{String(value ?? "")}</pre>;
   }
   if (field.type === "json") {
     let pretty = String(value ?? "");
@@ -165,7 +169,7 @@ export function ResourceDetailView() {
   // Some attributes have a panel of their own (scaling activities, health check bookkeeping).
   const inPanels = new Set(typeDef.panelAttributes ?? []);
   const attributes = Object.entries(item.attributes).filter(([k, v]) => v !== undefined && k !== "system" && !inPanels.has(k));
-  const system = (item.attributes.system ?? {}) as { isDefault?: boolean; main?: boolean; defaultForAz?: boolean };
+  const system = (item.attributes.system ?? {}) as { isDefault?: boolean; main?: boolean; defaultForAz?: boolean; stack?: string; logicalId?: string };
   const systemBadge = system.main
     ? "Main route table"
     : system.defaultForAz
@@ -196,6 +200,13 @@ export function ResourceDetailView() {
               <Badge variant="secondary" title="Created by the platform, as in a real AWS account">
                 {systemBadge}
               </Badge>
+            )}
+            {system.stack && (
+              <Link href={routes.detail("cloudformation", "stack", system.stack)} title="Created by a CloudFormation stack. Change it through the stack's template: changes made here are overwritten by the next stack update (drift).">
+                <Badge variant="secondary">
+                  Stack {system.stack.split("/")[1]} · {system.logicalId}
+                </Badge>
+              </Link>
             )}
           </div>
           <div className="flex flex-wrap gap-2">
@@ -310,6 +321,7 @@ export function ResourceDetailView() {
       {item.service === "sqs" && item.type === "queue" && <QueuePanel queue={item} />}
       {item.service === "dynamodb" && item.type === "table" && <TablePanel table={item} />}
       {item.service === "dynamodb" && item.type === "table" && <PartiqlCard table={item} />}
+      {item.service === "cloudformation" && item.type === "stack" && <StackPanel stack={item} />}
       {item.service === "apigateway" && item.type === "api" && <ApiPanel api={item} />}
       {item.service === "lambda" && item.type === "function" && <FunctionLogsCard fn={item} />}
       <MonitoringCard item={item} />
