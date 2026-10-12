@@ -158,3 +158,43 @@ describe("aws dynamodb", { timeout: 30_000 }, () => {
     expect(await fails("aws dynamodb delete-table --table-name Tiny")).toMatchObject({ message: "Resource cannot be deleted as it is currently protected against deletion. Disable deletion protection first." });
   });
 });
+
+describe("PartiQL", { timeout: 30_000 }, () => {
+  it("runs SELECT as Query or Scan, and INSERT/UPDATE/DELETE with their rules", async () => {
+    const { executeStatement } = await import("@/engine/dynamodb/partiql");
+    await json(CREATE);
+    advance(3);
+    const exec = (st: string, params?: unknown[]) => executeStatement(engine, ACCOUNT, "us-east-1", st, params as never);
+    await exec(`INSERT INTO "Orders" VALUE {'customerId': 'asha', 'orderDate': '2026-10-01', 'status': 'placed', 'total': 499}`);
+    await exec(`INSERT INTO "Orders" VALUE {'customerId': 'asha', 'orderDate': '2026-10-05', 'status': 'shipped', 'total': 50}`);
+    await exec(`INSERT INTO Orders VALUE {'customerId': 'ravi', 'orderDate': '2026-10-02', 'status': 'placed', 'total': 999}`);
+    await expect(exec(`INSERT INTO "Orders" VALUE {'customerId': 'asha', 'orderDate': '2026-10-01'}`)).rejects.toMatchObject({ code: "DuplicateItemException", message: "Duplicate primary key exists in table" });
+
+    const q = await exec(`SELECT * FROM "Orders" WHERE "customerId" = 'asha' AND "orderDate" >= '2026-10-02' ORDER BY "orderDate" DESC`);
+    expect(q.ranAs).toBe("Query");
+    expect(q.Items?.map((i) => (i.orderDate as { S: string }).S)).toEqual(["2026-10-05"]);
+    expect(q.scannedCount).toBe(1);
+
+    // No partition key in WHERE: it quietly becomes a Scan of the whole table.
+    const s = await exec(`SELECT "customerId", total FROM "Orders" WHERE "status" = 'placed'`);
+    expect(s).toMatchObject({ ranAs: "Scan", scannedCount: 3 });
+    expect(s.Items).toHaveLength(2);
+    expect(Object.keys(s.Items![0]).sort()).toEqual(["customerId", "total"]);
+
+    const p = await exec(`SELECT * FROM "Orders" WHERE customerId = ? AND begins_with(orderDate, ?)`, [{ S: "asha" }, { S: "2026-10" }]);
+    expect(p).toMatchObject({ ranAs: "Query" });
+    expect(p.Items).toHaveLength(2);
+
+    await exec(`UPDATE "Orders" SET "status" = 'delivered', total = total + 1 WHERE customerId = 'asha' AND orderDate = '2026-10-05'`);
+    const u = await exec(`SELECT * FROM "Orders" WHERE customerId = 'asha' AND orderDate = '2026-10-05'`);
+    expect(u.Items?.[0]).toMatchObject({ status: { S: "delivered" }, total: { N: "51" } });
+    await expect(exec(`UPDATE "Orders" SET "status" = 'x' WHERE customerId = 'asha'`)).rejects.toMatchObject({ message: "Where clause does not contain a mandatory equality on all key attributes" });
+    await expect(exec(`UPDATE "Orders" SET "status" = 'x' WHERE customerId = 'nobody' AND orderDate = '1'`)).rejects.toMatchObject({ code: "ConditionalCheckFailedException" });
+    await exec(`DELETE FROM "Orders" WHERE customerId = 'ravi' AND orderDate = '2026-10-02'`);
+    await expect(exec(`SELEC * FROM "Orders"`)).rejects.toMatchObject({ code: "ValidationException" });
+    await expect(exec(`SELECT * FROM "Nope"`)).rejects.toMatchObject({ code: "ResourceNotFoundException" });
+
+    const cli = await json(`aws dynamodb execute-statement --statement "SELECT * FROM \\"Orders\\" WHERE customerId = 'asha'"`);
+    expect(cli.Items).toHaveLength(2);
+  });
+});

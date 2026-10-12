@@ -1,6 +1,7 @@
 import type { NextRequest } from "next/server";
 import { z } from "zod";
 import { deleteItem, putItem, query, scan } from "@/engine/dynamodb/items";
+import { executeStatement } from "@/engine/dynamodb/partiql";
 import { marshall, marshallItem, unmarshallItem, type Item } from "@/engine/dynamodb/values";
 import { EngineError } from "@/engine/errors";
 import { authorizeActions, getCaller, getEngine, handle } from "@/server/api";
@@ -24,6 +25,7 @@ const body = z.discriminatedUnion("action", [
   }),
   z.object({ action: z.literal("put"), item: z.record(z.string(), z.unknown()), mustBeNew: z.boolean().default(false) }),
   z.object({ action: z.literal("delete"), key: z.record(z.string(), z.unknown()) }),
+  z.object({ action: z.literal("statement"), statement: z.string().max(8192) }),
 ]);
 
 export async function POST(request: NextRequest, ctx: RouteContext<"/api/resources/[id]/items">) {
@@ -72,6 +74,13 @@ export async function POST(request: NextRequest, ctx: RouteContext<"/api/resourc
         const item = marshallItem(input.item);
         await putItem(engine, t, item, input.mustBeNew ? { condition: "attribute_not_exists(#pk)", names: { "#pk": String(t.config.partitionKey) } } : {});
         return Response.json({ saved: true });
+      }
+      case "statement": {
+        const verb = input.statement.trim().split(/\s+/)[0]?.toUpperCase() ?? "";
+        const action = { INSERT: "dynamodb:PartiQLInsert", UPDATE: "dynamodb:PartiQLUpdate", DELETE: "dynamodb:PartiQLDelete" }[verb] ?? "dynamodb:PartiQLSelect";
+        authorizeActions(caller, [{ action, resource: t.id }]);
+        const r = await executeStatement(engine, caller.accountId, t.region, input.statement);
+        return Response.json({ items: r.Items ? plain(r.Items) : undefined, ranAs: r.ranAs, index: r.index, scannedCount: r.scannedCount, translated: r.translated });
       }
       case "delete": {
         authorizeActions(caller, [{ action: "dynamodb:DeleteItem", resource: t.id }]);

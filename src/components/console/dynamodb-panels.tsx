@@ -38,6 +38,109 @@ const show = (v: unknown) => (v === undefined ? "" : typeof v === "string" ? v :
 /** A number-typed key's value typed as text is sent as a number. */
 const typedValue = (v: string, type: string | undefined) => (type === "N" && v.trim() !== "" && !Number.isNaN(Number(v)) ? Number(v) : v);
 
+/** PartiQL: SQL-like statements, with what each one ran as and how many items it read. */
+export function PartiqlCard({ table }: { table: ResourceDTO }) {
+  const run = useTableItems(table.id);
+  const [statement, setStatement] = useState(`SELECT * FROM "${table.name}" WHERE "${String(table.config.partitionKey)}" = 'value'`);
+  const r = run.data;
+  const pk = String(table.config.partitionKey);
+  const sk = table.config.sortKey ? String(table.config.sortKey) : null;
+  const examples: [string, string][] = [
+    ["Query by key", `SELECT * FROM "${table.name}" WHERE "${pk}" = 'value'`],
+    ["Scan everything", `SELECT * FROM "${table.name}"`],
+    ["Insert", `INSERT INTO "${table.name}" VALUE {'${pk}': 'value'${sk ? `, '${sk}': 'value'` : ""}}`],
+    ["Update", `UPDATE "${table.name}" SET "note" = 'hello' WHERE "${pk}" = 'value'${sk ? ` AND "${sk}" = 'value'` : ""}`],
+    ["Delete", `DELETE FROM "${table.name}" WHERE "${pk}" = 'value'${sk ? ` AND "${sk}" = 'value'` : ""}`],
+  ];
+  const columns = useMemo(() => {
+    const all = new Set<string>();
+    for (const it of r?.items ?? []) Object.keys(it).forEach((c) => all.add(c));
+    return [...all].slice(0, 8);
+  }, [r]);
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>PartiQL editor</CardTitle>
+        <CardDescription>
+          SQL-like statements: SELECT, INSERT, UPDATE, DELETE. Under the hood each one is a Query, Scan or item write. A SELECT without the partition key in WHERE quietly scans the whole table.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3 pb-5">
+        <div className="flex flex-wrap gap-2">
+          {examples.map(([label, e]) => (
+            <Button key={label} size="sm" variant="outline" title={e} onClick={() => setStatement(e)}>
+              {label}
+            </Button>
+          ))}
+        </div>
+        <textarea aria-label="PartiQL statement" className={textareaClass.replace("min-h-40", "min-h-24")} value={statement} onChange={(e) => setStatement(e.target.value)} spellCheck={false} />
+        <div className="flex flex-wrap items-center gap-3">
+          <Button onClick={() => run.mutate({ action: "statement", statement })} disabled={run.isPending || !statement.trim() || table.state !== "ACTIVE"}>
+            {run.isPending && <Loader2Icon className="animate-spin" />} Run
+          </Button>
+          {r?.ranAs && (
+            <span className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+              Ran as <Badge variant={r.ranAs === "Scan" ? "warning" : "secondary"}>{r.ranAs}{r.index ? ` on ${r.index}` : ""}</Badge>
+              {r.items && (
+                <>
+                  <span>
+                    returned <span className="font-medium text-foreground tabular-nums">{r.items.length}</span>
+                    {r.scannedCount !== undefined && (
+                      <>
+                        {" "}
+                        · read <span className="font-medium text-foreground tabular-nums">{r.scannedCount}</span>
+                      </>
+                    )}
+                  </span>
+                </>
+              )}
+            </span>
+          )}
+        </div>
+        {r?.ranAs === "Scan" && <p className="text-sm text-warning">This read every item in the table. Put the partition key in WHERE (with =) to make it a Query.</p>}
+        {r?.translated && (
+          <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-0.5 font-mono text-xs text-muted-foreground">
+            {Object.entries(r.translated)
+              .filter(([, v]) => v)
+              .map(([k, v]) => (
+                <div key={k} className="contents">
+                  <dt>{k}</dt>
+                  <dd className="break-all">{v}</dd>
+                </div>
+              ))}
+          </dl>
+        )}
+        <ErrorLine error={run.error} />
+        {r?.items && r.items.length > 0 && (
+          <Table>
+            <TableHeader>
+              <TableRow>
+                {columns.map((c) => (
+                  <TableHead key={c} className="font-mono text-xs">
+                    {c}
+                  </TableHead>
+                ))}
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {r.items.map((it, i) => (
+                <TableRow key={i}>
+                  {columns.map((c) => (
+                    <TableCell key={c} className="max-w-48 truncate font-mono text-xs" title={show(it[c])}>
+                      {show(it[c])}
+                    </TableCell>
+                  ))}
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        )}
+        {r?.ranAs && !r.items && !run.error && <p className="text-sm text-success">Done.</p>}
+      </CardContent>
+    </Card>
+  );
+}
+
 /** A table's page: scan or query (the table or an index), then create, edit or delete items. */
 export function TablePanel({ table }: { table: ResourceDTO }) {
   const indexes = (table.config.globalSecondaryIndexes as Record<string, string>[] | undefined) ?? [];

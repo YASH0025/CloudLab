@@ -435,6 +435,10 @@ const EXPLANATIONS: Record<string, ErrorExplanation> = {
     meaning: "The write had a condition (e.g. attribute_not_exists, so it never overwrites) and the condition was false, so nothing was written.",
     fix: "That's often the point: the item already exists. Read it first, or change the condition.",
   },
+  DuplicateItemException: {
+    meaning: "A PartiQL INSERT found an item with the same key already in the table. INSERT never overwrites.",
+    fix: "Use UPDATE to change the existing item, or pick a different key.",
+  },
   ProvisionedThroughputExceededException: {
     meaning: "The table got more reads or writes per second than its provisioned capacity, so DynamoDB rejected the extra ones (throttling).",
     fix: "Raise the capacity units, switch to on-demand capacity, or spread requests out. AWS SDKs retry these automatically with backoff.",

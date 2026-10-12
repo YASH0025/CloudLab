@@ -1,6 +1,8 @@
 import { deleteItem, getItem, putItem, query, scan, updateItem, type PageResult } from "@/engine/dynamodb/items";
+import { executeStatement } from "@/engine/dynamodb/partiql";
 import type { AttributeValue, Item } from "@/engine/dynamodb/values";
 import { EngineError } from "@/engine/errors";
+import { accountNumber } from "@/engine/ids";
 import { indexesOf, tableKey, tableNotFound } from "@/engine/services/dynamodb";
 import type { Resource } from "@/engine/types";
 import type { Args, CliContext, Command } from "./commands";
@@ -428,6 +430,28 @@ export const DYNAMODB_COMMANDS: Command[] = [
           select: args.one("select"),
         }),
       );
+    },
+  }),
+  cmd({
+    service: "dynamodb",
+    operation: "execute-statement",
+    apiName: "ExecuteStatement",
+    summary: "Run a PartiQL (SQL-like) statement: SELECT, INSERT, UPDATE or DELETE",
+    usage: "--statement <partiql, e.g. 'SELECT * FROM \"Orders\" WHERE customerId = ?'> [--parameters <json list of values>]",
+    mutates: true,
+    permissions(args, ctx) {
+      const st = args.one("statement") ?? "";
+      const verb = st.trim().split(/\s+/)[0]?.toUpperCase() ?? "";
+      const action = { SELECT: "dynamodb:PartiQLSelect", INSERT: "dynamodb:PartiQLInsert", UPDATE: "dynamodb:PartiQLUpdate", DELETE: "dynamodb:PartiQLDelete" }[verb] ?? "dynamodb:PartiQLSelect";
+      const m = /(?:FROM|INTO|UPDATE)\s+"?([A-Za-z0-9_.-]+)"?/i.exec(st);
+      return [{ action, resource: m ? `arn:aws:dynamodb:${ctx.region}:${accountNumber(ctx.accountId)}:table/${m[1]}` : "*" }];
+    },
+    async run(args, ctx) {
+      const statement = args.one("statement");
+      if (statement === undefined) throw new UsageError("the following arguments are required: --statement");
+      const params = jsonArg<AttributeValue[]>(ctx, args, "parameters") ?? [];
+      const r = await executeStatement(ctx.engine, ctx.accountId, ctx.region, statement, params);
+      return { Items: r.Items ?? [] };
     },
   }),
 ];

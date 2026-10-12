@@ -24,7 +24,8 @@ export type TableItemsInput =
       limit?: number;
     }
   | { action: "put"; item: Record<string, unknown>; mustBeNew?: boolean }
-  | { action: "delete"; key: Record<string, unknown> };
+  | { action: "delete"; key: Record<string, unknown> }
+  | { action: "statement"; statement: string };
 
 export interface TableItemsResult {
   items?: Record<string, unknown>[];
@@ -32,6 +33,9 @@ export interface TableItemsResult {
   scannedCount?: number;
   more?: boolean;
   expression?: string;
+  ranAs?: string;
+  index?: string;
+  translated?: { keyCondition?: string; filter?: string; update?: string; condition?: string };
 }
 
 export interface MetricQuery {
