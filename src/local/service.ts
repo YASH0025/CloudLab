@@ -110,6 +110,13 @@ export class LocalService {
     if (input.hostPort && apps.some((a) => a.hostPort === input.hostPort)) {
       throw new EngineError("PortInUse", `Port ${input.hostPort} is already used by another of your apps.`, 409);
     }
+    if (input.source.type === "folder" && agent.info?.folders && !agent.info.folders.includes(input.source.folder)) {
+      throw new EngineError(
+        "FolderNotFound",
+        `There's no folder '${input.source.folder}' in the CloudLab folder on your computer (${agent.info.workspace ?? "~/CloudLab"}). Put your project there first.`,
+        404,
+      );
+    }
     const at = this.iso();
     const source = input.source.type === "github" && !input.source.branch ? { type: "github" as const, repo: input.source.repo } : input.source;
     const app: AppRecord = {

@@ -1,0 +1,747 @@
+#!/usr/bin/env node
+/**
+ * CloudLab agent: runs your Local mode apps on this computer with Docker.
+ *
+ *   node cloudlab-agent.mjs connect <token> [--server https://…]   connect this computer, then run
+ *   node cloudlab-agent.mjs                                          run (after connecting once)
+ *   node cloudlab-agent.mjs status                                   show what's running
+ *   node cloudlab-agent.mjs disconnect                               forget the connection
+ *
+ * Your own projects: put a project folder inside the CloudLab folder in your home
+ * folder (it's created for you) and pick it when you deploy from CloudLab.
+ *
+ * How it works: every few seconds the agent tells CloudLab what this computer is
+ * running and asks for work (deploy, start, stop, remove). CloudLab never
+ * connects in to your computer. The agent only touches Docker containers and
+ * images it created itself (labelled cloudlab.app), and its own folder ~/.cloudlab.
+ *
+ * Needs Node.js 18 or newer and Docker. No npm packages.
+ */
+
+import { spawn } from "node:child_process";
+import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import readline from "node:readline";
+import net from "node:net";
+import os from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+export const AGENT_VERSION = "0.1.0";
+const DEFAULT_SERVER = "https://cloud-lab-livid.vercel.app";
+const HOME = path.join(os.homedir(), ".cloudlab");
+const CONFIG = path.join(HOME, "agent.json");
+const APPS_DIR = path.join(HOME, "apps");
+/** Where learners put their own projects to deploy: ~/CloudLab/<project>. */
+export const WORKSPACE = path.join(os.homedir(), "CloudLab");
+const POLL_MS = 3000;
+const LOGS_EVERY_MS = 15000;
+const MAX_LOG = 20000;
+const MAX_DOWNLOAD_BYTES = 200 * 1024 * 1024;
+
+const NAME = /^[a-z0-9][a-z0-9-]{0,30}$/;
+const REPO = /^https:\/\/github\.com\/([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/;
+const BRANCH = /^[\w./-]{1,100}$/;
+const FOLDER = /^[\w][\w .-]{0,63}$/;
+
+// ---------- small helpers ----------
+
+const log = (...a) => console.log(new Date().toLocaleTimeString(), ...a);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const tail = (text, n = MAX_LOG) => (text.length > n ? text.slice(-n) : text);
+
+/** Runs a program without a shell (arguments are never interpreted), collecting its output. */
+export function run(cmd, args, { cwd, onOutput, timeoutMs = 15 * 60_000, input } = {}) {
+  return new Promise((resolve) => {
+    let out = "";
+    let child;
+    try {
+      child = spawn(cmd, args, { cwd, windowsHide: true });
+    } catch (e) {
+      resolve({ code: -1, out: String(e.message ?? e) });
+      return;
+    }
+    const timer = setTimeout(() => child.kill("SIGKILL"), timeoutMs);
+    const add = (d) => {
+      out = tail(out + d.toString(), 200_000);
+      onOutput?.(out);
+    };
+    child.stdout.on("data", add);
+    child.stderr.on("data", add);
+    child.on("error", (e) => {
+      clearTimeout(timer);
+      resolve({ code: -1, out: e.code === "ENOENT" ? `${cmd} isn't installed (or isn't on the PATH).` : String(e.message) });
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      resolve({ code: code ?? -1, out });
+    });
+    if (input !== undefined) child.stdin.end(input);
+  });
+}
+
+const docker = (args, opts) => run("docker", args, opts);
+
+// ---------- what this computer is ----------
+
+async function dockerInfo() {
+  const r = await docker(["version", "--format", "{{.Server.Version}}"], { timeoutMs: 15000 });
+  if (r.code === 0) return { ok: true, version: r.out.trim() };
+  const why = /isn't installed/.test(r.out)
+    ? "Docker isn't installed. Install Docker Desktop (or Docker Engine on Linux), start it, then restart the agent."
+    : "Docker is installed but not running. Start Docker Desktop (or the docker service) and wait until it's ready.";
+  return { ok: false, error: why };
+}
+
+export async function computerInfo() {
+  const cpus = os.cpus();
+  return {
+    hostname: os.hostname().slice(0, 200),
+    platform: os.platform(),
+    release: os.release().slice(0, 100),
+    arch: os.arch(),
+    cpus: cpus.length,
+    cpuModel: (cpus[0]?.model ?? "").trim().slice(0, 200),
+    memTotal: os.totalmem(),
+    memFree: os.freemem(),
+    docker: await dockerInfo(),
+    agentVersion: AGENT_VERSION,
+    workspace: WORKSPACE,
+    folders: projectFolders(),
+  };
+}
+
+/** The project folders in ~/CloudLab, creating it (with a note) the first time. */
+export function projectFolders(root = WORKSPACE) {
+  try {
+    if (!existsSync(root)) {
+      mkdirSync(root, { recursive: true });
+      writeFileSync(
+        path.join(root, "README.txt"),
+        "Put each project you want to run with CloudLab in its own folder here, e.g. CloudLab/my-site.\n" +
+          "Then open Local mode in CloudLab, choose 'A folder on my computer' and pick it.\n" +
+          "A project needs a Dockerfile, or a package.json (Node.js), requirements.txt (Python) or index.html (static site) at its top.\n",
+      );
+    }
+    return readdirSync(root, { withFileTypes: true })
+      .filter((d) => d.isDirectory() && FOLDER.test(d.name) && !d.name.startsWith("."))
+      .map((d) => d.name)
+      .sort()
+      .slice(0, 100);
+  } catch {
+    return [];
+  }
+}
+
+/** Copies a project out of ~/CloudLab to build it, leaving the original untouched (and skipping node_modules, .git). */
+function copyProject(folder, dir, root = WORKSPACE) {
+  if (!FOLDER.test(folder) || folder.includes("..")) throw new Error("Invalid folder name.");
+  const src = path.join(root, folder);
+  if (!existsSync(src) || !lstatSync(src).isDirectory()) throw new Error(`There's no folder ${folder} in ${root} any more.`);
+  let size = 0;
+  cpSync(src, dir, {
+    recursive: true,
+    dereference: false,
+    filter: (from) => {
+      const base = path.basename(from);
+      if (base === "node_modules" || base === ".git" || base === "__pycache__" || base === ".venv") return false;
+      try {
+        // Links could point anywhere on the computer: they're left out.
+        const st = lstatSync(from);
+        if (st.isSymbolicLink()) return false;
+        size += st.isFile() ? st.size : 0;
+      } catch {
+        return false;
+      }
+      if (size > MAX_DOWNLOAD_BYTES) throw new Error("The folder is over 200 MB (not counting node_modules and .git). Local mode keeps to smaller apps for now.");
+      return true;
+    },
+  });
+}
+
+// ---------- talking to CloudLab ----------
+
+class Api {
+  constructor(server, token) {
+    this.server = server.replace(/\/+$/, "");
+    this.token = token;
+  }
+
+  async post(pathname, body) {
+    const res = await fetch(this.server + pathname, {
+      method: "POST",
+      headers: { authorization: `Bearer ${this.token}`, "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (res.status === 204) return null;
+    const data = await res.json().catch(() => null);
+    if (!res.ok) {
+      const err = new Error(data?.error?.message ?? `CloudLab answered ${res.status}`);
+      err.status = res.status;
+      throw err;
+    }
+    return data;
+  }
+
+  sync(body) {
+    return this.post("/api/agent/sync", body);
+  }
+
+  report(appId, r) {
+    return this.post(`/api/agent/apps/${encodeURIComponent(appId)}/report`, r).catch((e) => log("Couldn't report progress:", e.message));
+  }
+
+  finish(taskId, status, error) {
+    return this.post(`/api/agent/tasks/${encodeURIComponent(taskId)}`, { status, ...(error ? { error: error.slice(0, 1000) } : {}) }).catch(() => undefined);
+  }
+}
+
+// ---------- CloudLab's containers ----------
+
+const containerName = (name) => `cloudlab-${name}`;
+const imageName = (name) => `cloudlab/${name}:latest`;
+
+/** Every container the agent made, from Docker's point of view. */
+export async function inventory() {
+  const r = await docker(["ps", "-a", "--filter", "label=cloudlab.app", "--format", "{{json .}}"], { timeoutMs: 20000 });
+  if (r.code !== 0) return null;
+  const out = [];
+  for (const line of r.out.split("\n")) {
+    if (!line.trim().startsWith("{")) continue;
+    try {
+      const c = JSON.parse(line);
+      const labels = Object.fromEntries(
+        String(c.Labels ?? "")
+          .split(",")
+          .map((kv) => kv.split("="))
+          .filter((kv) => kv.length >= 2)
+          .map(([k, ...v]) => [k, v.join("=")]),
+      );
+      if (!labels["cloudlab.app"]) continue;
+      out.push({
+        id: labels["cloudlab.app"],
+        name: labels["cloudlab.name"] ?? "",
+        container: c.Names,
+        running: c.State === "running",
+        state: c.State,
+        exitCode: Number(/Exited \((\d+)\)/.exec(String(c.Status ?? ""))?.[1] ?? 0),
+        hostPort: labels["cloudlab.port"] ? Number(labels["cloudlab.port"]) : null,
+        containerPort: labels["cloudlab.containerPort"] ? Number(labels["cloudlab.containerPort"]) : null,
+        runtime: labels["cloudlab.runtime"] ?? null,
+      });
+    } catch {
+      // not one of ours, or Docker printed something unexpected
+    }
+  }
+  return out;
+}
+
+async function containerFor(appId) {
+  return (await inventory())?.find((c) => c.id === appId) ?? null;
+}
+
+async function containerLogs(container) {
+  const r = await docker(["logs", "--tail", "200", container], { timeoutMs: 15000 });
+  return tail(r.out);
+}
+
+// ---------- getting the code ----------
+
+const SAMPLE_FILES = {
+  "node-express": {
+    "package.json": JSON.stringify({ name: "cloudlab-sample", version: "1.0.0", private: true, main: "server.js", scripts: { start: "node server.js" }, dependencies: { express: "^4.21.2" } }, null, 2) + "\n",
+    "server.js": `const express = require("express");
+const os = require("os");
+
+const app = express();
+const port = process.env.PORT || 3000;
+
+app.get("/", (req, res) => {
+  res.send(\`<!doctype html><title>Hello from CloudLab</title>
+<body style="font-family:system-ui;max-width:40rem;margin:4rem auto;line-height:1.6">
+<h1>It works!</h1>
+<p>This Node.js + Express app is running in a Docker container on <b>\${os.hostname()}</b>.</p>
+<p>Edit <code>server.js</code>, redeploy, and refresh.</p>
+</body>\`);
+});
+
+app.get("/health", (req, res) => res.json({ ok: true, time: new Date().toISOString() }));
+
+// 0.0.0.0, not localhost: inside a container, localhost is only reachable from the container itself.
+app.listen(port, "0.0.0.0", () => console.log(\`Listening on port \${port}\`));
+`,
+  },
+  "python-flask": {
+    "requirements.txt": "flask>=3.0\n",
+    "app.py": `import os
+import socket
+
+from flask import Flask, jsonify
+
+app = Flask(__name__)
+
+
+@app.get("/")
+def home():
+    return f"""<!doctype html><title>Hello from CloudLab</title>
+<body style="font-family:system-ui;max-width:40rem;margin:4rem auto;line-height:1.6">
+<h1>It works!</h1>
+<p>This Python + Flask app is running in a Docker container on <b>{socket.gethostname()}</b>.</p>
+<p>Edit <code>app.py</code>, redeploy, and refresh.</p>
+</body>"""
+
+
+@app.get("/health")
+def health():
+    return jsonify(ok=True)
+
+
+if __name__ == "__main__":
+    # 0.0.0.0, not 127.0.0.1: inside a container, 127.0.0.1 is only reachable from the container itself.
+    print(f"Listening on port {os.environ.get('PORT', 8000)}", flush=True)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
+`,
+  },
+  "static-site": {
+    "index.html": `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Hello from CloudLab</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main>
+    <h1>It works!</h1>
+    <p>This page is served by nginx, in a Docker container on your own computer.</p>
+    <p>Edit <code>index.html</code>, redeploy, and refresh.</p>
+  </main>
+</body>
+</html>
+`,
+    "style.css": "body { font-family: system-ui, sans-serif; background: #f5f7fb; color: #172033; }\nmain { max-width: 40rem; margin: 4rem auto; line-height: 1.6; }\nh1 { color: #1a73ff; }\n",
+  },
+};
+
+function writeFiles(dir, files) {
+  for (const [name, content] of Object.entries(files)) {
+    const file = path.join(dir, name);
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, content);
+  }
+}
+
+/** Downloads a public GitHub repository into `dir` (git if installed, else the tarball). */
+async function fetchRepo(source, dir, progress) {
+  const m = REPO.exec(source.repo);
+  if (!m) throw new Error("That isn't a public GitHub repository URL.");
+  if (source.branch && !BRANCH.test(source.branch)) throw new Error("That branch name isn't valid.");
+  const [, owner, repo] = m;
+  const url = `https://github.com/${owner}/${repo}.git`;
+
+  const git = await run("git", ["--version"], { timeoutMs: 10000 });
+  if (git.code === 0) {
+    progress(`Cloning ${owner}/${repo}…`);
+    const args = ["clone", "--depth", "1", ...(source.branch ? ["--branch", source.branch] : []), url, dir];
+    const r = await run("git", args, { timeoutMs: 5 * 60_000, onOutput: (o) => progress(null, o) });
+    if (r.code !== 0) {
+      throw new Error(/not found|Repository not found|could not read Username/i.test(r.out) ? `GitHub has no public repository ${owner}/${repo}${source.branch ? ` with a branch ${source.branch}` : ""}.` : `git clone failed:\n${tail(r.out, 2000)}`);
+    }
+    return;
+  }
+
+  progress(`Downloading ${owner}/${repo}…`);
+  const ref = source.branch ? `refs/heads/${source.branch}` : "HEAD";
+  const res = await fetch(`https://codeload.github.com/${owner}/${repo}/tar.gz/${ref}`);
+  if (res.status === 404) throw new Error(`GitHub has no public repository ${owner}/${repo}${source.branch ? ` with a branch ${source.branch}` : ""}.`);
+  if (!res.ok) throw new Error(`GitHub answered ${res.status} for ${owner}/${repo}.`);
+  const buf = Buffer.from(await res.arrayBuffer());
+  if (buf.length > MAX_DOWNLOAD_BYTES) throw new Error("The repository is over 200 MB. Local mode keeps to smaller apps for now.");
+  mkdirSync(dir, { recursive: true });
+  const archive = path.join(dir, "..", "source.tar.gz");
+  writeFileSync(archive, buf);
+  const r = await run("tar", ["-xzf", archive, "-C", dir, "--strip-components=1"]);
+  rmSync(archive, { force: true });
+  if (r.code !== 0) throw new Error(`Couldn't unpack the download:\n${tail(r.out, 1000)}`);
+}
+
+// ---------- how to run it ----------
+
+/**
+ * Works out how to build and run the code in `dir`: its own Dockerfile if it has one,
+ * else a Dockerfile for Node.js (package.json), Python (requirements.txt) or a static
+ * site (index.html). Returns null when it can't tell.
+ */
+export function detect(dir) {
+  const has = (f) => existsSync(path.join(dir, f));
+  if (has("Dockerfile")) {
+    const text = readFileSync(path.join(dir, "Dockerfile"), "utf8");
+    const port = /^\s*EXPOSE\s+(\d+)/im.exec(text)?.[1];
+    return { runtime: "Dockerfile", containerPort: port ? Number(port) : 8080, dockerfile: null };
+  }
+  if (has("package.json")) {
+    let pkg = {};
+    try {
+      pkg = JSON.parse(readFileSync(path.join(dir, "package.json"), "utf8"));
+    } catch {
+      // a broken package.json fails at npm install, with npm's own message
+    }
+    const start = pkg.scripts?.start ? ["npm", "start"] : ["node", pkg.main || "index.js"];
+    const build = pkg.scripts?.build ? "RUN npm run build\n" : "";
+    return {
+      runtime: "Node.js 22",
+      containerPort: 3000,
+      dockerfile: `FROM node:22-alpine
+WORKDIR /app
+COPY package*.json ./
+RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi
+COPY . .
+${build}ENV PORT=3000 HOST=0.0.0.0 NODE_ENV=production
+EXPOSE 3000
+CMD ${JSON.stringify(start)}
+`,
+    };
+  }
+  if (has("requirements.txt")) {
+    const entry = ["app.py", "main.py", "server.py", "wsgi.py"].find(has) ?? "app.py";
+    return {
+      runtime: "Python 3.12",
+      containerPort: 8000,
+      dockerfile: `FROM python:3.12-slim
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY . .
+ENV PORT=8000 HOST=0.0.0.0 PYTHONUNBUFFERED=1
+EXPOSE 8000
+CMD ["python", ${JSON.stringify(entry)}]
+`,
+    };
+  }
+  if (has("index.html")) {
+    return { runtime: "nginx (static site)", containerPort: 80, dockerfile: "FROM nginx:alpine\nCOPY . /usr/share/nginx/html\nEXPOSE 80\n" };
+  }
+  return null;
+}
+
+/** The first free port from `start`, on this computer. */
+export function freePort(start = 8080, taken = []) {
+  const tryPort = (port) =>
+    new Promise((resolve) => {
+      const s = net.createServer();
+      s.once("error", () => resolve(false));
+      s.listen(port, "0.0.0.0", () => s.close(() => resolve(true)));
+    });
+  return (async () => {
+    for (let p = start; p < start + 200; p++) if (!taken.includes(p) && (await tryPort(p))) return p;
+    throw new Error("Couldn't find a free port between 8080 and 8280.");
+  })();
+}
+
+// ---------- tasks ----------
+
+/**
+ * How a container's state reads in CloudLab. An app that exited with an error (not
+ * because it was stopped) or that Docker keeps restarting has failed.
+ */
+export function appState(c) {
+  if (c.running) return { status: "running", detail: `Running on port ${c.hostPort}.` };
+  if (c.state === "restarting") return { status: "failed", detail: "The app keeps crashing, and Docker keeps restarting it. Its logs say why." };
+  const stopped = c.exitCode === 0 || c.exitCode === 137 || c.exitCode === 143;
+  return stopped ? { status: "stopped", detail: "Stopped. Start it again whenever you like." } : { status: "failed" };
+}
+
+export class Agent {
+  constructor(api) {
+    this.api = api;
+    this.busy = new Set();
+    this.lastLogs = 0;
+  }
+
+  async deploy(task) {
+    const { appId, name, source, hostPort } = task.payload;
+    if (!NAME.test(name ?? "")) throw new Error("Invalid app name.");
+    this.busy.add(appId);
+    let buildLog = "";
+    let lastSent = 0;
+    const report = (r) => this.api.report(appId, r);
+    const progress = (detail, output) => {
+      if (output !== undefined) buildLog = tail(output);
+      if (detail) report({ detail, buildLog });
+      else if (Date.now() - lastSent > 2000) {
+        lastSent = Date.now();
+        report({ buildLog });
+      }
+    };
+    try {
+      const info = await dockerInfo();
+      if (!info.ok) throw new Error(info.error);
+
+      // 1. Get the code into a fresh folder.
+      const dir = path.join(APPS_DIR, appId, "src");
+      rmSync(path.dirname(dir), { recursive: true, force: true });
+      mkdirSync(path.dirname(dir), { recursive: true });
+      const preparing = { sample: "Preparing the sample app…", folder: `Copying ${source.folder ?? "the folder"}…`, github: "Downloading the code…" }[source.type];
+      await report({ status: "downloading", detail: preparing, buildLog: "" });
+      if (source.type === "folder") {
+        copyProject(source.folder, dir);
+      } else if (source.type === "sample") {
+        const files = SAMPLE_FILES[source.sample];
+        if (!files) throw new Error(`Unknown sample ${source.sample}.`);
+        mkdirSync(dir, { recursive: true });
+        writeFiles(dir, files);
+      } else {
+        await fetchRepo(source, dir, progress);
+      }
+
+      // 2. Work out how to run it, and build the image.
+      const plan = detect(dir);
+      if (!plan) {
+        const where = source.type === "folder" ? `the folder ${source.folder}` : "the repository";
+        throw new Error(`Couldn't tell how to run this code: there's no Dockerfile, package.json, requirements.txt or index.html at the top of ${where}. Add a Dockerfile.`);
+      }
+      if (plan.dockerfile && !existsSync(path.join(dir, "Dockerfile"))) writeFileSync(path.join(dir, "Dockerfile"), plan.dockerfile);
+      if (!existsSync(path.join(dir, ".dockerignore"))) writeFileSync(path.join(dir, ".dockerignore"), "node_modules\n.git\n");
+      await report({ status: "building", detail: `Building the image (${plan.runtime})…`, runtime: plan.runtime });
+      const build = await docker(["build", "-t", imageName(name), "--label", `cloudlab.app=${appId}`, dir], { onOutput: (o) => progress(null, o) });
+      buildLog = tail(build.out);
+      if (build.code !== 0) throw new Error("The image didn't build. The build log says why (look near the end).");
+
+      // 3. Replace any previous container and start the new one.
+      await report({ status: "starting", detail: "Starting the container…", buildLog });
+      await docker(["rm", "-f", containerName(name)]);
+      const others = ((await inventory()) ?? []).filter((c) => c.id !== appId).map((c) => c.hostPort);
+      const port = hostPort ?? (await freePort(8080, others));
+      const started = await docker([
+        "run",
+        "-d",
+        "--name",
+        containerName(name),
+        "--label",
+        `cloudlab.app=${appId}`,
+        "--label",
+        `cloudlab.name=${name}`,
+        "--label",
+        `cloudlab.port=${port}`,
+        "--label",
+        `cloudlab.containerPort=${plan.containerPort}`,
+        "--label",
+        `cloudlab.runtime=${plan.runtime}`,
+        "--restart",
+        "unless-stopped",
+        "--memory",
+        "512m",
+        "--cpus",
+        "1",
+        "-e",
+        `PORT=${plan.containerPort}`,
+        "-p",
+        `${port}:${plan.containerPort}`,
+        imageName(name),
+      ]);
+      if (started.code !== 0) {
+        throw new Error(/port is already allocated|address already in use/i.test(started.out) ? `Port ${port} is already used by another program on your computer. Redeploy with another port.` : `Docker couldn't start it:\n${tail(started.out, 1000)}`);
+      }
+
+      // 4. Give it a moment: an app that crashes on start shows up here.
+      await sleep(3000);
+      const c = await containerFor(appId);
+      const logs = await containerLogs(containerName(name));
+      if (!c?.running) {
+        // Don't let Docker keep restarting an app that can't start.
+        await docker(["update", "--restart=no", containerName(name)]);
+        await docker(["stop", "-t", "2", containerName(name)]);
+        await report({ status: "failed", detail: "The app started and then stopped. Its logs say why.", hostPort: port, containerPort: plan.containerPort, logs, buildLog });
+        return "The app exited right after starting.";
+      }
+      await report({ status: "running", detail: `Running on port ${port}.`, hostPort: port, containerPort: plan.containerPort, runtime: plan.runtime, logs, buildLog });
+      log(`${name} is running: http://localhost:${port}`);
+      return null;
+    } catch (e) {
+      await report({ status: "failed", detail: String(e.message ?? e).slice(0, 500), buildLog });
+      return String(e.message ?? e);
+    } finally {
+      this.busy.delete(appId);
+    }
+  }
+
+  async lifecycle(task) {
+    const { appId } = task.payload;
+    const c = await containerFor(appId);
+    if (!c) {
+      if (task.type === "remove") return null;
+      await this.api.report(appId, { status: "missing", detail: "The app's container isn't on this computer any more. Redeploy it to bring it back." });
+      return "The container doesn't exist.";
+    }
+    if (task.type === "remove") {
+      await docker(["rm", "-f", c.container]);
+      if (c.name) await docker(["rmi", imageName(c.name)]);
+      rmSync(path.join(APPS_DIR, appId), { recursive: true, force: true });
+      log(`Removed ${c.name || appId}.`);
+      return null;
+    }
+    const r = await docker(task.type === "start" ? ["start", c.container] : [task.type, "-t", "5", c.container]);
+    if (r.code !== 0) return tail(r.out, 1000);
+    const now = await containerFor(appId);
+    await this.api.report(appId, {
+      status: now?.running ? "running" : "stopped",
+      detail: now?.running ? `Running on port ${c.hostPort}.` : "Stopped. Start it again whenever you like.",
+      ...(now?.running ? { logs: await containerLogs(c.container) } : {}),
+    });
+    return null;
+  }
+
+  async handle(task) {
+    log(`Task: ${task.type}${task.payload.name ? ` ${task.payload.name}` : ""}`);
+    const error = task.type === "deploy" ? await this.deploy(task) : await this.lifecycle(task);
+    await this.api.finish(task.id, error ? "failed" : "done", error ?? undefined);
+    if (error) log(`  failed: ${error.split("\n")[0]}`);
+  }
+
+  /** One check-in: report the computer and its apps, and do whatever work comes back. */
+  async tick() {
+    const info = await computerInfo();
+    const found = info.docker.ok ? await inventory() : null;
+    const withLogs = Date.now() - this.lastLogs > LOGS_EVERY_MS;
+    if (withLogs) this.lastLogs = Date.now();
+    const apps = [];
+    for (const c of found ?? []) {
+      if (this.busy.has(c.id)) continue;
+      apps.push({
+        id: c.id,
+        ...appState(c),
+        hostPort: c.hostPort,
+        containerPort: c.containerPort,
+        runtime: c.runtime,
+        ...(withLogs && c.running ? { logs: await containerLogs(c.container) } : {}),
+      });
+    }
+    const { tasks } = await this.api.sync({ info, apps, complete: found !== null && this.busy.size === 0 });
+    for (const t of tasks) await this.handle(t);
+  }
+}
+
+// ---------- command line ----------
+
+function readConfig() {
+  try {
+    return JSON.parse(readFileSync(CONFIG, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function saveConfig(c) {
+  mkdirSync(HOME, { recursive: true });
+  writeFileSync(CONFIG, JSON.stringify(c, null, 2), { mode: 0o600 });
+}
+
+function ask(question) {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  return new Promise((resolve) => rl.question(question, (a) => (rl.close(), resolve(a))));
+}
+
+async function main(argv) {
+  const [command, ...rest] = argv;
+  const flag = (name) => {
+    const i = rest.indexOf(`--${name}`);
+    return i >= 0 ? rest[i + 1] : undefined;
+  };
+
+  if (command === "disconnect") {
+    rmSync(CONFIG, { force: true });
+    console.log("Disconnected. Your apps' containers are still in Docker; delete them from CloudLab (or with docker rm) if you don't need them.");
+    return;
+  }
+
+  if (command === "status") {
+    const found = await inventory();
+    if (!found) return console.log("Docker isn't running.");
+    if (!found.length) return console.log("No CloudLab apps on this computer.");
+    for (const c of found) console.log(`${c.name.padEnd(32)} ${c.running ? "running" : "stopped"}  http://localhost:${c.hostPort}`);
+    return;
+  }
+
+  let config = readConfig();
+  if (command === "connect") {
+    const token = rest.find((a) => a.startsWith("cla_"));
+    if (!token) {
+      console.error("Usage: node cloudlab-agent.mjs connect <token> [--server https://…]\nCopy the full command from CloudLab → Local mode → Connect my computer.");
+      process.exitCode = 1;
+      return;
+    }
+    config = { server: flag("server") ?? DEFAULT_SERVER, token };
+    saveConfig(config);
+  } else if (command) {
+    console.error(`Unknown command '${command}'. Use connect, status or disconnect, or nothing to run the agent.`);
+    process.exitCode = 1;
+    return;
+  }
+  if (!config && process.stdin.isTTY) {
+    // Started by double-click (the downloaded app): ask for the connect code.
+    console.log("CloudLab agent: run your CloudLab apps on this computer.\n");
+    console.log("In CloudLab, open Local mode and click Connect my computer. Copy the connect code (it starts with cla_).");
+    const answer = (await ask("Paste the connect code here and press Enter: ")).trim();
+    const token = /cla_[\w-]{20,}/.exec(answer)?.[0];
+    if (!token) {
+      console.error("That doesn't look like a connect code.");
+      process.exitCode = 1;
+      return;
+    }
+    config = { server: /--server\s+(\S+)/.exec(answer)?.[1] ?? DEFAULT_SERVER, token };
+    saveConfig(config);
+    console.log("Connected. Next time, just open the agent again.\n");
+  }
+  if (!config) {
+    console.error("This computer isn't connected yet. In CloudLab, open Local mode, click Connect my computer and run the command it shows.");
+    process.exitCode = 1;
+    return;
+  }
+
+  const agent = new Agent(new Api(config.server, config.token));
+  const info = await computerInfo();
+  console.log(`CloudLab agent ${AGENT_VERSION} on ${info.hostname} (${info.platform}, ${info.cpus} CPUs, ${(info.memTotal / 2 ** 30).toFixed(1)} GB RAM)`);
+  console.log(info.docker.ok ? `Docker ${info.docker.version} is ready.` : `Warning: ${info.docker.error}`);
+  console.log(`Connected to ${config.server}. Leave this window open; press Ctrl+C to stop.`);
+  console.log(`Your own projects go in ${WORKSPACE} (one folder per project).\n`);
+
+  let failures = 0;
+  for (;;) {
+    try {
+      await agent.tick();
+      if (failures) log("Back in touch with CloudLab.");
+      failures = 0;
+    } catch (e) {
+      if (e.status === 401) {
+        console.error(`\n${e.message}`);
+        process.exitCode = 1;
+        return;
+      }
+      if (failures++ === 0) log(`Can't reach CloudLab (${e.message}). Retrying…`);
+    }
+    await sleep(failures ? Math.min(30_000, POLL_MS * 2 ** Math.min(failures, 4)) : POLL_MS);
+  }
+}
+
+// Only run when started as a program (or as the downloaded app), not when imported by tests.
+const isMain = import.meta.main ?? (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url));
+if (isMain) {
+  const [major] = process.versions.node.split(".").map(Number);
+  if (major < 18) {
+    console.error(`The CloudLab agent needs Node.js 18 or newer (this is ${process.versions.node}).`);
+    process.exit(1);
+  }
+  const args = process.argv.slice(2);
+  main(args)
+    .catch((e) => {
+      console.error(e?.message ?? e);
+      process.exitCode = 1;
+    })
+    .finally(async () => {
+      // A double-clicked window would vanish before the message could be read.
+      if (process.exitCode && args.length === 0 && process.stdin.isTTY) await ask("\nPress Enter to close.");
+    });
+}
+
+// For tests.
+export { SAMPLE_FILES, containerName, copyProject, imageName };

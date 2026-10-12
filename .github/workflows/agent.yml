@@ -1,0 +1,39 @@
+name: CloudLab agent
+
+# Builds the agent as one download per platform (no Node.js needed on the
+# learner's computer) and publishes it to the "agent-latest" release, which
+# the Local mode page links to.
+on:
+  push:
+    branches: [main]
+    paths: ["public/agent/**", ".github/workflows/agent.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.3
+      - name: Build for every platform
+        run: |
+          mkdir -p dist
+          for target in windows-x64 darwin-arm64 darwin-x64 linux-x64 linux-arm64; do
+            ext=""; [ "$target" = "windows-x64" ] && ext=".exe"
+            bun build --compile --minify --target=bun-$target public/agent/cloudlab-agent.mjs --outfile dist/cloudlab-agent-$target$ext
+          done
+          cp public/agent/cloudlab-agent.mjs dist/
+          ls -la dist
+      - name: Publish to the agent-latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view agent-latest >/dev/null 2>&1 || \
+            gh release create agent-latest --title "CloudLab agent" --latest=false \
+              --notes "The CloudLab agent runs your Local mode apps on your own computer with Docker. Download the file for your computer from CloudLab → Local mode."
+          gh release upload agent-latest dist/* --clobber
