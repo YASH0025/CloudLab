@@ -6,7 +6,8 @@ import { api, ApiError, type MetricQuery, type QueueActionInput, type TableItems
 import { queryKeys } from "@/lib/query-keys";
 import { localTableItems, serverObjects, type ObjectsBackend } from "@/lib/objects-backend";
 import { LOCAL_REGION, REGIONS } from "@/engine/catalog";
-import { resolveServices } from "@/engine/registry";
+import { resolveCatalog } from "@/engine/resolve";
+import { useServiceCatalog } from "@/components/console/service-catalog";
 import { useConsoleStore } from "@/stores/console-store";
 import { useGuideStore } from "@/stores/guide-store";
 import type { ResourceDTO } from "@/engine/types";
@@ -28,15 +29,17 @@ const LIVE_TYPES = new Set(["auto-scaling-group", "target-group", "load-balancer
 // Databases poll only while changing state (creating, modifying, rebooting…), like other resources.
 
 /**
- * The service catalogue is static data, so it's computed in place rather than fetched.
- * That way the server and the browser render exactly the same thing on first load.
+ * The service catalogue is static data that the console layout hands down (built on
+ * the server), so it's filled in for the region in place rather than fetched. That
+ * way the server and the browser render exactly the same thing on first load.
  */
 export function useServices() {
   const region = useConsoleStore((s) => s.region);
+  const catalog = useServiceCatalog();
   return useQuery({
     queryKey: queryKeys.services(region),
     queryFn: () => api.services(region),
-    initialData: () => ({ region, regions: REGIONS, services: resolveServices(region) }),
+    initialData: catalog ? () => ({ region, regions: REGIONS, services: resolveCatalog(catalog, region) }) : undefined,
     // Never stale, so TanStack Query doesn't need the clock (prerendering can't read it).
     initialDataUpdatedAt: 0,
     staleTime: "static",

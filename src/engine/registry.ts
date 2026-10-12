@@ -1,4 +1,3 @@
-import { resolveOptions } from "./catalog";
 import { errors } from "./errors";
 import { computeService } from "./services/compute";
 import { autoScalingService } from "./services/autoscaling";
@@ -17,7 +16,8 @@ import { dynamodbService } from "./services/dynamodb";
 import { cloudFormationService } from "./services/cloudformation";
 import { objectType, storageService } from "./services/storage";
 import { progressType } from "./services/progress";
-import type { FieldDef, ResolvedServiceDef, ResolvedTypeDef, ResourceTypeDef, ServiceDef } from "./types";
+import { resolveCatalog, resolveTypeFields, type ServiceCatalog } from "./resolve";
+import type { ResolvedServiceDef, ResolvedTypeDef, ResourceTypeDef, ServiceDef } from "./types";
 
 /** Every service the platform simulates. Add new service definitions here. */
 export const SERVICES: ServiceDef[] = [
@@ -51,22 +51,50 @@ export function getTypeDef(service: string, type: string): ResourceTypeDef {
   return def;
 }
 
-function resolveFields(fields: FieldDef[], region: string): FieldDef[] {
-  return fields.map((f) => {
-    const resolved: FieldDef = { ...f };
-    if (f.optionsSource) resolved.options = resolveOptions(f.optionsSource, region);
-    if (f.item) resolved.item = resolveFields(f.item, region);
-    return resolved;
-  });
+/** Keys of a type definition that are server-only (engine hooks, IAM, ID patterns…). */
+const SERVER_ONLY = new Set([
+  "validate",
+  "derive",
+  "invalidValue",
+  "dependencyMessage",
+  "canDelete",
+  "afterCreate",
+  "afterUpdate",
+  "afterDelete",
+  "onSettled",
+  "dependencyError",
+  "notFoundMessage",
+  "makeId",
+  "iam",
+  "beforeDelete",
+  "privateAttributes",
+  "idPattern",
+  "malformedMessage",
+  "notFoundByNameMessage",
+  "beforeAction",
+  "normalize",
+]);
+
+/** A type definition as plain data: server-only parts removed, and any function inside (field hooks) dropped. */
+function plainTypeDef(def: ResourceTypeDef): ResolvedTypeDef {
+  const data = Object.fromEntries(Object.entries(def).filter(([k]) => !SERVER_ONLY.has(k)));
+  return JSON.parse(JSON.stringify(data)) as ResolvedTypeDef;
 }
 
-/** A type definition with region-dependent options filled in and server-only hooks removed. */
+let catalog: ServiceCatalog | null = null;
+
+/** Every service as plain data, for the browser (see engine/resolve.ts). */
+export function serviceCatalog(): ServiceCatalog {
+  catalog ??= SERVICES.map((s) => ({ ...JSON.parse(JSON.stringify({ ...s, types: [] })), types: s.types.map(plainTypeDef) }));
+  return catalog;
+}
+
+/** A type definition with region-dependent options filled in, for the engine's own checks (hooks dropped, the rest as is). */
 export function resolveTypeDef(def: ResourceTypeDef, region: string): ResolvedTypeDef {
-  // Hooks are server-only functions; everything else is plain data.
   const data = Object.fromEntries(Object.entries(def).filter(([, v]) => typeof v !== "function")) as ResolvedTypeDef;
-  return { ...data, fields: resolveFields(def.fields, region) };
+  return resolveTypeFields(data, region);
 }
 
 export function resolveServices(region: string): ResolvedServiceDef[] {
-  return SERVICES.map((s) => ({ ...s, types: s.types.map((t) => resolveTypeDef(t, region)) }));
+  return resolveCatalog(serviceCatalog(), region);
 }

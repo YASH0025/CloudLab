@@ -1,8 +1,13 @@
-import { COMMANDS } from "./commands";
+/** What tab completion needs to know about a command: just its name and usage line (no CLI code). */
+export interface CommandIndexEntry {
+  service: string;
+  operation: string;
+  usage: string;
+}
 
 /** Option names for a command, read from its usage string. */
-function optionsFor(service: string, operation: string): string[] {
-  const usage = COMMANDS.find((c) => c.service === service && c.operation === operation)?.usage ?? "";
+function optionsFor(commands: CommandIndexEntry[], service: string, operation: string): string[] {
+  const usage = commands.find((c) => c.service === service && c.operation === operation)?.usage ?? "";
   return [...new Set([...usage.matchAll(/--[a-z0-9-]+/g)].map((m) => m[0]).concat("--region"))];
 }
 
@@ -10,7 +15,7 @@ function optionsFor(service: string, operation: string): string[] {
  * Tab completion for the terminal: services, operations and option names.
  * Returns the candidates that match the word being typed.
  */
-export function complete(line: string): { word: string; candidates: string[] } {
+export function complete(line: string, commands: CommandIndexEntry[]): { word: string; candidates: string[] } {
   const parts = line.split(/\s+/);
   const word = parts[parts.length - 1] ?? "";
   const before = parts.slice(0, -1).filter(Boolean);
@@ -18,9 +23,9 @@ export function complete(line: string): { word: string; candidates: string[] } {
   let pool: string[] = [];
   if (before.length === 0) pool = ["aws", "help", "clear"];
   else if (before[0] !== "aws") pool = [];
-  else if (before.length === 1) pool = [...new Set(COMMANDS.map((c) => c.service))];
-  else if (before.length === 2) pool = COMMANDS.filter((c) => c.service === before[1]).map((c) => c.operation);
-  else if (word.startsWith("-")) pool = optionsFor(before[1], before[2]);
+  else if (before.length === 1) pool = [...new Set(commands.map((c) => c.service))];
+  else if (before.length === 2) pool = commands.filter((c) => c.service === before[1]).map((c) => c.operation);
+  else if (word.startsWith("-")) pool = optionsFor(commands, before[1], before[2]);
 
   return { word, candidates: pool.filter((p) => p.startsWith(word)).sort() };
 }

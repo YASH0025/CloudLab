@@ -3,6 +3,7 @@
 import { useSearchParams } from "next/navigation";
 import { useEffect, useRef } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import type { CommandIndexEntry } from "@/cli/complete";
 import { Terminal, type TerminalHandle } from "./terminal";
 
 const examples: { label: string; command: string }[] = [
@@ -24,7 +25,8 @@ const examples: { label: string; command: string }[] = [
   { label: "List buckets", command: "aws s3 ls" },
 ];
 
-export function TerminalView() {
+/** `commands` comes from the server page: the CLI itself runs on the server, the browser only needs names for tab completion. */
+export function TerminalView({ commands }: { commands: CommandIndexEntry[] }) {
   const terminal = useRef<TerminalHandle>(null);
   // The guide's "Do it in the terminal" links put a command on the prompt via ?cmd=.
   const cmd = useSearchParams().get("cmd");
@@ -42,7 +44,7 @@ export function TerminalView() {
       </div>
       <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_18rem]">
         <div className="h-[60vh]">
-          <Terminal ref={terminal} />
+          <Terminal ref={terminal} commands={commands} />
         </div>
         <Card className="max-h-[60vh] overflow-hidden">
           <CardHeader>

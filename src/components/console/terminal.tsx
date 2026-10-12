@@ -5,7 +5,7 @@ import type { FitAddon } from "@xterm/addon-fit";
 import type { Terminal as XTerm } from "@xterm/xterm";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
-import { commonPrefix, complete } from "@/cli/complete";
+import { commonPrefix, complete, type CommandIndexEntry } from "@/cli/complete";
 import type { CliResult } from "@/cli/execute";
 import { localUploads } from "@/cli/uploads";
 import { identityHeader } from "@/lib/api-client";
@@ -71,7 +71,7 @@ function fileToBase64(file: File): Promise<string> {
 }
 
 /** An in-browser terminal running the simulated CLI. */
-export const Terminal = forwardRef<TerminalHandle>(function Terminal(_props, ref) {
+export const Terminal = forwardRef<TerminalHandle, { commands: CommandIndexEntry[] }>(function Terminal({ commands }, ref) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<XTerm | null>(null);
   const region = useConsoleStore((s) => s.region);
@@ -317,7 +317,7 @@ export const Terminal = forwardRef<TerminalHandle>(function Terminal(_props, ref
             return;
           case "\t": {
             const before = line.current.slice(0, cursor.current);
-            const { word, candidates } = complete(before);
+            const { word, candidates } = complete(before, commands);
             if (candidates.length === 1) {
               insertText(candidates[0].slice(word.length) + " ");
             } else if (candidates.length > 1) {
