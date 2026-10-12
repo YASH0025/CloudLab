@@ -5,17 +5,17 @@
 
 :root {
   --radius: 0.5rem;
-  --background: oklch(0.935 0.008 250);
+  --background: oklch(0.965 0.004 250);
   --foreground: oklch(0.21 0.02 257);
-  --card: oklch(0.97 0.005 250);
+  --card: oklch(0.965 0.004 250);
   --card-foreground: oklch(0.21 0.02 257);
-  --popover: oklch(0.975 0.005 250);
+  --popover: oklch(0.975 0.004 250);
   --popover-foreground: oklch(0.21 0.02 257);
   --primary: oklch(0.55 0.15 255);
   --primary-foreground: oklch(0.99 0 0);
-  --secondary: oklch(0.915 0.01 250);
+  --secondary: oklch(0.925 0.008 250);
   --secondary-foreground: oklch(0.25 0.02 257);
-  --muted: oklch(0.915 0.01 250);
+  --muted: oklch(0.93 0.008 250);
   --muted-foreground: oklch(0.48 0.02 257);
   --accent: oklch(0.9 0.02 255);
   --accent-foreground: oklch(0.25 0.04 257);
