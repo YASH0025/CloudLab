@@ -10,7 +10,6 @@ export async function POST(request: Request) {
   return handle(async () => {
     const local = getLocal();
     const agent = await local.authenticate(request.headers.get("authorization"));
-    const tasks = await local.sync(agent, syncBody.parse(await request.json()));
-    return Response.json({ tasks });
+    return Response.json(await local.sync(agent, syncBody.parse(await request.json())));
   });
 }

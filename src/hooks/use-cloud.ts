@@ -529,3 +529,9 @@ export function useLocalAction() {
     onSettled: () => qc.invalidateQueries({ queryKey: ["local"] }),
   });
 }
+
+/** Give an app a name on the home network, or remove it. Errors show inline. */
+export function useSetDomain(id: string) {
+  const qc = useQueryClient();
+  return useMutation({ mutationFn: (domain: string | null) => api.localSetDomain(id, domain), onSettled: () => qc.invalidateQueries({ queryKey: ["local"] }) });
+}

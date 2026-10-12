@@ -58,9 +58,9 @@ describe("local mode", () => {
     const app = await local.deploy(ACCOUNT, { name: "web", source: { type: "sample", sample: "static-site" }, hostPort: 8080 });
     expect(app).toMatchObject({ status: "queued", hostPort: 8080 });
 
-    const [task] = await local.sync(a, { info, apps: [], complete: false });
+    const [task] = (await local.sync(a, { info, apps: [], complete: false })).tasks;
     expect(task).toMatchObject({ type: "deploy", payload: { appId: app.id, name: "web", source: { type: "sample", sample: "static-site" }, hostPort: 8080 } });
-    expect(await local.sync(a, { info, apps: [], complete: false })).toEqual([]);
+    expect((await local.sync(a, { info, apps: [], complete: false })).tasks).toEqual([]);
 
     await local.report(a, app.id, { status: "building", detail: "Building the image…", buildLog: "Step 1/2" });
     expect((await local.status(ACCOUNT)).apps[0]).toMatchObject({ status: "building", buildLog: "Step 1/2", url: null });
@@ -85,7 +85,7 @@ describe("local mode", () => {
     await local.report(a, app.id, { status: "running", hostPort: 8081 });
 
     await local.action(ACCOUNT, app.id, "stop");
-    expect((await local.sync(a, { info, apps: [{ id: app.id, status: "running" }], complete: true })).map((t) => t.type)).toEqual(["stop"]);
+    expect((await local.sync(a, { info, apps: [{ id: app.id, status: "running" }], complete: true })).tasks.map((t) => t.type)).toEqual(["stop"]);
 
     // The container disappeared from the computer (removed by hand).
     await local.sync(a, { info, apps: [], complete: true });
@@ -93,8 +93,29 @@ describe("local mode", () => {
 
     expect(await local.action(ACCOUNT, app.id, "delete")).toBeNull();
     expect((await local.status(ACCOUNT)).apps).toEqual([]);
-    expect((await local.sync(a, { info, apps: [], complete: true })).map((t) => t.type)).toEqual(["remove"]);
+    expect((await local.sync(a, { info, apps: [], complete: true })).tasks.map((t) => t.type)).toEqual(["remove"]);
     await expect(local.action(ACCOUNT, app.id, "start")).rejects.toMatchObject({ code: "AppNotFound" });
+  });
+
+  it("gives apps names on the home network, one app per name, and tells the agent", async () => {
+    const a = await connect();
+    const web = await local.deploy(ACCOUNT, { name: "web", source: { type: "sample", sample: "static-site" }, domain: "myshop.home" });
+    expect(web.domain).toBe("myshop.home");
+    const api = await local.deploy(ACCOUNT, { name: "api", source: { type: "sample", sample: "node-express" } });
+    await expect(local.setDomain(ACCOUNT, api.id, "myshop.home")).rejects.toMatchObject({ code: "DomainInUse" });
+    await expect(local.deploy(ACCOUNT, { name: "web2", source: { type: "sample", sample: "static-site" }, domain: "myshop.home" })).rejects.toMatchObject({ code: "DomainInUse" });
+    await local.setDomain(ACCOUNT, api.id, "api.myshop.home");
+    const { routes } = await local.sync(a, { info, apps: [], complete: false });
+    expect(routes).toHaveLength(2);
+    expect(routes).toEqual(expect.arrayContaining([{ appId: api.id, domain: "api.myshop.home" }, { appId: web.id, domain: "myshop.home" }]));
+    await local.setDomain(ACCOUNT, web.id, null);
+    expect((await local.sync(a, { info, apps: [], complete: false })).routes).toEqual([{ appId: api.id, domain: "api.myshop.home" }]);
+  });
+
+  it("checks domain names", async () => {
+    const { domainSchema } = await import("./types");
+    expect(domainSchema.parse("MyShop.Home")).toBe("myshop.home");
+    for (const bad of ["myshop", "my_shop.home", "-a.home", "printer.local", "a..home"]) expect(domainSchema.safeParse(bad).success).toBe(false);
   });
 
   it("keeps apps apart between accounts", async () => {

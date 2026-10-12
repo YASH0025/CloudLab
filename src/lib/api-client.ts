@@ -165,6 +165,8 @@ export const api = {
   localPair: () => request<{ agent: AgentView; token: string }>(`/api/local/pair`, { method: "POST" }),
   localDisconnect: () => request<void>(`/api/local/pair`, { method: "DELETE" }),
   localDeploy: (input: DeployInput) => request<LocalApp>(`/api/local/apps`, { method: "POST", body: JSON.stringify(input) }),
+  localSetDomain: (id: string, domain: string | null) =>
+    request<LocalApp>(`/api/local/apps/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify({ domain }) }),
   localAction: (id: string, action: AppAction) =>
     request<LocalApp | void>(`/api/local/apps/${encodeURIComponent(id)}`, { method: "POST", body: JSON.stringify({ action }) }),
   me: () => request<MeResponse>(`/api/me`),

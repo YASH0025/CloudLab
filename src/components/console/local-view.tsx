@@ -7,6 +7,7 @@ import {
   CpuIcon,
   DownloadIcon,
   ExternalLinkIcon,
+  GlobeIcon,
   FolderIcon,
   GitBranchIcon,
   LaptopIcon,
@@ -25,9 +26,20 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
-import { useDeployLocal, useDisconnectComputer, useLocal, useLocalAction, usePairComputer } from "@/hooks/use-cloud";
+import { useDeployLocal, useDisconnectComputer, useLocal, useLocalAction, usePairComputer, useSetDomain } from "@/hooks/use-cloud";
 import { ApiError } from "@/lib/api-client";
-import { AGENT_DOWNLOADS, AGENT_RELEASE, deployInput, SAMPLES, type AgentView, type AppAction, type LocalApp, type SampleId } from "@/local/types";
+import {
+  AGENT_DOWNLOADS,
+  AGENT_RELEASE,
+  deployInput,
+  domainSchema,
+  SAMPLES,
+  type AgentInfo,
+  type AgentView,
+  type AppAction,
+  type LocalApp,
+  type SampleId,
+} from "@/local/types";
 import { cn } from "@/lib/utils";
 import { StateBadge } from "./state-badge";
 
@@ -290,6 +302,7 @@ function DeployCard() {
   const [branch, setBranch] = useState("");
   const [folder, setFolder] = useState("");
   const [port, setPort] = useState("");
+  const [domain, setDomain] = useState("");
   const [invalid, setInvalid] = useState<string | null>(null);
   const agent = data?.agent;
   const folders = agent?.info?.folders ?? [];
@@ -299,12 +312,17 @@ function DeployCard() {
     e.preventDefault();
     setInvalid(null);
     const source = kind === "sample" ? { type: "sample", sample } : kind === "github" ? { type: "github", repo, branch } : { type: "folder", folder };
-    const parsed = deployInput.safeParse({ name, source, hostPort: port || undefined });
+    const parsed = deployInput.safeParse({ name, source, hostPort: port || undefined, domain });
     if (!parsed.success) {
       setInvalid(parsed.error.issues[0]?.message ?? "Check the form.");
       return;
     }
-    deploy.mutate(parsed.data, { onSuccess: () => setName("") });
+    deploy.mutate(parsed.data, {
+      onSuccess: () => {
+        setName("");
+        setDomain("");
+      },
+    });
   };
 
   const tabs: { kind: SourceKind; label: string; Icon: typeof PackageIcon }[] = [
@@ -396,6 +414,12 @@ function DeployCard() {
             )}
 
             <div className="space-y-1.5">
+              <Label htmlFor="app-domain">Name on your network (optional)</Label>
+              <Input id="app-domain" value={domain} onChange={(e) => setDomain(e.target.value)} placeholder="myshop.home" autoComplete="off" />
+              <p className="text-xs text-muted-foreground">Open the app as http://myshop.home from your phone and other devices on the same Wi-Fi.</p>
+            </div>
+
+            <div className="space-y-1.5">
               <Label htmlFor="app-port">Port (optional)</Label>
               <Input id="app-port" inputMode="numeric" value={port} onChange={(e) => setPort(e.target.value.replace(/\D/g, ""))} placeholder="Picked for you, from 8080" />
             </div>
@@ -447,7 +471,70 @@ function Logs({ title, text }: { title: string; text: string }) {
   );
 }
 
-function AppCard({ app }: { app: LocalApp }) {
+/** The app's name on the home network: shown as a link, editable in place. */
+function DomainLine({ app, gateway }: { app: LocalApp; gateway: AgentInfo["gateway"] }) {
+  const set = useSetDomain(app.id);
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState(app.domain ?? "");
+  const [invalid, setInvalid] = useState<string | null>(null);
+  const port = gateway?.httpPort && gateway.httpPort !== 80 ? `:${gateway.httpPort}` : "";
+
+  const save = (domain: string | null) => {
+    setInvalid(null);
+    if (domain !== null) {
+      const parsed = domainSchema.safeParse(domain);
+      if (!parsed.success) return setInvalid(parsed.error.issues[0]?.message ?? "Not a valid name.");
+      domain = parsed.data;
+    }
+    set.mutate(domain, { onSuccess: () => setEditing(false) });
+  };
+
+  if (editing) {
+    return (
+      <form
+        className="space-y-1.5"
+        onSubmit={(e) => {
+          e.preventDefault();
+          save(value.trim() || null);
+        }}
+      >
+        <div className="flex flex-wrap items-center gap-2">
+          <Input aria-label="Name on your network" value={value} onChange={(e) => setValue(e.target.value)} placeholder="myshop.home" className="h-8 w-56" autoFocus />
+          <Button type="submit" size="sm" disabled={set.isPending}>
+            Save
+          </Button>
+          <Button type="button" size="sm" variant="ghost" onClick={() => setEditing(false)}>
+            Cancel
+          </Button>
+        </div>
+        {invalid ? <p className="text-sm text-destructive">{invalid}</p> : <ErrorLine error={set.error} />}
+      </form>
+    );
+  }
+  return (
+    <p className="flex flex-wrap items-center gap-2 text-sm">
+      <GlobeIcon className="size-3.5 text-muted-foreground" />
+      {app.domain ? (
+        <a className="font-mono text-primary hover:underline" href={`http://${app.domain}${port}`} target="_blank" rel="noreferrer">
+          {app.domain}
+          {port}
+        </a>
+      ) : (
+        <span className="text-muted-foreground">No name on your network</span>
+      )}
+      <Button size="sm" variant="ghost" className="h-7 px-2" onClick={() => (setValue(app.domain ?? ""), setEditing(true))}>
+        {app.domain ? "Change" : "Add a name"}
+      </Button>
+      {app.domain && (
+        <Button size="sm" variant="ghost" className="h-7 px-2" disabled={set.isPending} onClick={() => save(null)}>
+          Remove
+        </Button>
+      )}
+    </p>
+  );
+}
+
+function AppCard({ app, gateway }: { app: LocalApp; gateway: AgentInfo["gateway"] }) {
   const action = useLocalAction();
   const busy = BUSY.includes(app.status);
   return (
@@ -482,10 +569,75 @@ function AppCard({ app }: { app: LocalApp }) {
         </div>
         {app.detail && <p className={cn("text-sm", app.status === "failed" ? "text-destructive" : "text-muted-foreground")}>{app.detail}</p>}
         {app.url && <p className="text-xs text-muted-foreground">{app.url} opens on the computer running the agent.</p>}
+        <DomainLine app={app} gateway={gateway} />
         <div className="space-y-2">
           <Logs title="App logs" text={app.logs} />
           <Logs title="Build log" text={app.buildLog} />
         </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+/** How to use app names on other devices: the gateway's state and the DNS setting to change. */
+function NetworkCard({ info, apps }: { info: AgentInfo | null | undefined; apps: LocalApp[] }) {
+  const named = apps.filter((a) => a.domain);
+  if (named.length === 0 || !info) return null;
+  const gw = info.gateway;
+  const ip = info.lanIp;
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <GlobeIcon className="size-4" /> Use your app names on other devices
+          {gw && (
+            <Badge variant={gw.running ? "success" : "destructive"}>
+              <span className="size-1.5 rounded-full bg-current" />
+              {gw.running ? "Gateway running" : "Gateway not running"}
+            </Badge>
+          )}
+        </CardTitle>
+        <CardDescription>
+          The agent runs a small DNS server on this computer: it answers {named.map((a) => a.domain).join(", ")} with this computer&apos;s address
+          {ip ? ` (${ip})` : ""}, and passes every other name on to the internet as usual. Devices on the same network that use it as their DNS server can open
+          your apps by name. Nothing is reachable from outside your network.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4 pb-5 text-sm">
+        {gw?.error && (
+          <p className="flex items-start gap-2">
+            <TriangleAlertIcon className="mt-0.5 size-4 shrink-0 text-warning" /> {gw.error}
+          </p>
+        )}
+        {!gw && <p className="text-muted-foreground">Starting the gateway… (the first time, the agent builds it, which takes a minute.)</p>}
+        {ip && gw?.dns && (
+          <div className="grid gap-4 md:grid-cols-3 [&>*]:min-w-0">
+            <div className="space-y-1">
+              <p className="font-medium">Phone or tablet</p>
+              <p className="text-muted-foreground">
+                Wi-Fi settings → your network → DNS → Manual. Add <span className="font-mono">{ip}</span> as the DNS server.
+              </p>
+            </div>
+            <div className="space-y-1">
+              <p className="font-medium">Another computer</p>
+              <p className="text-muted-foreground">
+                Network settings → your connection → DNS servers: <span className="font-mono">{ip}</span>.
+              </p>
+            </div>
+            <div className="space-y-1">
+              <p className="font-medium">Every device at once</p>
+              <p className="text-muted-foreground">
+                In your router&apos;s settings (DHCP), set the DNS server to <span className="font-mono">{ip}</span>. Turn it back if you switch this computer off.
+              </p>
+            </div>
+          </div>
+        )}
+        {ip && (
+          <p className="text-xs text-muted-foreground">
+            On this computer itself, either point its DNS at {ip} too, or add a line like <span className="font-mono">127.0.0.1 {named[0].domain}</span> to its hosts file.
+            If {ip} changes (a different network, or the router hands out a new address), update the DNS settings.
+          </p>
+        )}
       </CardContent>
     </Card>
   );
@@ -509,11 +661,12 @@ export function LocalView() {
         <>
           <ComputerCard />
           <DeployCard />
+          <NetworkCard info={data?.agent?.info} apps={data?.apps ?? []} />
           {data && data.apps.length > 0 && (
             <section className="space-y-3">
               <h2 className="font-medium">Your apps ({data.apps.length})</h2>
               {data.apps.map((a) => (
-                <AppCard key={a.id} app={a} />
+                <AppCard key={a.id} app={a} gateway={data.agent?.info?.gateway ?? null} />
               ))}
             </section>
           )}

@@ -4,6 +4,7 @@ import { EngineError } from "@/engine/errors";
 import type { AgentRecord, AppRecord, LocalStore, TaskRecord } from "./store";
 import {
   ONLINE_WINDOW_MS,
+  type AgentRoute,
   type AgentTask,
   type AgentView,
   type AppAction,
@@ -28,8 +29,11 @@ const notFound = (id: string) => new EngineError("AppNotFound", `The app '${id}'
 const publicApp = (a: AppRecord): LocalApp => {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const { accountId, agentId, ...app } = a;
-  return app;
+  return { ...app, domain: app.domain ?? null };
 };
+
+const domainTaken = (domain: string) =>
+  new EngineError("DomainInUse", `Another of your apps already uses ${domain}. Each app needs its own name.`, 409);
 
 /**
  * Local mode's server side: pairing computers, queueing work for their agents,
@@ -107,6 +111,7 @@ export class LocalService {
     if (apps.length >= MAX_APPS) {
       throw new EngineError("AppLimitExceeded", `Local mode allows ${MAX_APPS} apps for now. Delete one first.`, 400);
     }
+    if (input.domain && apps.some((a) => a.domain === input.domain)) throw domainTaken(input.domain);
     if (input.hostPort && apps.some((a) => a.hostPort === input.hostPort)) {
       throw new EngineError("PortInUse", `Port ${input.hostPort} is already used by another of your apps.`, 409);
     }
@@ -131,6 +136,7 @@ export class LocalService {
       hostPort: input.hostPort ?? null,
       containerPort: null,
       url: null,
+      domain: input.domain ?? null,
       buildLog: "",
       logs: "",
       createdAt: at,
@@ -162,6 +168,16 @@ export class LocalService {
     return publicApp(updated);
   }
 
+  /** Gives an app a name on the home network (or removes it, with null). The agent picks it up at its next check-in. */
+  async setDomain(accountId: string, appId: string, domain: string | null): Promise<LocalApp> {
+    const app = await this.store.getApp(accountId, appId);
+    if (!app) throw notFound(appId);
+    if (domain && (await this.store.listApps(accountId)).some((a) => a.id !== appId && a.domain === domain)) throw domainTaken(domain);
+    const updated: AppRecord = { ...app, domain, updatedAt: this.iso() };
+    await this.store.putApp(updated);
+    return publicApp(updated);
+  }
+
   // ---------- for the agent ----------
 
   /** The agent for a bearer token, or a 401. */
@@ -178,8 +194,8 @@ export class LocalService {
     return agent;
   }
 
-  /** The agent's regular check-in: what the computer looks like and what it's running. Returns new work. */
-  async sync(agent: AgentRecord, body: SyncBody): Promise<AgentTask[]> {
+  /** The agent's regular check-in: what the computer looks like and what it's running. Returns new work and the app domains to serve. */
+  async sync(agent: AgentRecord, body: SyncBody): Promise<{ tasks: AgentTask[]; routes: AgentRoute[] }> {
     const at = this.iso();
     await this.store.touchAgent(agent.id, body.info, at);
     const reported = new Map(body.apps.map((a) => [a.id, a]));
@@ -191,7 +207,8 @@ export class LocalService {
       }
     }
     const tasks = await this.store.takeTasks(agent.id);
-    return tasks.map(({ id, type, payload }) => ({ id, type, payload }));
+    const routes = (await this.store.listApps(agent.accountId)).flatMap((a) => (a.domain ? [{ appId: a.id, domain: a.domain }] : []));
+    return { tasks: tasks.map(({ id, type, payload }) => ({ id, type, payload })), routes };
   }
 
   /** Progress from the agent while it works on one app (downloading, building, starting…). */

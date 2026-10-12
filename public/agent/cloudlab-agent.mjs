@@ -10,6 +10,12 @@
  * Your own projects: put a project folder inside the CloudLab folder in your home
  * folder (it's created for you) and pick it when you deploy from CloudLab.
  *
+ * Names on your home network: give an app a domain (myshop.home) in CloudLab and
+ * the agent runs a small gateway container: a DNS server that answers your
+ * apps' names with this computer's address (and passes every other name on to
+ * the internet's DNS), and a web proxy on port 80 that sends each name to its
+ * app. Point another device's DNS at this computer and the names work there.
+ *
  * How it works: every few seconds the agent tells CloudLab what this computer is
  * running and asks for work (deploy, start, stop, remove). CloudLab never
  * connects in to your computer. The agent only touches Docker containers and
@@ -19,6 +25,7 @@
  */
 
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import readline from "node:readline";
 import net from "node:net";
@@ -197,6 +204,12 @@ class Api {
 
 // ---------- CloudLab's containers ----------
 
+const NETWORK = "cloudlab";
+const GATEWAY = "cloudlab-gateway";
+let gatewayImage = null;
+/** The gateway image is tagged with a hash of its code, so a new agent version rebuilds it. */
+const GATEWAY_IMAGE = () => (gatewayImage ??= `cloudlab/gateway:${createHash("sha256").update(GATEWAY_JS).digest("hex").slice(0, 12)}`);
+const GATEWAY_DIR = path.join(HOME, "gateway");
 const containerName = (name) => `cloudlab-${name}`;
 const imageName = (name) => `cloudlab/${name}:latest`;
 
@@ -438,6 +451,258 @@ export function freePort(start = 8080, taken = []) {
   })();
 }
 
+// ---------- names on the home network ----------
+
+/** This computer's address on its home network: the first private IPv4 that isn't Docker's or a VPN's. */
+export function lanAddress(interfaces = os.networkInterfaces()) {
+  const skip = /^(docker|br-|veth|virbr|vEthernet|vmnet|vboxnet|utun|tun|tap|wg|zt|lo)/i;
+  const candidates = [];
+  for (const [name, addrs] of Object.entries(interfaces)) {
+    if (skip.test(name)) continue;
+    for (const a of addrs ?? []) {
+      if (a.family !== "IPv4" && a.family !== 4) continue;
+      if (a.internal) continue;
+      const rank = /^192\.168\./.test(a.address) ? 0 : /^10\./.test(a.address) ? 1 : /^172\.(1[6-9]|2\d|3[01])\./.test(a.address) ? 2 : 3;
+      candidates.push({ rank, address: a.address });
+    }
+  }
+  candidates.sort((x, y) => x.rank - y.rank);
+  return candidates[0]?.address ?? null;
+}
+
+async function ensureNetwork() {
+  const r = await docker(["network", "inspect", NETWORK]);
+  if (r.code !== 0) await docker(["network", "create", NETWORK]);
+}
+
+/**
+ * The gateway, which runs inside its own container. DNS on port 53: names of your
+ * apps (and anything under them) get this computer's address; every other name is
+ * passed to a public DNS server. HTTP on port 80: requests go to the app whose name
+ * is in the Host header. Routes are re-read from /routes/routes.json every 2 seconds.
+ */
+export const GATEWAY_JS = String.raw`
+const dgram = require("dgram");
+const fs = require("fs");
+const http = require("http");
+const net = require("net");
+
+let config = { lanIp: null, routes: {} };
+const load = () => {
+  try { config = JSON.parse(fs.readFileSync("/routes/routes.json", "utf8")); } catch {}
+};
+load();
+setInterval(load, 2000);
+
+const routeFor = (host) => {
+  host = String(host || "").toLowerCase().replace(/:\d+$/, "").replace(/\.$/, "");
+  for (const [domain, target] of Object.entries(config.routes)) {
+    if (host === domain || host.endsWith("." + domain)) return { domain, target };
+  }
+  return null;
+};
+
+// ---- DNS ----
+const UPSTREAMS = ["1.1.1.1", "8.8.8.8"];
+function readName(buf, offset) {
+  const labels = [];
+  let jumped = false, end = offset, guard = 0;
+  while (guard++ < 128) {
+    const len = buf[offset];
+    if (len === 0) { offset += 1; break; }
+    if ((len & 0xc0) === 0xc0) { if (!jumped) end = offset + 2; offset = ((len & 0x3f) << 8) | buf[offset + 1]; jumped = true; continue; }
+    labels.push(buf.toString("ascii", offset + 1, offset + 1 + len));
+    offset += 1 + len;
+  }
+  return { name: labels.join(".").toLowerCase(), next: jumped ? end : offset };
+}
+function answer(query, qEnd, ip, withAnswer) {
+  const header = Buffer.from(query.subarray(0, 12));
+  header.writeUInt16BE(0x8180 | (query.readUInt16BE(2) & 0x0100), 2); // response, authoritative-ish, recursion available
+  header.writeUInt16BE(1, 4);
+  header.writeUInt16BE(withAnswer ? 1 : 0, 6);
+  header.writeUInt16BE(0, 8);
+  header.writeUInt16BE(0, 10);
+  const question = query.subarray(12, qEnd);
+  if (!withAnswer) return Buffer.concat([header, question]);
+  const rr = Buffer.alloc(16);
+  rr.writeUInt16BE(0xc00c, 0); rr.writeUInt16BE(1, 2); rr.writeUInt16BE(1, 4); rr.writeUInt32BE(60, 6); rr.writeUInt16BE(4, 10);
+  ip.split(".").forEach((p, i) => (rr[12 + i] = Number(p)));
+  return Buffer.concat([header, question, rr]);
+}
+const dns = dgram.createSocket("udp4");
+dns.on("message", (msg, rinfo) => {
+  if (msg.length < 17) return;
+  let q;
+  try { q = readName(msg, 12); } catch { return; }
+  const qtype = msg.readUInt16BE(q.next);
+  const qEnd = q.next + 4;
+  const route = routeFor(q.name);
+  if (route && config.lanIp) {
+    dns.send(answer(msg, qEnd, config.lanIp, qtype === 1 || qtype === 255), rinfo.port, rinfo.address);
+    return;
+  }
+  // Everything else: ask a public DNS server and pass its answer back.
+  const up = dgram.createSocket("udp4");
+  let i = 0;
+  const ask = () => up.send(msg, 53, UPSTREAMS[i]);
+  const timer = setInterval(() => { if (++i >= UPSTREAMS.length) { clearInterval(timer); up.close(); } else ask(); }, 2000);
+  up.on("message", (res) => { clearInterval(timer); dns.send(res, rinfo.port, rinfo.address); up.close(); });
+  up.on("error", () => { clearInterval(timer); try { up.close(); } catch {} });
+  ask();
+});
+dns.on("error", (e) => console.error("DNS:", e.message));
+if (process.env.DNS !== "off") dns.bind(53, () => console.log("DNS on port 53"));
+
+// ---- HTTP ----
+const page = (domains) =>
+  '<!doctype html><title>CloudLab</title><body style="font-family:system-ui;max-width:40rem;margin:4rem auto"><h1>No app has this name</h1><p>Names served by this computer:</p><ul>' +
+  domains.map((d) => '<li><a href="http://' + d + '">' + d + "</a></li>").join("") +
+  "</ul></body>";
+const server = http.createServer((req, res) => {
+  const route = routeFor(req.headers.host);
+  if (!route) { res.writeHead(404, { "content-type": "text/html" }); res.end(page(Object.keys(config.routes))); return; }
+  const [host, port] = route.target.split(":");
+  const up = http.request({ host, port: Number(port), method: req.method, path: req.url, headers: { ...req.headers, "x-forwarded-for": req.socket.remoteAddress, "x-forwarded-host": req.headers.host } }, (r) => {
+    res.writeHead(r.statusCode || 502, r.headers);
+    r.pipe(res);
+  });
+  up.on("error", () => { if (!res.headersSent) res.writeHead(502, { "content-type": "text/plain" }); res.end(route.domain + " isn't answering. Is the app running?\n"); });
+  req.pipe(up);
+  console.log(req.method, req.headers.host + req.url, "->", route.target);
+});
+server.on("upgrade", (req, socket, head) => {
+  const route = routeFor(req.headers.host);
+  if (!route) return socket.destroy();
+  const [host, port] = route.target.split(":");
+  const up = net.connect(Number(port), host, () => {
+    const CRLF = String.fromCharCode(13, 10);
+    up.write(req.method + " " + req.url + " HTTP/1.1" + CRLF + Object.entries(req.headers).map(([k, v]) => k + ": " + v).join(CRLF) + CRLF + CRLF);
+    up.write(head);
+    up.pipe(socket).pipe(up);
+  });
+  up.on("error", () => socket.destroy());
+});
+server.listen(80, () => console.log("HTTP on port 80"));
+`;
+
+const GATEWAY_DOCKERFILE = `FROM node:22-alpine
+COPY gateway.js /gateway/gateway.js
+CMD ["node", "/gateway/gateway.js"]
+`;
+
+/**
+ * Keeps the gateway in step with the app domains CloudLab sends: writes its routes,
+ * starts it when the first domain appears and removes it (freeing ports 53 and 80)
+ * when the last one goes. Remembers what it managed, for the computer's details.
+ */
+export class Gateway {
+  constructor() {
+    this.state = null;
+    this.lastKey = null;
+    this.retryAt = 0;
+  }
+
+  async update(routes) {
+    const lanIp = lanAddress();
+    const found = (await inventory()) ?? [];
+    const table = {};
+    for (const r of routes) {
+      const c = found.find((x) => x.id === r.appId);
+      if (c && c.containerPort) table[r.domain] = `${c.container}:${c.containerPort}`;
+    }
+    const key = JSON.stringify({ lanIp, table, names: routes.map((r) => r.domain) });
+    mkdirSync(path.join(GATEWAY_DIR, "routes"), { recursive: true });
+    writeFileSync(path.join(GATEWAY_DIR, "routes", "routes.json"), JSON.stringify({ lanIp, routes: table }, null, 2));
+
+    if (routes.length === 0) {
+      if (this.state) {
+        await docker(["rm", "-f", GATEWAY]);
+        log("No app has a domain any more: stopped the gateway.");
+      }
+      this.state = null;
+      return;
+    }
+    // Containers made before the gateway existed join its network.
+    await ensureNetwork();
+    const routed = new Set(Object.values(table).map((t) => t.split(":")[0]));
+    for (const container of routed) await docker(["network", "connect", NETWORK, container]); // fails harmlessly when already connected
+
+    const running = (await docker(["inspect", "-f", "{{.State.Running}}", GATEWAY])).out.trim() === "true";
+    if (running && this.state?.running && key === this.lastKey) return;
+    if (running && this.state?.running) {
+      this.lastKey = key;
+      return; // routes are re-read by the gateway itself
+    }
+    if (Date.now() < this.retryAt) return;
+    this.lastKey = key;
+    this.state = await this.start(lanIp);
+    if (!this.state.running) this.retryAt = Date.now() + 60_000;
+  }
+
+  async start(lanIp) {
+    if (!lanIp) return { running: false, dns: false, httpPort: null, error: "This computer isn't on a network (no home network address found)." };
+    // Build the gateway image once.
+    if ((await docker(["image", "inspect", GATEWAY_IMAGE()])).code !== 0) {
+      log("Building the gateway (once)…");
+      const dir = path.join(GATEWAY_DIR, "image");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(path.join(dir, "gateway.js"), GATEWAY_JS);
+      writeFileSync(path.join(dir, "Dockerfile"), GATEWAY_DOCKERFILE);
+      const b = await docker(["build", "-t", GATEWAY_IMAGE(), dir]);
+      if (b.code !== 0) return { running: false, dns: false, httpPort: null, error: `The gateway didn't build: ${tail(b.out, 300)}` };
+    }
+    const routesDir = path.join(GATEWAY_DIR, "routes");
+    const attempts = [
+      { dns: true, http: 80 },
+      { dns: true, http: 8000 },
+      { dns: false, http: 80 },
+      { dns: false, http: 8000 },
+    ];
+    let lastError = "";
+    for (const a of attempts) {
+      await docker(["rm", "-f", GATEWAY]);
+      const r = await docker([
+        "run",
+        "-d",
+        "--name",
+        GATEWAY,
+        "--label",
+        "cloudlab.gateway=1",
+        "--network",
+        NETWORK,
+        "--restart",
+        "unless-stopped",
+        "--memory",
+        "128m",
+        "-v",
+        `${routesDir}:/routes:ro`,
+        ...(a.dns ? ["-p", `${lanIp}:53:53/udp`] : ["-e", "DNS=off"]),
+        "-p",
+        `${a.http}:80`,
+        GATEWAY_IMAGE(),
+      ]);
+      if (r.code === 0) await sleep(1500);
+      const up = r.code === 0 && (await docker(["inspect", "-f", "{{.State.Running}}", GATEWAY])).out.trim() === "true";
+      if (r.code === 0 && !up) {
+        const logs = await docker(["logs", "--tail", "20", GATEWAY]);
+        await docker(["rm", "-f", GATEWAY]);
+        return { running: false, dns: false, httpPort: null, error: `The gateway stopped right after starting: ${tail(logs.out, 300)}` };
+      }
+      if (up) {
+        const notes = [];
+        if (!a.dns) notes.push("Port 53 is already used by another program on this computer, so other devices can't use it for DNS (names only work where you add them to the hosts file).");
+        if (a.http !== 80) notes.push(`Port 80 is busy, so the gateway uses ${a.http}: open http://<name>:${a.http}.`);
+        log(`Gateway running: DNS ${a.dns ? `on ${lanIp}:53` : "off"}, web on port ${a.http}.`);
+        return { running: true, dns: a.dns, httpPort: a.http, error: notes.join(" ") || null };
+      }
+      lastError = tail(r.out, 300);
+    }
+    await docker(["rm", "-f", GATEWAY]);
+    return { running: false, dns: false, httpPort: null, error: `The gateway couldn't start: ${lastError}` };
+  }
+}
+
 // ---------- tasks ----------
 
 /**
@@ -456,6 +721,7 @@ export class Agent {
     this.api = api;
     this.busy = new Set();
     this.lastLogs = 0;
+    this.gateway = new Gateway();
   }
 
   async deploy(task) {
@@ -510,6 +776,7 @@ export class Agent {
       // 3. Replace any previous container and start the new one.
       await report({ status: "starting", detail: "Starting the container…", buildLog });
       await docker(["rm", "-f", containerName(name)]);
+      await ensureNetwork();
       const others = ((await inventory()) ?? []).filter((c) => c.id !== appId).map((c) => c.hostPort);
       const port = hostPort ?? (await freePort(8080, others));
       const started = await docker([
@@ -527,6 +794,8 @@ export class Agent {
         `cloudlab.containerPort=${plan.containerPort}`,
         "--label",
         `cloudlab.runtime=${plan.runtime}`,
+        "--network",
+        NETWORK,
         "--restart",
         "unless-stopped",
         "--memory",
@@ -600,7 +869,7 @@ export class Agent {
 
   /** One check-in: report the computer and its apps, and do whatever work comes back. */
   async tick() {
-    const info = await computerInfo();
+    const info = { ...(await computerInfo()), lanIp: lanAddress(), gateway: this.gateway.state };
     const found = info.docker.ok ? await inventory() : null;
     const withLogs = Date.now() - this.lastLogs > LOGS_EVERY_MS;
     if (withLogs) this.lastLogs = Date.now();
@@ -616,8 +885,15 @@ export class Agent {
         ...(withLogs && c.running ? { logs: await containerLogs(c.container) } : {}),
       });
     }
-    const { tasks } = await this.api.sync({ info, apps, complete: found !== null && this.busy.size === 0 });
+    const { tasks, routes = [] } = await this.api.sync({ info, apps, complete: found !== null && this.busy.size === 0 });
     for (const t of tasks) await this.handle(t);
+    if (info.docker.ok) {
+      try {
+        await this.gateway.update(routes);
+      } catch (e) {
+        log("Gateway:", e.message);
+      }
+    }
   }
 }
 

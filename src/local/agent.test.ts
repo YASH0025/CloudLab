@@ -3,7 +3,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 // The agent is plain JavaScript that runs on the learner's computer; these test its pure parts.
-import { appState, copyProject, detect, projectFolders, SAMPLE_FILES } from "../../public/agent/cloudlab-agent.mjs";
+import { Script } from "node:vm";
+import { appState, copyProject, detect, GATEWAY_JS, lanAddress, projectFolders, SAMPLE_FILES } from "../../public/agent/cloudlab-agent.mjs";
 
 const dir = (files: Record<string, string>) => {
   const d = mkdtempSync(path.join(tmpdir(), "cl-agent-"));
@@ -56,5 +57,23 @@ describe("agent", () => {
     expect(appState({ running: false, state: "exited", exitCode: 143 })).toMatchObject({ status: "stopped" });
     expect(appState({ running: false, state: "exited", exitCode: 1 })).toEqual({ status: "failed" });
     expect(appState({ running: false, state: "restarting" })).toMatchObject({ status: "failed" });
+  });
+
+  it("ships gateway code that compiles", () => {
+    expect(() => new Script(GATEWAY_JS)).not.toThrow();
+  });
+
+  it("finds the computer's home network address, not Docker's or a VPN's", () => {
+    const v4 = (address: string, internal = false) => ({ address, family: "IPv4", internal }) as never;
+    expect(
+      lanAddress({
+        lo: [v4("127.0.0.1", true)],
+        docker0: [v4("172.17.0.1")],
+        utun3: [v4("10.8.0.2")],
+        "Wi-Fi": [v4("192.168.1.23")],
+      }),
+    ).toBe("192.168.1.23");
+    expect(lanAddress({ eth0: [v4("10.0.0.5")] })).toBe("10.0.0.5");
+    expect(lanAddress({ lo: [v4("127.0.0.1", true)] })).toBeNull();
   });
 });
