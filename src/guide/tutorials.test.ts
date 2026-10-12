@@ -65,13 +65,14 @@ describe("tutorials", () => {
       "watch-your-app",
       "get-alerted",
       "decouple-with-a-queue",
+      "nosql-table",
       "managed-database",
       "website-real-name",
       "disks-and-backups",
       "highly-available-website",
       "connect-and-protect",
     ]);
-    expect(listTutorials().filter((t) => t.level === "intermediate")).toHaveLength(11);
+    expect(listTutorials().filter((t) => t.level === "intermediate")).toHaveLength(12);
     expect(listTutorials().find((t) => t.id === "troubleshoot-reachability")?.nextId).toBe("static-website");
   });
 
@@ -217,6 +218,33 @@ describe("tutorials", () => {
         await engine.update(ACCOUNT, queue.id, { policy: q.withStatement(queue, q.snsSendStatement(queue, topic.id)) });
         await engine.create(ACCOUNT, { service: "sns", type: "subscription", region: REGION, config: { topicArn: topic.id, protocol: "sqs", endpoint: String(queue.attributes.arn) } });
         await publish(engine, ACCOUNT, topic, { message: "order placed" });
+      },
+    });
+    expect(steps).toBe(7);
+  });
+
+  it("completes 'Design a NoSQL table': items, query, scan, an index, a conditional write", { timeout: 60_000 }, async () => {
+    const d = await import("@/engine/dynamodb/items");
+    const { marshallItem } = await import("@/engine/dynamodb/values");
+    const tableOf = async () => (await engine.list(ACCOUNT, { service: "dynamodb", type: "table", region: REGION }))[0];
+    const steps = await play("nosql-table", {
+      items: async () => {
+        for (const [c, date, status] of [["asha", "2026-10-01", "placed"], ["asha", "2026-10-05", "shipped"], ["ravi", "2026-10-02", "placed"]]) {
+          await d.putItem(engine, await tableOf(), marshallItem({ customerId: c, orderDate: date, status, total: 10 }));
+        }
+      },
+      query: async () => d.query(engine, await tableOf(), { keyCondition: "customerId = :c", values: { ":c": { S: "asha" } } }),
+      scan: async () => d.scan(engine, await tableOf()),
+      index: async () =>
+        engine.update(ACCOUNT, (await tableOf()).id, { globalSecondaryIndexes: [{ indexName: "by-status", partitionKey: "status", partitionKeyType: "S", sortKey: "orderDate", sortKeyType: "S" }] }),
+      "query-index": async () => {
+        const r = await d.query(engine, await tableOf(), { indexName: "by-status", keyCondition: "#s = :s", names: { "#s": "status" }, values: { ":s": { S: "placed" } } });
+        expect(r.Count).toBe(2);
+      },
+      condition: async () => {
+        await expect(
+          d.putItem(engine, await tableOf(), marshallItem({ customerId: "asha", orderDate: "2026-10-01" }), { condition: "attribute_not_exists(customerId)" }),
+        ).rejects.toThrow("The conditional request failed");
       },
     });
     expect(steps).toBe(7);

@@ -256,7 +256,7 @@ export const SQS_COMMANDS: Command[] = [
     operation: "receive-message",
     apiName: "ReceiveMessage",
     summary: "Take up to 10 messages (they stay hidden until deleted or the visibility timeout ends)",
-    usage: "--queue-url <url> [--max-number-of-messages <1-10>] [--visibility-timeout <s>] [--wait-time-seconds <0-20>] [--attribute-names All] [--message-attribute-names All]",
+    usage: "--queue-url <url> [--max-number-of-messages <1-10>] [--visibility-timeout <s>] [--wait-time-seconds <0-20>] [--attribute-names All] [--message-system-attribute-names All] [--message-attribute-names All]",
     mutates: true,
     async run(args, ctx) {
       const q = await byUrl(ctx, args.required("queue-url"));

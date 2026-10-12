@@ -16,6 +16,7 @@ export const TOPIC_OF: Record<string, Topic> = {
   "watch-your-app": "Monitoring",
   "get-alerted": "Messaging",
   "decouple-with-a-queue": "Messaging",
+  "nosql-table": "Databases",
   "managed-database": "Databases",
   "website-real-name": "DNS",
   "disks-and-backups": "Storage",
@@ -33,4 +34,5 @@ export const TOPIC_OF: Record<string, Topic> = {
   "unhealthy-targets": "Compute",
   "silent-orders": "Messaging",
   "double-charged": "Messaging",
+  "orders-by-customer": "Databases",
 };

@@ -529,6 +529,57 @@ const DOUBLE_CHARGED: ChallengeDef = {
   },
 };
 
+const ORDERS_BY_CUSTOMER: ChallengeDef = {
+  id: "orders-by-customer",
+  title: "“My orders” gets slower every week",
+  level: "intermediate",
+  minutes: 8,
+  summary: "The orders table is keyed by order ID. Showing one customer's orders reads the whole table, and the bill and the wait keep growing.",
+  story:
+    "The mobile team: “The My orders screen took 0.2 s at launch, now it's 4 s, and the DynamoDB bill doubled again.” The table ShopOrders has the partition key orderId. To show a customer's orders, the app runs a Scan with the filter customerId = :me. Every new order makes every customer's screen slower.",
+  goal: "Make it possible to fetch one customer's orders, newest first, with a Query instead of a Scan. Keep the table and its data (orders are still looked up by orderId too).",
+  tools: ["ShopOrders → Explore items: run the app's Scan and compare Items read with Items returned", "aws dynamodb describe-table --table-name ShopOrders", "aws dynamodb scan --table-name ShopOrders --filter-expression … (look at ScannedCount)"],
+  hints: [
+    "A filter is applied after reading. The app reads every order in the table to show 10 of them. Query only reads one partition, but it can only ask by a key.",
+    "You can't change a table's key after creating it, but you can add a global secondary index with a different key.",
+    "Edit ShopOrders → Global secondary indexes → add one with partition key customerId (String) and sort key createdAt (String). Then the app can Query that index, newest first.",
+  ],
+  explanation:
+    "DynamoDB is fast when every read is a Query or GetItem by key. The table was designed for 'find order X' (orderId), so 'find customer Y's orders' could only be a Scan: it reads every item (and you pay for every one), then throws most away with the filter. That cost grows with the table, not with the answer. A global secondary index on customerId + createdAt stores the same orders grouped by customer and sorted by date, so the screen becomes a Query that reads only that customer's orders. Design keys around your access patterns, and add an index for each new question.",
+  async setup(b) {
+    const t = await b.make("dynamodb", "table", { name: "ShopOrders", partitionKey: "orderId", partitionKeyType: "S", billingMode: "PAY_PER_REQUEST" });
+    const items: Record<string, Record<string, unknown>> = {};
+    for (let i = 0; i < 240; i++) {
+      const id = `ord-${String(10000 + i)}`;
+      items[JSON.stringify([{ S: id }, null])] = {
+        orderId: { S: id },
+        customerId: { S: `cust-${String(1 + (i % 24)).padStart(3, "0")}` },
+        createdAt: { S: new Date(Date.UTC(2026, 8, 1) + i * 3 * 3600_000).toISOString() },
+        total: { N: String(100 + ((i * 37) % 900)) },
+        status: { S: i % 5 === 0 ? "delivered" : "placed" },
+      };
+    }
+    await b.engine.setAttributes(b.accountId, t.id, { items, itemCount: 240, tableSizeBytes: 240 * 120 });
+  },
+  async facts() {
+    return [
+      "Table: ShopOrders (partition key orderId), 240 orders from 24 customers",
+      `The app's query: aws dynamodb scan --table-name ShopOrders --filter-expression "customerId = :me" --expression-attribute-values '{":me":{"S":"cust-007"}}'`,
+    ];
+  },
+  async check(engine, accountId) {
+    const t = await named(engine, accountId, "dynamodb", "table", "ShopOrders");
+    if (!t) return { solved: false, status: "The table ShopOrders is gone, and the orders with it." };
+    if (Number(t.attributes.itemCount ?? 0) < 200) return { solved: false, status: "Orders are missing from ShopOrders: keep the data." };
+    const gsis = (t.config.globalSecondaryIndexes as { partitionKey: string; partitionKeyType?: string; sortKey?: string }[] | undefined) ?? [];
+    const byCustomer = gsis.find((g) => g.partitionKey === "customerId");
+    if (!byCustomer) return { solved: false, status: "A customer's orders can still only be found by reading the whole table." };
+    if ((byCustomer.partitionKeyType ?? "S") !== "S") return { solved: false, status: "The index's customerId is the wrong type: the values are strings." };
+    if (byCustomer.sortKey !== "createdAt") return { solved: false, status: "You can query by customer now, but not newest first: the index has no sort key by date." };
+    return { solved: true };
+  },
+};
+
 const UNHEALTHY: ChallengeDef = {
   id: "unhealthy-targets",
   title: "Every server behind the load balancer is unhealthy",
@@ -732,7 +783,7 @@ const PEERING_ONE_WAY: ChallengeDef = {
   },
 };
 
-const CHALLENGES: ChallengeDef[] = [SITE_DOWN, NO_UPDATES, ACCESS_DENIED, DB_CONNECT, API_500, DISK_ZONE, PEERING_ONE_WAY, ACL_REPLIES, SILENT_ORDERS, DOUBLE_CHARGED, UNHEALTHY];
+const CHALLENGES: ChallengeDef[] = [SITE_DOWN, NO_UPDATES, ACCESS_DENIED, DB_CONNECT, API_500, DISK_ZONE, PEERING_ONE_WAY, ACL_REPLIES, SILENT_ORDERS, DOUBLE_CHARGED, ORDERS_BY_CUSTOMER, UNHEALTHY];
 
 const info = (c: ChallengeDef): ChallengeInfo => ({ id: c.id, title: c.title, level: c.level, minutes: c.minutes, summary: c.summary });
 

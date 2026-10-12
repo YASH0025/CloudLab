@@ -42,7 +42,7 @@ beforeEach(() => {
 
 describe("challenges", { timeout: 60_000 }, () => {
   it("lists them, and scores fewer points per hint", () => {
-    expect(listChallenges().map((c) => c.id)).toEqual(["site-down", "no-updates", "access-denied", "db-connect", "api-500", "disk-wrong-zone", "peering-one-way", "acl-replies", "silent-orders", "double-charged", "unhealthy-targets"]);
+    expect(listChallenges().map((c) => c.id)).toEqual(["site-down", "no-updates", "access-denied", "db-connect", "api-500", "disk-wrong-zone", "peering-one-way", "acl-replies", "silent-orders", "double-charged", "orders-by-customer", "unhealthy-targets"]);
     expect([0, 1, 2, 3].map(challengeScore)).toEqual([100, 90, 70, 40]);
   });
 
@@ -57,6 +57,31 @@ describe("challenges", { timeout: 60_000 }, () => {
       {
         apply: async () => engine.update(ACCOUNT, (await q()).id, { visibilityTimeout: 120 }).then(() => undefined),
         status: /retried forever/,
+      },
+    );
+  });
+
+  it("orders-by-customer: a GSI on customerId sorted by createdAt", async () => {
+    const t = () => find("dynamodb", "table", "ShopOrders");
+    await play(
+      "orders-by-customer",
+      async () => {
+        await engine.update(ACCOUNT, (await t()).id, {
+          globalSecondaryIndexes: [{ indexName: "by-customer", partitionKey: "customerId", partitionKeyType: "S", sortKey: "createdAt", sortKeyType: "S" }],
+        });
+        const { query } = await import("@/engine/dynamodb/items");
+        const r = await query(engine, await t(), {
+          indexName: "by-customer",
+          keyCondition: "customerId = :c",
+          values: { ":c": { S: "cust-007" } },
+          scanIndexForward: false,
+        });
+        expect(r).toMatchObject({ Count: 10, ScannedCount: 10 });
+      },
+      {
+        apply: async () =>
+          engine.update(ACCOUNT, (await t()).id, { globalSecondaryIndexes: [{ indexName: "by-cust", partitionKey: "customerId", partitionKeyType: "S" }] }).then(() => undefined),
+        status: /not newest first/,
       },
     );
   });

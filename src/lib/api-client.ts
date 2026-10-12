@@ -13,6 +13,27 @@ export type QueueActionInput =
   | { action: "purge" }
   | { action: "subscribe"; topicArn: string };
 
+export type TableItemsInput =
+  | { action: "scan"; indexName?: string; limit?: number }
+  | {
+      action: "query";
+      indexName?: string;
+      partitionValue: string | number;
+      sort?: { op: "=" | "<" | "<=" | ">" | ">=" | "begins_with" | "between"; value: string | number; value2?: string | number };
+      forward?: boolean;
+      limit?: number;
+    }
+  | { action: "put"; item: Record<string, unknown>; mustBeNew?: boolean }
+  | { action: "delete"; key: Record<string, unknown> };
+
+export interface TableItemsResult {
+  items?: Record<string, unknown>[];
+  count?: number;
+  scannedCount?: number;
+  more?: boolean;
+  expression?: string;
+}
+
 export interface MetricQuery {
   id: string;
   namespace: string;
@@ -227,6 +248,9 @@ export const api = {
       method: "POST",
       body: JSON.stringify(input),
     }),
+
+  tableItems: (id: string, input: TableItemsInput) =>
+    request<TableItemsResult>(`/api/resources/${encodeURIComponent(id)}/items`, { method: "POST", body: JSON.stringify(input) }),
 
   confirmSubscription: (id: string) => request<{ subscriptionArn: string }>(`/api/resources/${encodeURIComponent(id)}/confirm`, { method: "POST" }),
 

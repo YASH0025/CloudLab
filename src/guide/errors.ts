@@ -270,10 +270,6 @@ const EXPLANATIONS: Record<string, ErrorExplanation> = {
     meaning: "No launch template with that name exists in this region.",
     fix: "List them with aws ec2 describe-launch-templates.",
   },
-  ResourceNotFoundException: {
-    meaning: "That function, policy statement, log group or log stream doesn't exist in this region.",
-    fix: "Check the name and region: aws lambda list-functions or aws logs describe-log-groups. Both live in one region. A function's log group appears after its first run.",
-  },
   NetworkAclEntryAlreadyExists: {
     meaning: "That rule number is already used in this direction of the network ACL. Each rule number appears once per direction (inbound and outbound are separate).",
     fix: "Pick a free number (leave gaps, like 100, 110, 120, so you can insert rules later), or replace the existing rule with replace-network-acl-entry.",
@@ -380,10 +376,6 @@ const EXPLANATIONS: Record<string, ErrorExplanation> = {
     meaning: "Too many invocations in a short time (CloudLab allows 60 a minute per account, like a small concurrency limit on AWS).",
     fix: "Wait a minute and try again.",
   },
-  ValidationException: {
-    meaning: "A value doesn't match the format AWS expects, e.g. a function name with spaces or a timeout over 900 seconds.",
-    fix: "The message quotes the rule (often a regular expression); adjust the value to match it.",
-  },
   InvalidRequestContentException: {
     meaning: "The payload isn't valid JSON.",
     fix: "Check quotes and commas. In the terminal, wrap the JSON in single quotes and add --cli-binary-format raw-in-base64-out.",
@@ -424,6 +416,28 @@ const EXPLANATIONS: Record<string, ErrorExplanation> = {
   ParameterValueInvalid: {
     meaning: "A message attribute is incomplete or has the wrong type, e.g. a Number attribute whose value isn't a number.",
     fix: "Each attribute needs DataType (String, Number or String.Array) and a StringValue.",
+  },
+  ResourceNotFoundException: {
+    meaning:
+      "That table, function, policy statement, log group or log stream doesn't exist in this region, or isn't ready yet: a DynamoDB table can't be used while it's CREATING.",
+    fix: "Check the name and the region (aws dynamodb list-tables, aws lambda list-functions, aws logs describe-log-groups). A function's log group appears after its first run; a new table needs to be ACTIVE.",
+  },
+  ResourceInUseException: {
+    meaning: "A table with that name already exists in this region, or the table is busy (being created) and can't be changed yet.",
+    fix: "Pick another name, or wait for the table to be ACTIVE.",
+  },
+  ValidationException: {
+    meaning:
+      "A value doesn't match what AWS expects: a name with spaces, a Lambda timeout over 900 seconds, or in DynamoDB a key that doesn't match the table's key (GetItem needs the full key), a reserved word like status or name used directly in an expression, or a :value you defined but didn't use.",
+    fix: "Read the message: it names the problem, often quoting the rule. For DynamoDB reserved words, write #s in the expression and pass --expression-attribute-names '{\"#s\":\"status\"}'.",
+  },
+  ConditionalCheckFailedException: {
+    meaning: "The write had a condition (e.g. attribute_not_exists, so it never overwrites) and the condition was false, so nothing was written.",
+    fix: "That's often the point: the item already exists. Read it first, or change the condition.",
+  },
+  ProvisionedThroughputExceededException: {
+    meaning: "The table got more reads or writes per second than its provisioned capacity, so DynamoDB rejected the extra ones (throttling).",
+    fix: "Raise the capacity units, switch to on-demand capacity, or spread requests out. AWS SDKs retry these automatically with backoff.",
   },
   "AWS.SimpleQueueService.NonExistentQueue": {
     meaning: "No queue with that URL (or name) exists in this region and account.",

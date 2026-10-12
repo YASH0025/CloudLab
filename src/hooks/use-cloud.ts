@@ -2,7 +2,7 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { api, ApiError, type MetricQuery, type QueueActionInput } from "@/lib/api-client";
+import { api, ApiError, type MetricQuery, type QueueActionInput, type TableItemsInput } from "@/lib/api-client";
 import { queryKeys } from "@/lib/query-keys";
 import { REGIONS } from "@/engine/catalog";
 import { resolveServices } from "@/engine/registry";
@@ -207,6 +207,20 @@ export function useQueueAction(id: string) {
       qc.invalidateQueries({ queryKey: ["queue-counts"] });
       qc.invalidateQueries({ queryKey: ["resource"] });
       qc.invalidateQueries({ queryKey: ["resources"] });
+    },
+  });
+}
+
+/** Scan, query, save or delete items in a table. Errors show inline. */
+export function useTableItems(id: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: TableItemsInput) => api.tableItems(id, input),
+    onSettled: (_d, _e, input) => {
+      if (input.action === "put" || input.action === "delete") {
+        qc.invalidateQueries({ queryKey: queryKeys.resource(id) });
+        qc.invalidateQueries({ queryKey: ["resources"] });
+      }
     },
   });
 }

@@ -15,6 +15,7 @@ import { CLOUDWATCH_COMMANDS, LOGS_COMMANDS } from "./cloudwatch";
 import { ROUTE53_COMMANDS } from "./route53";
 import { SNS_COMMANDS } from "./sns";
 import { SQS_COMMANDS } from "./sqs";
+import { DYNAMODB_COMMANDS } from "./dynamodb";
 import { EBS_COMMANDS } from "./ebs";
 import { VPC_EXTRA_COMMANDS } from "./vpc-extras";
 
@@ -1025,6 +1026,9 @@ export const COMMANDS: Command[] = [
 
   // --- RDS ---
   ...RDS_COMMANDS,
+
+  // --- DynamoDB ---
+  ...DYNAMODB_COMMANDS,
 
   // --- Lambda and API Gateway ---
   ...LAMBDA_COMMANDS,

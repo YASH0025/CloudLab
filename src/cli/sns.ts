@@ -336,7 +336,7 @@ export const SNS_COMMANDS: Command[] = [
     operation: "publish",
     apiName: "Publish",
     summary: "Send a message to everyone subscribed to a topic",
-    usage: "--topic-arn <arn> --message <text|file://msg.txt> [--subject <text>] [--message-attributes <name>={DataType=String,StringValue=<v>}] [--message-structure json]",
+    usage: "--topic-arn <arn> | --target-arn <arn> | --phone-number <n> --message <text|file://msg.txt> [--subject <text>] [--message-attributes <name>={DataType=String,StringValue=<v>}] [--message-structure json]",
     mutates: true,
     async run(args, ctx) {
       const arn = args.one("topic-arn") ?? args.one("target-arn");

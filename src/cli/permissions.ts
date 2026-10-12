@@ -128,6 +128,14 @@ export function cliChecks(command: Command, args: Args, ctx: CliContext): Check[
     if (name && command.apiName === "CreateTopic") return [{ action, resource: `arn:aws:sns:${ctx.region}:${account}:${name}` }];
   }
 
+  if (command.service === "dynamodb" && command.apiName !== "ListTables") {
+    const name = args.one("table-name");
+    if (name) {
+      const index = args.one("index-name");
+      return [{ action, resource: `arn:aws:dynamodb:${ctx.region}:${account}:table/${name}${index ? `/index/${index}` : ""}` }];
+    }
+  }
+
   if (command.service === "sqs") {
     const url = args.one("queue-url");
     const m = url ? /^https:\/\/sqs\.([a-z0-9-]+)\.amazonaws\.com\/(\d{12})\/(.+)$/.exec(url.trim()) : null;

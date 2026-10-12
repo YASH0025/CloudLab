@@ -28,7 +28,7 @@ export const MANAGED_POLICIES: ManagedPolicy[] = [
     allow(["iam:CreateServiceLinkedRole", "iam:DeleteServiceLinkedRole", "iam:ListRoles", "organizations:DescribeOrganization", "account:ListRegions"]),
   ]),
   managed("ReadOnlyAccess", "Provides read-only access to AWS services and resources.", [
-    allow(["ec2:Describe*", "ec2:Get*", "s3:Get*", "s3:List*", "iam:Get*", "iam:List*", "iam:Simulate*", "elasticloadbalancing:Describe*", "autoscaling:Describe*", "rds:Describe*", "lambda:Get*", "lambda:List*", "apigateway:GET", "logs:Describe*", "logs:Get*", "logs:FilterLogEvents", "cloudwatch:Describe*", "cloudwatch:Get*", "cloudwatch:List*", "sns:Get*", "sns:List*", "sqs:Get*", "sqs:List*"]),
+    allow(["ec2:Describe*", "ec2:Get*", "s3:Get*", "s3:List*", "iam:Get*", "iam:List*", "iam:Simulate*", "elasticloadbalancing:Describe*", "autoscaling:Describe*", "rds:Describe*", "lambda:Get*", "lambda:List*", "apigateway:GET", "logs:Describe*", "logs:Get*", "logs:FilterLogEvents", "cloudwatch:Describe*", "cloudwatch:Get*", "cloudwatch:List*", "sns:Get*", "sns:List*", "sqs:Get*", "sqs:List*", "dynamodb:Describe*", "dynamodb:List*", "dynamodb:GetItem", "dynamodb:Query", "dynamodb:Scan"]),
   ]),
   managed("AmazonEC2FullAccess", "Provides full access to Amazon EC2.", [
     allow(["ec2:*", "elasticloadbalancing:*", "cloudwatch:*", "autoscaling:*"]),
@@ -87,6 +87,8 @@ export const MANAGED_POLICIES: ManagedPolicy[] = [
   managed("AmazonSNSReadOnlyAccess", "Provides read only access to Amazon SNS via the AWS Management Console.", [allow(["sns:GetTopicAttributes", "sns:List*", "sns:CheckIfPhoneNumberIsOptedOut", "sns:GetEndpointAttributes", "sns:GetDataProtectionPolicy", "sns:GetPlatformApplicationAttributes", "sns:GetSMSAttributes", "sns:GetSMSSandboxAccountStatus", "sns:GetSubscriptionAttributes"])]),
   managed("AmazonSQSFullAccess", "Provides full access to Amazon SQS via the AWS Management Console.", [allow(["sqs:*"])]),
   managed("AmazonSQSReadOnlyAccess", "Provides read only access to Amazon SQS via the AWS Management Console.", [allow(["sqs:GetQueueAttributes", "sqs:GetQueueUrl", "sqs:ListDeadLetterSourceQueues", "sqs:ListQueues", "sqs:ListMessageMoveTasks", "sqs:ListQueueTags"])]),
+  managed("AmazonDynamoDBFullAccess", "Provides full access to Amazon DynamoDB via the AWS Management Console.", [allow(["dynamodb:*"])]),
+  managed("AmazonDynamoDBReadOnlyAccess", "Provides read only access to Amazon DynamoDB via the AWS Management Console.", [allow(["dynamodb:BatchGetItem", "dynamodb:Describe*", "dynamodb:List*", "dynamodb:GetItem", "dynamodb:Query", "dynamodb:Scan", "dynamodb:PartiQLSelect"])]),
   managed("AmazonRoute53FullAccess", "Provides full access to all Amazon Route 53 via the AWS Management Console.", [
     allow(["route53:*", "route53domains:*", "elasticloadbalancing:DescribeLoadBalancers", "apigateway:GET", "s3:ListAllMyBuckets", "s3:GetBucketWebsite", "ec2:DescribeVpcs", "ec2:DescribeRegions"]),
   ]),

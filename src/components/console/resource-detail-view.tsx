@@ -25,6 +25,7 @@ import { AlarmPanel, AlarmStateBadge, DashboardPanel, FunctionLogsCard, LogGroup
 import { ObjectsPanel, WebsiteCard } from "./objects-panel";
 import { SubscriptionPanel, TopicPanel } from "./sns-panels";
 import { QueuePanel } from "./sqs-panels";
+import { TablePanel } from "./dynamodb-panels";
 import { PermissionChecker } from "./permission-checker";
 import { ReachabilityPanel } from "./reachability-panel";
 import { ResourceForm } from "./resource-form";
@@ -307,6 +308,7 @@ export function ResourceDetailView() {
       {item.service === "sns" && item.type === "topic" && <TopicPanel topic={item} />}
       {item.service === "sns" && item.type === "subscription" && <SubscriptionPanel sub={item} />}
       {item.service === "sqs" && item.type === "queue" && <QueuePanel queue={item} />}
+      {item.service === "dynamodb" && item.type === "table" && <TablePanel table={item} />}
       {item.service === "apigateway" && item.type === "api" && <ApiPanel api={item} />}
       {item.service === "lambda" && item.type === "function" && <FunctionLogsCard fn={item} />}
       <MonitoringCard item={item} />

@@ -25,6 +25,7 @@ import { loadServerless, type ServerlessState } from "./serverless";
 import { loadWatch, WATCHED_FUNCTION, type WatchState } from "./watch";
 import { ALERTS_EMAIL, ALERTS_TOPIC, loadAlerts, type AlertsState } from "./alerts";
 import { loadQueues, TUTORIAL_DLQ, TUTORIAL_QUEUE, type QueuesState } from "./queues";
+import { loadNosql, TUTORIAL_TABLE, type NosqlState } from "./nosql";
 import { loadDns, TUTORIAL_DOMAIN, type DnsState } from "./dns";
 import { DATA_FILE, loadStorage, type StorageState } from "./storage";
 import { loadVpcx, type VpcxState } from "./vpcx";
@@ -111,6 +112,10 @@ interface Ctx {
   watch(): Promise<WatchState>;
   /** The same, preloaded for tutorials that declare `needsWatch`. */
   watchState?: WatchState;
+  /** The DynamoDB tutorial's table (loaded once, on demand). */
+  nosql(): Promise<NosqlState>;
+  /** The same, preloaded for tutorials that declare `needsNosql`. */
+  nosqlState?: NosqlState;
   /** The SQS tutorial's queue, dead-letter queue and topic (loaded once, on demand). */
   queues(): Promise<QueuesState>;
   /** The same, preloaded for tutorials that declare `needsQueues`. */
@@ -162,6 +167,8 @@ interface TutorialDef {
   needsServerless?: boolean;
   /** Load the monitoring state before resolving links and text. */
   needsWatch?: boolean;
+  /** Load the DynamoDB state before resolving links and text. */
+  needsNosql?: boolean;
   /** Load the SQS state before resolving links and text. */
   needsQueues?: boolean;
   /** Load the SNS state before resolving links and text. */
@@ -232,6 +239,7 @@ async function buildCtx(engine: Engine, accountId: string, region: string, ident
   let watchData: Promise<WatchState> | null = null;
   let alertsData: Promise<AlertsState> | null = null;
   let queuesData: Promise<QueuesState> | null = null;
+  let nosqlData: Promise<NosqlState> | null = null;
   let dnsData: Promise<DnsState> | null = null;
   let storageData: Promise<StorageState> | null = null;
   let vpcxData: Promise<VpcxState> | null = null;
@@ -261,6 +269,10 @@ async function buildCtx(engine: Engine, accountId: string, region: string, ident
     queues() {
       queuesData ??= loadQueues(engine, accountId, region);
       return queuesData;
+    },
+    nosql() {
+      nosqlData ??= loadNosql(engine, accountId, region);
+      return nosqlData;
     },
     vpcx() {
       vpcxData ??= loadVpcx(engine, accountId, region, vpc, instance);
@@ -2515,7 +2527,7 @@ const DECOUPLE: TutorialDef = {
   summary:
     "When your app hands slow work (emails, invoices, packing) to a queue, a crash or a traffic spike no longer loses anything. Send and receive messages, watch an unfinished one come back, catch a 'poison' message with a dead-letter queue, and fan out from SNS.",
   minutes: 12,
-  nextId: "managed-database",
+  nextId: "nosql-table",
   needsQueues: true,
   steps: [
     {
@@ -2598,7 +2610,108 @@ const DECOUPLE: TutorialDef = {
   ],
 };
 
-TUTORIALS.push(SERVERLESS_API, WATCH_YOUR_APP, GET_ALERTED, DECOUPLE, MANAGED_DATABASE, REAL_NAME, DISKS_AND_BACKUPS, HIGHLY_AVAILABLE, CONNECT_AND_PROTECT);
+// ---------- DynamoDB: a NoSQL table ----------
+
+const tableLink = (c: Ctx): GuideLink | undefined => (c.nosqlState?.table ? { service: "dynamodb", type: "table", mode: "detail", id: c.nosqlState.table.id } : undefined);
+const tableName = (c: Ctx) => c.nosqlState?.table?.name ?? TUTORIAL_TABLE;
+
+const NOSQL: TutorialDef = {
+  id: "nosql-table",
+  title: "Design a NoSQL table: DynamoDB",
+  level: "intermediate",
+  summary:
+    "DynamoDB answers in milliseconds at any size, as long as you design the key around how you read. Build an orders table, query a customer's orders by date, see why Scan is the expensive way, add an index to query by status, and stop a write from overwriting an order.",
+  minutes: 12,
+  nextId: "managed-database",
+  needsNosql: true,
+  steps: [
+    {
+      id: "table",
+      title: `Create the ${TUTORIAL_TABLE} table`,
+      why: "The key is the whole design. We'll mostly ask 'show this customer's orders, newest first', so the partition key is customerId (groups a customer's orders together) and the sort key is orderDate (keeps them in date order).",
+      instructions: ["Click Take me there.", "Pre-filled: Orders, partition key customerId (String), sort key orderDate (String), on-demand capacity.", "Click Create table. It's CREATING for a moment, then ACTIVE."],
+      link: (c) =>
+        tableLink(c) ?? {
+          service: "dynamodb",
+          type: "table",
+          mode: "create",
+          prefill: { name: TUTORIAL_TABLE, partitionKey: "customerId", partitionKeyType: "S", sortKey: "orderDate", sortKeyType: "S", billingMode: "PAY_PER_REQUEST" },
+        },
+      cli: () =>
+        `aws dynamodb create-table --table-name ${TUTORIAL_TABLE} --attribute-definitions AttributeName=customerId,AttributeType=S AttributeName=orderDate,AttributeType=S --key-schema AttributeName=customerId,KeyType=HASH AttributeName=orderDate,KeyType=RANGE --billing-mode PAY_PER_REQUEST`,
+      check: async (c) => (await c.nosql()).table?.state === "ACTIVE",
+    },
+    {
+      id: "items",
+      title: "Add a few orders",
+      why: "Items don't need the same attributes: only the key is required. Give one customer two orders so they share a partition.",
+      instructions: [
+        "On the table's page, click Create item and paste:",
+        '{ "customerId": "asha", "orderDate": "2026-10-01", "status": "placed", "total": 499 }',
+        'Create two more, e.g. asha on 2026-10-05 (status "shipped") and ravi on 2026-10-02 (status "placed").',
+      ],
+      link: tableLink,
+      cli: (c) => `aws dynamodb put-item --table-name ${tableName(c)} --item '{"customerId":{"S":"asha"},"orderDate":{"S":"2026-10-01"},"status":{"S":"placed"},"total":{"N":"499"}}'`,
+      check: async (c) => {
+        const n = await c.nosql();
+        return n.itemCount >= 3 && n.sharedPartition;
+      },
+    },
+    {
+      id: "query",
+      title: "Query one customer's orders",
+      why: "Query goes straight to one partition and reads only what's there, already sorted by the sort key. This is the fast, cheap read DynamoDB is built for.",
+      instructions: ["Under Explore items, choose Query. customerId = asha. Click Run.", "Try orderDate >= 2026-10-03, and Newest first."],
+      link: tableLink,
+      cli: (c) => `aws dynamodb query --table-name ${tableName(c)} --key-condition-expression "customerId = :c" --expression-attribute-values '{":c":{"S":"asha"}}' --no-scan-index-forward`,
+      check: async (c) => (await c.nosql()).stats.queries > 0,
+    },
+    {
+      id: "scan",
+      title: "Scan, and see what it costs",
+      why: "A Scan reads every item in the table, then filters. With 3 items that's nothing; with 30 million it's slow and you pay for all of them. Look at Items read vs Items returned.",
+      instructions: ["Choose Scan and click Run: Items read = every item in the table.", 'From the terminal, try a filter: only 1 item returned, but all of them read (ScannedCount).'],
+      link: tableLink,
+      cli: (c) => `aws dynamodb scan --table-name ${tableName(c)} --filter-expression "#s = :s" --expression-attribute-names '{"#s":"status"}' --expression-attribute-values '{":s":{"S":"shipped"}}'`,
+      check: async (c) => (await c.nosql()).stats.scans > 0,
+    },
+    {
+      id: "index",
+      title: "Add an index to query by status",
+      why: "The warehouse asks 'every placed order', which isn't a customer. Instead of scanning, a global secondary index keeps a copy keyed by status, so that's a Query too.",
+      instructions: ["Open the table and click Edit.", "Under Global secondary indexes, click Add index: name by-status, partition key status (String), sort key orderDate (String). Save."],
+      link: tableLink,
+      cli: (c) =>
+        `aws dynamodb update-table --table-name ${tableName(c)} --attribute-definitions AttributeName=status,AttributeType=S AttributeName=orderDate,AttributeType=S --global-secondary-index-updates '[{"Create":{"IndexName":"by-status","KeySchema":[{"AttributeName":"status","KeyType":"HASH"},{"AttributeName":"orderDate","KeyType":"RANGE"}],"Projection":{"ProjectionType":"ALL"}}}]'`,
+      check: async (c) => !!(await c.nosql()).index,
+    },
+    {
+      id: "query-index",
+      title: "Query the index",
+      why: "Same speed as querying the table, for a different question. (Note 'status' is a reserved word: in expressions you write #s and say #s means status.)",
+      instructions: (c) => [`Under Explore items: Query, choose Index: ${c.nosqlState?.index?.indexName ?? "by-status"}, status = placed. Run.`],
+      link: tableLink,
+      cli: (c) =>
+        `aws dynamodb query --table-name ${tableName(c)} --index-name ${c.nosqlState?.index?.indexName ?? "by-status"} --key-condition-expression "#s = :s" --expression-attribute-names '{"#s":"status"}' --expression-attribute-values '{":s":{"S":"placed"}}'`,
+      check: async (c) => (await c.nosql()).stats.indexQueries > 0,
+    },
+    {
+      id: "condition",
+      title: "Don't overwrite an order by mistake",
+      why: "PutItem replaces any item with the same key, silently. A condition expression makes the write fail instead if the item already exists: the standard way to say 'create, never overwrite'.",
+      instructions: [
+        "Click Create item and paste an order with a key that already exists (asha, 2026-10-01). The console checks first, so it fails: ConditionalCheckFailedException.",
+        "Or from the terminal, the command below (twice).",
+      ],
+      link: tableLink,
+      cli: (c) =>
+        `aws dynamodb put-item --table-name ${tableName(c)} --item '{"customerId":{"S":"asha"},"orderDate":{"S":"2026-10-01"}}' --condition-expression "attribute_not_exists(customerId)"`,
+      check: async (c) => (await c.nosql()).stats.conditionalFailures > 0,
+    },
+  ],
+};
+
+TUTORIALS.push(SERVERLESS_API, WATCH_YOUR_APP, GET_ALERTED, DECOUPLE, NOSQL, MANAGED_DATABASE, REAL_NAME, DISKS_AND_BACKUPS, HIGHLY_AVAILABLE, CONNECT_AND_PROTECT);
 
 const info = (t: TutorialDef): TutorialInfo => ({
   id: t.id,
@@ -2639,6 +2752,7 @@ export async function viewTutorial(
   }
   if (t.needsAlerts) c.alertsState = await c.alerts();
   if (t.needsQueues) c.queuesState = await c.queues();
+  if (t.needsNosql) c.nosqlState = await c.nosql();
   const steps = await Promise.all(
     t.steps.map(async (st) => ({
       id: st.id,
