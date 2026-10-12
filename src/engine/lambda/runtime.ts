@@ -74,7 +74,7 @@ globalThis.setTimeout = (fn, ms = 0, ...args) => {
   return id;
 };
 globalThis.clearTimeout = (id) => { globalThis.__timers = __timers.filter((t) => t.id !== id); };
-globalThis.setInterval = () => { throw new Error("setInterval isn't available in CloudLab's Lambda runtime"); };
+globalThis.setInterval = () => { throw new Error("setInterval isn't available in Nuvora's Lambda runtime"); };
 globalThis.setImmediate = (fn, ...args) => setTimeout(fn, 0, ...args);
 globalThis.__runNextTimer = () => {
   if (__timers.length === 0) return false;
@@ -171,7 +171,7 @@ export async function runFunction(input: RunInput): Promise<RunOutput> {
     if (logBytes > MAX_LOG_BYTES) return;
     const line = `${iso(Date.now())}\t${input.requestId}\t${level}\t${message}`;
     logBytes += line.length;
-    logs.push(logBytes > MAX_LOG_BYTES ? `${iso(Date.now())}\t${input.requestId}\tWARN\t[CloudLab: further log output dropped, 64 KB limit]` : line);
+    logs.push(logBytes > MAX_LOG_BYTES ? `${iso(Date.now())}\t${input.requestId}\tWARN\t[Nuvora: further log output dropped, 64 KB limit]` : line);
   };
 
   const handles: QuickJSHandle[] = [];
@@ -243,7 +243,7 @@ export async function runFunction(input: RunInput): Promise<RunOutput> {
     }
     vm.setProp(vm.global, "__files", files);
     const prelude = vm.evalCode(PRELUDE, "/var/runtime/bootstrap.js");
-    if (prelude.error) throw new Error(`CloudLab runtime failed to start: ${JSON.stringify(vm.dump(prelude.error))}`);
+    if (prelude.error) throw new Error(`Nuvora runtime failed to start: ${JSON.stringify(vm.dump(prelude.error))}`);
     prelude.value.dispose();
 
     // ---- init: load the handler's module ----
@@ -422,7 +422,7 @@ export async function runFunction(input: RunInput): Promise<RunOutput> {
     durationMs = timeoutMs;
     const reason =
       interruptedForTime && timeoutMs > CPU_LIMIT_MS
-        ? `Task timed out after ${(CPU_LIMIT_MS / 1000).toFixed(2)} seconds (CloudLab's limit on real computing time per invocation)`
+        ? `Task timed out after ${(CPU_LIMIT_MS / 1000).toFixed(2)} seconds (Nuvora's limit on real computing time per invocation)`
         : `Task timed out after ${input.timeoutSec.toFixed(2)} seconds`;
     error = { errorType: "Sandbox.Timedout", errorMessage: `${iso(Date.now())} ${input.requestId} ${reason}` };
     logs.push(`${iso(Date.now())} ${input.requestId} ${reason}`);
@@ -432,7 +432,7 @@ export async function runFunction(input: RunInput): Promise<RunOutput> {
     if (size > MAX_RESPONSE_BYTES) {
       error = {
         errorType: "Function.ResponseSizeTooLarge",
-        errorMessage: `Response payload size exceeded maximum allowed payload size (${MAX_RESPONSE_BYTES} bytes in CloudLab).`,
+        errorMessage: `Response payload size exceeded maximum allowed payload size (${MAX_RESPONSE_BYTES} bytes in Nuvora).`,
       };
       result = undefined;
     }
@@ -496,7 +496,7 @@ function classifyLoadError(e: FunctionError, source?: string): FunctionError {
   }
   if (/Cannot find (module|package)/.test(e.errorMessage)) {
     const sdk = /'(@aws-sdk\/[^']+|aws-sdk)'/.exec(e.errorMessage);
-    const message = sdk ? `${e.errorMessage}\n(CloudLab can't run AWS SDK calls from functions yet.)` : e.errorMessage;
+    const message = sdk ? `${e.errorMessage}\n(Nuvora can't run AWS SDK calls from functions yet.)` : e.errorMessage;
     return { errorType: "Runtime.ImportModuleError", errorMessage: `Error: ${message}`, trace: [`Runtime.ImportModuleError: Error: ${message}`] };
   }
   return e;

@@ -185,7 +185,7 @@ const stack: ResourceTypeDef = {
     const given = Object.fromEntries(((config.parameters as { key: string; value?: string }[] | undefined) ?? []).map((p) => [p.key, p.value ?? ""]));
     const p = resolveParameters(t, given);
     const unsupported = [...new Set(Object.values(t.Resources).map((r) => r.Type))].filter((type) => !HANDLERS[type]);
-    if (unsupported.length) throw validationError(`Template format error: Unrecognized resource types: [${unsupported.join(", ")}] (CloudLab simulates ${Object.keys(HANDLERS).length} types; see the Template field's help)`);
+    if (unsupported.length) throw validationError(`Template format error: Unrecognized resource types: [${unsupported.join(", ")}] (Nuvora simulates ${Object.keys(HANDLERS).length} types; see the Template field's help)`);
     const conditions = evaluateConditions(t, {
       params: p,
       pseudo: { "AWS::Region": ctx.region, "AWS::AccountId": accountNumber(ctx.accountId), "AWS::StackName": String(config.name), "AWS::StackId": "", "AWS::Partition": "aws", "AWS::URLSuffix": "amazonaws.com" },

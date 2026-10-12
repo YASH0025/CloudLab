@@ -3,7 +3,7 @@ import { healthCheckStatus } from "@/engine/route53/dns";
 import { recordValues } from "@/engine/services/route53";
 import type { Suggestion } from "./types";
 
-/** CloudLab hands out public IPs from this documentation range (see services/ips.ts). */
+/** Nuvora hands out public IPs from this documentation range (see services/ips.ts). */
 const LAB_PUBLIC_IP = /^203\.0\.113\.\d+$/;
 
 /**

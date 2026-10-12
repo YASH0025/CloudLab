@@ -582,7 +582,7 @@ export class Engine {
     await reconcileScaling(this, accountId, region, this.now());
     // CloudWatch alarms are evaluated the same way.
     await evaluateAlarms(this, accountId, region, this.now());
-    // VPCs made before network ACLs existed in CloudLab get their default ACL once.
+    // VPCs made before network ACLs existed in Nuvora get their default ACL once.
     if (await this.store.tryClaim(`default-acl:${accountId}:${region}`)) await this.backfillDefaultAcls(accountId, region);
     if (!(await this.store.tryClaim(`default-vpc:${accountId}:${region}`))) return;
     if (!(await this.defaultVpc(accountId, region))) await this.createDefaultVpc(accountId, region);

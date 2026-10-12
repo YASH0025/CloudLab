@@ -52,7 +52,7 @@ export async function runCurl(tokens: string[], ctx: CliContext): Promise<CliRes
         if (c > 0) headers[h.slice(0, c).trim().toLowerCase()] = h.slice(c + 1).trim();
       } else if (t === "-i" || t === "--include" || t === "-v" || t === "--verbose") include = true;
       else if (t === "-s" || t === "--silent" || t === "-S" || t === "-L" || t === "--location" || t === "-f") continue;
-      else if (t.startsWith("-")) return { output: `curl: option ${t}: is unknown in CloudLab's curl (supported: -X -d --json -H -i -s)`, exitCode: 2, changed: false };
+      else if (t.startsWith("-")) return { output: `curl: option ${t}: is unknown in Nuvora's curl (supported: -X -d --json -H -i -s)`, exitCode: 2, changed: false };
       else url = t;
     } catch (e) {
       return { output: (e as Error).message, exitCode: 2, changed: false };
@@ -60,7 +60,7 @@ export async function runCurl(tokens: string[], ctx: CliContext): Promise<CliRes
   }
   if (!url) return { output: "curl: no URL specified!\ncurl: try 'curl --help' for more information", exitCode: 2, changed: false };
 
-  // CloudLab's own form of an API's address: /apigw/<api-id>/… → the API's real name.
+  // Nuvora's own form of an API's address: /apigw/<api-id>/… → the API's real name.
   const apigw = /^(?:https?:\/\/[^/]+)?\/apigw\/([a-z0-9]{10})(\/[^?]*)?(\?.*)?$/.exec(url);
   if (apigw) {
     const api = await ctx.engine.findAnywhere(apigw[1]);
@@ -71,7 +71,7 @@ export async function runCurl(tokens: string[], ctx: CliContext): Promise<CliRes
   if (res.kind === "error") {
     const hint =
       res.exitCode === 6
-        ? "\n(CloudLab's terminal has no internet: it reaches your API Gateway endpoints, load balancers, S3 websites and servers, and names in your Route 53 hosted zones.)"
+        ? "\n(Nuvora's terminal has no internet: it reaches your API Gateway endpoints, load balancers, S3 websites and servers, and names in your Route 53 hosted zones.)"
         : "";
     return { output: `${res.message}${hint}`, exitCode: res.exitCode, changed: false };
   }

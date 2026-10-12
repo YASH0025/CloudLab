@@ -116,7 +116,7 @@ const queue: ResourceTypeDef = {
   invalidValue({ field, value }) {
     if (field.key === "name") {
       if (typeof value === "string" && value.endsWith(".fifo")) {
-        return new EngineError("InvalidParameterValue", "CloudLab simulates standard queues; FIFO queues (ending in .fifo) aren't available yet.");
+        return new EngineError("InvalidParameterValue", "Nuvora simulates standard queues; FIFO queues (ending in .fifo) aren't available yet.");
       }
       return new EngineError("InvalidParameterValue", "Can only include alphanumeric characters, hyphens, or underscores. 1 to 80 in length");
     }

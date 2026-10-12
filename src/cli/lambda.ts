@@ -143,7 +143,7 @@ function payloadArg(ctx: CliContext, args: Args): unknown {
       const clean = given.trim();
       if (!/^[A-Za-z0-9+/]+={0,2}$/.test(clean) || clean.length % 4 !== 0) {
         throw new ClientSideError(
-          `\nInvalid base64: "${given}"\n(CloudLab: the AWS CLI v2 reads --payload as base64. Add --cli-binary-format raw-in-base64-out to pass JSON as is.)`,
+          `\nInvalid base64: "${given}"\n(Nuvora: the AWS CLI v2 reads --payload as base64. Add --cli-binary-format raw-in-base64-out to pass JSON as is.)`,
         );
       }
       text = Buffer.from(clean, "base64").toString("utf8");

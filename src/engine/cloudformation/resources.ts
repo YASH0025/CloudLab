@@ -8,7 +8,7 @@ import type { Resource } from "../types";
 import type { Json } from "./template";
 
 /**
- * The CloudFormation resource types CloudLab can create, and how each maps to
+ * The CloudFormation resource types Nuvora can create, and how each maps to
  * a console resource: its properties become the resource's settings, Ref and
  * Fn::GetAtt read its ID and attributes. A few types (a route, a gateway
  * attachment, a Lambda permission…) aren't resources of their own here: they
@@ -123,7 +123,7 @@ export const HANDLERS: Record<string, Handler> = {
     props: ["VpcId", "InternetGatewayId", "VpnGatewayId"],
     required: ["VpcId"],
     async apply(p, c) {
-      if (!p.InternetGatewayId) throw new EngineError("InvalidParameterValue", "CloudLab simulates internet gateway attachments (InternetGatewayId), not VPN gateways.");
+      if (!p.InternetGatewayId) throw new EngineError("InvalidParameterValue", "Nuvora simulates internet gateway attachments (InternetGatewayId), not VPN gateways.");
       await c.engine.update(c.accountId, String(p.InternetGatewayId), { vpcId: s(p.VpcId) });
       return `IGW|${String(p.VpcId)}`;
     },
@@ -221,7 +221,7 @@ export const HANDLERS: Record<string, Handler> = {
       return {
         name: nameTag(p),
         imageId: s(p.ImageId),
-        // CloudFormation's default is m1.small, which CloudLab doesn't offer; t3.micro is the free-tier-like choice.
+        // CloudFormation's default is m1.small, which Nuvora doesn't offer; t3.micro is the free-tier-like choice.
         instanceType: s(p.InstanceType) ?? "t3.micro",
         subnetId: subnet,
         securityGroupIds: groups,
@@ -389,7 +389,7 @@ export const HANDLERS: Record<string, Handler> = {
     required: ["AssumeRolePolicyDocument"],
     nameProp: "RoleName",
     config: (p, c) => {
-      if (p.Policies) throw new EngineError("ValidationError", "CloudLab doesn't simulate inline Policies on roles yet: use ManagedPolicyArns (AWS managed policies, or an AWS::IAM::ManagedPolicy you create).");
+      if (p.Policies) throw new EngineError("ValidationError", "Nuvora doesn't simulate inline Policies on roles yet: use ManagedPolicyArns (AWS managed policies, or an AWS::IAM::ManagedPolicy you create).");
       return { name: s(p.RoleName) ?? generatedName(c, 64), trustPolicy: json(p.AssumeRolePolicyDocument), policyArns: list(p.ManagedPolicyArns).map(String), description: s(p.Description) };
     },
     ref: (r) => r.name,
@@ -403,7 +403,7 @@ export const HANDLERS: Record<string, Handler> = {
     nameProp: "FunctionName",
     config: (p, c) => {
       const code = p.Code as Props;
-      if (!code?.ZipFile) throw new EngineError("InvalidParameterValueException", "CloudLab supports inline code (Code: ZipFile: |) for functions in templates; S3Bucket/S3Key uploads aren't simulated yet.");
+      if (!code?.ZipFile) throw new EngineError("InvalidParameterValueException", "Nuvora supports inline code (Code: ZipFile: |) for functions in templates; S3Bucket/S3Key uploads aren't simulated yet.");
       const runtime = s(p.Runtime) ?? "nodejs22.x";
       const file = runtime.startsWith("python") ? "index.py" : "index.js";
       return {

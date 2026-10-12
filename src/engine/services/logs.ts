@@ -49,7 +49,7 @@ const logGroup: ResourceTypeDef = {
       required: true,
       param: "retentionInDays",
       options: [{ value: "never", label: "Never expire" }, ...RETENTION_DAYS.map((d) => ({ value: String(d), label: `${d} day${d === 1 ? "" : "s"}` }))],
-      description: "Older events are deleted. 'Never expire' keeps everything (and costs the most on AWS). CloudLab keeps at most the newest 2,000 events per group.",
+      description: "Older events are deleted. 'Never expire' keeps everything (and costs the most on AWS). Nuvora keeps at most the newest 2,000 events per group.",
     },
   ],
   columns: [

@@ -64,7 +64,7 @@ export const launchTemplate: ResourceTypeDef = {
       key: "userData",
       label: "User data",
       type: "json",
-      description: "A startup script, e.g. one that installs a web server. Stored and shown; CloudLab doesn't run it.",
+      description: "A startup script, e.g. one that installs a web server. Stored and shown; Nuvora doesn't run it.",
     },
   ],
   columns: [
@@ -103,7 +103,7 @@ launchTemplate.fields = launchTemplate.fields.map((f) => (f.key === "userData" ?
 
 export const ASG_ARN = /^arn:aws:autoscaling:[a-z0-9-]+:\d{12}:autoScalingGroup:[0-9a-f-]{36}:autoScalingGroupName\/[\w.@-]{1,255}$/;
 
-/** Simulated demand, in total "CPU percent" across the group. CloudLab's stand-in for real traffic. */
+/** Simulated demand, in total "CPU percent" across the group. Nuvora's stand-in for real traffic. */
 export const TRAFFIC: Record<string, { label: string; load: number }> = {
   idle: { label: "Idle", load: 10 },
   normal: { label: "Normal", load: 70 },
@@ -178,7 +178,7 @@ const autoScalingGroup: ResourceTypeDef = {
       default: 30,
       min: 0,
       max: 3600,
-      description: "Time a new instance gets to start before its health counts. AWS's default is 300; CloudLab uses 30 so you can watch it.",
+      description: "Time a new instance gets to start before its health counts. AWS's default is 300; Nuvora uses 30 so you can watch it.",
     },
     {
       key: "targetCpu",
@@ -191,7 +191,7 @@ const autoScalingGroup: ResourceTypeDef = {
     },
     {
       key: "simulatedTraffic",
-      label: "Simulated traffic (CloudLab)",
+      label: "Simulated traffic (Nuvora)",
       type: "enum",
       required: true,
       default: "normal",

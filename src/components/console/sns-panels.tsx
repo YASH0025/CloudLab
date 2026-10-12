@@ -43,7 +43,7 @@ interface AttrRow {
 function PublishCard({ topic }: { topic: ResourceDTO }) {
   const publish = usePublish(topic.id);
   const [subject, setSubject] = useState("");
-  const [message, setMessage] = useState("Hello from CloudLab!");
+  const [message, setMessage] = useState("Hello from Nuvora!");
   const [perProtocol, setPerProtocol] = useState(false);
   const [attrs, setAttrs] = useState<AttrRow[]>([]);
   const result = publish.data;
@@ -417,7 +417,7 @@ export function SubscriptionPanel({ sub }: { sub: ResourceDTO }) {
               ? sub.config.rawMessageDelivery
                 ? "Raw message delivery is on: the queue gets just the message text."
                 : "Each message arrives in the queue wrapped in SNS's JSON envelope (Type, MessageId, TopicArn, Message…). Turn on raw message delivery to get just the text."
-            : "A pretend mailbox: CloudLab doesn't send real email, so messages for this address land here."}
+            : "A pretend mailbox: Nuvora doesn't send real email, so messages for this address land here."}
         </CardDescription>
       </CardHeader>
       <CardContent className="pb-5">

@@ -30,7 +30,7 @@ export const SCALE_IN_COOLDOWN_MS = 20_000;
 /**
  * A target tracking policy comes with two CloudWatch alarms, as in AWS:
  * AlarmHigh (CPU above the target for 3 minutes) and AlarmLow (below 90% of it
- * for 15 minutes). CloudLab scales straight away, so these are there to watch.
+ * for 15 minutes). Nuvora scales straight away, so these are there to watch.
  */
 export async function syncTargetTrackingAlarms(engine: Engine, accountId: string, group: Resource) {
   const existing = (await engine.list(accountId, { service: "cloudwatch", type: "alarm", region: group.region })).filter(

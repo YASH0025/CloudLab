@@ -463,7 +463,7 @@ export function parseUpdate(src: string, ctx: ExprContext): UpdateAction[] {
         if (op.kind === "op" && (op.text === "+" || op.text === "-")) {
           p.next();
           const right = valueTerm();
-          if (first.type !== "operand" || right.type !== "operand") throw validation("Invalid UpdateExpression: Syntax error; CloudLab supports + and - between plain values");
+          if (first.type !== "operand" || right.type !== "operand") throw validation("Invalid UpdateExpression: Syntax error; Nuvora supports + and - between plain values");
           actions.push({ clause: "SET", path, value: { type: "arith", op: op.text as "+", left: first.operand, right: right.operand } });
         } else actions.push({ clause: "SET", path, value: first });
       } else if (clause === "REMOVE") {

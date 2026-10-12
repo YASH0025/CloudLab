@@ -10,7 +10,7 @@ import type { MetricId, MetricPoint } from "./types";
  * invocations, API Gateway requests, load balancer requests, Auto Scaling's
  * CPU) as one-minute aggregates; statistics for any period are computed from
  * them, the way CloudWatch does. Resources that don't really run in
- * CloudLab (EC2 instances outside Auto Scaling, RDS databases) get simulated
+ * Nuvora (EC2 instances outside Auto Scaling, RDS databases) get simulated
  * metrics, and anything simulated says so.
  */
 
@@ -68,7 +68,7 @@ function noise(seed: string, minute: number): number {
 
 const MINUTE = 60_000;
 
-/** Metrics CloudLab generates rather than records: resources that don't really run here. */
+/** Metrics Nuvora generates rather than records: resources that don't really run here. */
 const SIMULATED: Record<string, { unit: string; dims: string[] }> = {
   "AWS/EC2:CPUUtilization": { unit: "Percent", dims: ["InstanceId"] },
   "AWS/RDS:CPUUtilization": { unit: "Percent", dims: ["DBInstanceIdentifier"] },

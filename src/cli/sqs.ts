@@ -81,7 +81,7 @@ function toConfig(ctx: CliContext, attrs: Record<string, string>): Record<string
     } else if (READ_ONLY.includes(name)) {
       throw new EngineError("InvalidAttributeName", `Unknown Attribute ${name}.`);
     } else if (name === "FifoQueue" || name === "ContentBasedDeduplication") {
-      throw new EngineError("InvalidAttributeName", `Unknown Attribute ${name}. (CloudLab simulates standard queues; FIFO queues aren't available yet.)`);
+      throw new EngineError("InvalidAttributeName", `Unknown Attribute ${name}. (Nuvora simulates standard queues; FIFO queues aren't available yet.)`);
     } else {
       throw new EngineError("InvalidAttributeName", `Unknown Attribute ${name}.`);
     }

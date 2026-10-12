@@ -100,7 +100,7 @@ export function VolumePanel({ volume }: { volume: ResourceDTO }) {
               <p className="text-xs text-muted-foreground">
                 {instanceId
                   ? `Start the instance to write to its disks.`
-                  : "Attach this volume to a running instance first (edit Attached to instance below). On a real server you'd also format and mount it; CloudLab does that for you."}
+                  : "Attach this volume to a running instance first (edit Attached to instance below). On a real server you'd also format and mount it; Nuvora does that for you."}
               </p>
             )}
             {write.error && <p className="text-xs text-destructive">{errorText(write.error)}</p>}

@@ -130,7 +130,7 @@ export const APIGATEWAY_COMMANDS: Command[] = [
     permissions: perm("POST"),
     async run(args, ctx) {
       const protocol = args.required("protocol-type");
-      if (protocol !== "HTTP") throw new EngineError("BadRequestException", `CloudLab simulates HTTP APIs only, not ${protocol}.`);
+      if (protocol !== "HTTP") throw new EngineError("BadRequestException", `Nuvora simulates HTTP APIs only, not ${protocol}.`);
       const target = args.one("target");
       const functionName = target ? functionFromArn(ctx, target) : undefined;
       const api = await create(ctx, "api", {
@@ -216,7 +216,7 @@ export const APIGATEWAY_COMMANDS: Command[] = [
     async run(args, ctx) {
       const api = await apiById(ctx, args.required("api-id"));
       const type = args.required("integration-type");
-      if (type !== "AWS_PROXY") throw new EngineError("BadRequestException", `CloudLab supports AWS_PROXY (Lambda) integrations only, not ${type}.`);
+      if (type !== "AWS_PROXY") throw new EngineError("BadRequestException", `Nuvora supports AWS_PROXY (Lambda) integrations only, not ${type}.`);
       const uri = args.one("integration-uri");
       if (!uri) throw new EngineError("BadRequestException", "IntegrationUri is required for AWS_PROXY integrations.");
       const version = args.one("payload-format-version");
@@ -363,7 +363,7 @@ export const APIGATEWAY_COMMANDS: Command[] = [
     service: "apigatewayv2",
     operation: "create-deployment",
     apiName: "CreateDeployment",
-    summary: "Deploy the API's current routes (CloudLab stages already auto-deploy)",
+    summary: "Deploy the API's current routes (Nuvora stages already auto-deploy)",
     usage: "--api-id <id> [--stage-name <name>]",
     mutates: true,
     permissions: perm("POST", "deployments"),

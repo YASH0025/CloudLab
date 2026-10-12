@@ -604,7 +604,7 @@ export const LOGS_COMMANDS: Command[] = [
         if (format === "json") return JSON.stringify({ timestamp: e.timestamp, logStreamName: e.stream, message: e.message });
         return `${isoMicros(e.timestamp)} ${e.stream} ${e.message}`;
       });
-      if (args.has("follow")) lines.push("(CloudLab: --follow doesn't keep running here. Run the command again to see new events.)");
+      if (args.has("follow")) lines.push("(Nuvora: --follow doesn't keep running here. Run the command again to see new events.)");
       return lines.join("\n");
     },
   }),

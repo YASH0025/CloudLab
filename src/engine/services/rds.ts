@@ -442,7 +442,7 @@ const dbInstance: ResourceTypeDef = {
   invalidValue({ field, value }) {
     if (field.key === "name") return checkIdentifierError("DBInstanceIdentifier");
     if (field.key === "allocatedStorage") {
-      return new EngineError("InvalidParameterCombination", `Invalid storage size for storage type gp2: ${value}. CloudLab allows ${MIN_STORAGE} to ${MAX_STORAGE} GiB.`);
+      return new EngineError("InvalidParameterCombination", `Invalid storage size for storage type gp2: ${value}. Nuvora allows ${MIN_STORAGE} to ${MAX_STORAGE} GiB.`);
     }
     if (field.key === "dbInstanceClass") {
       return new EngineError("InvalidParameterCombination", `RDS does not support creating a DB instance with the following combination: DBInstanceClass=${value}.`);

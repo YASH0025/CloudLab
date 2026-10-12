@@ -157,7 +157,7 @@ const table: ResourceTypeDef = {
       maxLength: 255,
       placeholder: "expiresAt",
       param: "TimeToLiveSpecification",
-      description: "A Number attribute holding a Unix time in seconds. Items whose time has passed are deleted for free (on AWS within a few days; in CloudLab when the table is next used).",
+      description: "A Number attribute holding a Unix time in seconds. Items whose time has passed are deleted for free (on AWS within a few days; in Nuvora when the table is next used).",
     },
     { key: "deletionProtection", label: "Deletion protection", type: "boolean", param: "DeletionProtectionEnabled", description: "When on, the table can't be deleted until you turn it off." },
   ],
@@ -183,7 +183,7 @@ const table: ResourceTypeDef = {
       );
     }
     if (field.key === "readCapacity" || field.key === "writeCapacity") {
-      return new EngineError("ValidationException", `One or more parameter values were invalid: ${field.param} must be between 1 and 40000 (CloudLab), got ${String(value)}`);
+      return new EngineError("ValidationException", `One or more parameter values were invalid: ${field.param} must be between 1 and 40000 (Nuvora), got ${String(value)}`);
     }
     return undefined;
   },

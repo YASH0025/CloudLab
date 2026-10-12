@@ -44,7 +44,7 @@ export interface RequestLog {
   stage: string | null;
   status: number;
   latencyMs: number;
-  /** Why it failed, in plain words (CloudLab's addition). */
+  /** Why it failed, in plain words (Nuvora's addition). */
   reason?: string;
   lambdaRequestId?: string;
   /** How long the function took (for IntegrationLatency). */
@@ -156,7 +156,7 @@ export async function handleApiRequest(engine: Engine, req: ApiRequest): Promise
   }
 
   if ((await engine.countInWindow(`apigw:${api.id}`, 60_000)) > API_REQUESTS_PER_MINUTE) {
-    return log({ routeKey: null, stage: null, status: 429, reason: `CloudLab allows ${API_REQUESTS_PER_MINUTE} requests a minute per API.` }, json(429, "Too Many Requests"));
+    return log({ routeKey: null, stage: null, status: 429, reason: `Nuvora allows ${API_REQUESTS_PER_MINUTE} requests a minute per API.` }, json(429, "Too Many Requests"));
   }
 
   // Stage: a named stage is the first path segment; otherwise $default.

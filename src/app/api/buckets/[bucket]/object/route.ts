@@ -47,7 +47,7 @@ export async function PUT(request: NextRequest, ctx: RouteContext<"/api/buckets/
     const key = keyOf(request);
     const declared = Number(request.headers.get("content-length") ?? 0);
     if (declared > LIMITS.objectBytes) {
-      throw new EngineError("EntityTooLarge", "Your proposed upload exceeds the maximum allowed size (CloudLab allows 1 MB per object).");
+      throw new EngineError("EntityTooLarge", "Your proposed upload exceeds the maximum allowed size (Nuvora allows 1 MB per object).");
     }
     const data = Buffer.from(await request.arrayBuffer());
     const type = request.headers.get("content-type") ?? undefined;

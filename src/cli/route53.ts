@@ -212,7 +212,7 @@ function healthCheckConfig(ctx: CliContext, args: Args) {
   const num = (v: unknown) => (v === undefined ? undefined : Number(v));
   const type = String(c.Type ?? "");
   if (!["HTTP", "HTTPS", "TCP"].includes(type)) {
-    throw new EngineError("InvalidInput", `Invalid parameter : Type ${type || "(none)"} isn't supported by CloudLab. Use HTTP, HTTPS or TCP.`);
+    throw new EngineError("InvalidInput", `Invalid parameter : Type ${type || "(none)"} isn't supported by Nuvora. Use HTTP, HTTPS or TCP.`);
   }
   return {
     type,
@@ -247,7 +247,7 @@ export const ROUTE53_COMMANDS: Command[] = [
       }
       const config = args.raw("hosted-zone-config").length ? jsonArg(ctx, "hosted-zone-config", args.raw("hosted-zone-config").join(" ")) : {};
       if (String(config.PrivateZone ?? "false").toLowerCase() === "true") {
-        throw new EngineError("InvalidInput", "Private hosted zones need a VPC (--vpc), and CloudLab doesn't simulate them yet. Create a public zone instead.");
+        throw new EngineError("InvalidInput", "Private hosted zones need a VPC (--vpc), and Nuvora doesn't simulate them yet. Create a public zone instead.");
       }
       const zone = await create(ctx, "hosted-zone", { name: args.required("name"), comment: config.Comment, zoneType: "public" });
       await ctx.engine.setAttributes(ctx.accountId, zone.id, { callerReference: reference });
@@ -364,7 +364,7 @@ export const ROUTE53_COMMANDS: Command[] = [
     async run(args, ctx) {
       const id = args.required("id").replace(/^\/change\//, "");
       if (!/^C[A-Z0-9]{8,32}$/.test(id)) throw new EngineError("NoSuchChange", `Could not find resource with ID: ${id}`, 404);
-      // Changes reach every name server within seconds; CloudLab's are instant.
+      // Changes reach every name server within seconds; Nuvora's are instant.
       return { ChangeInfo: { Id: `/change/${id}`, Status: "INSYNC", SubmittedAt: ctx.engine.now().toISOString() } };
     },
   }),

@@ -4,7 +4,7 @@ import type { CliContext } from "./commands";
 import type { CliResult } from "./execute";
 
 /**
- * `dig` and `nslookup` for the terminal. They ask CloudLab's resolver, which
+ * `dig` and `nslookup` for the terminal. They ask Nuvora's resolver, which
  * answers from your Route 53 hosted zones and the names AWS gives your load
  * balancers, APIs and S3 websites. Output follows the real tools.
  */

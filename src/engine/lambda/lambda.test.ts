@@ -101,7 +101,7 @@ describe("Lambda functions", { timeout: 30_000 }, () => {
     await expect(create("apigateway", "route", { apiId: api.id, routeKey: "GET /hello" })).rejects.toMatchObject({ code: "ConflictException" });
     await expect(create("apigateway", "route", { apiId: api.id, routeKey: "hello" })).rejects.toMatchObject({ code: "BadRequestException" });
 
-    // Without a permission on the function, API Gateway gets a 500 (and CloudLab says why).
+    // Without a permission on the function, API Gateway gets a 500 (and Nuvora says why).
     let res = await request(api.id, "GET", "/hello", "name=Ada");
     expect(res).toMatchObject({ status: 500, body: '{"message":"Internal Server Error"}' });
     expect(res.headers["x-cloudlab-reason"]).toContain("add-permission");

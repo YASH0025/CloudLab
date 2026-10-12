@@ -33,8 +33,8 @@ const publicApp = (a: AppRecord): LocalApp => {
 
 /**
  * Local mode's server side: pairing computers, queueing work for their agents,
- * and recording what the agents report back. The agent connects out to CloudLab
- * and polls; CloudLab never connects in to the learner's computer.
+ * and recording what the agents report back. The agent connects out to Nuvora
+ * and polls; Nuvora never connects in to the learner's computer.
  */
 export class LocalService {
   constructor(
@@ -164,7 +164,7 @@ export class LocalService {
     if (!agent) {
       throw new EngineError(
         "AgentUnauthorized",
-        "This computer isn't connected to a CloudLab account (or was disconnected). Run the connect command from CloudLab again.",
+        "This computer isn't connected to a Nuvora account (or was disconnected). Run the connect command from Nuvora again.",
         401,
       );
     }

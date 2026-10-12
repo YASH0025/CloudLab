@@ -29,7 +29,7 @@ const HEALTH_VARIANT: Record<TargetState, "success" | "destructive" | "warning" 
 /** What each reason code means, in plain words. */
 const REASON_HELP: Record<string, (port: number) => string> = {
   "Elb.RegistrationInProgress": () => "The instance is still starting. Health checks begin once it's running.",
-  "Elb.InitialHealthChecking": () => "Health checks have started. A target must pass a few in a row before it gets traffic (about 10 seconds in CloudLab).",
+  "Elb.InitialHealthChecking": () => "Health checks have started. A target must pass a few in a row before it gets traffic (about 10 seconds in Nuvora).",
   "Target.Timeout": (port) =>
     `The health check got no answer on port ${port}. Almost always the instance's security group doesn't allow port ${port} from the load balancer's security group.`,
   "Target.InvalidState": () => "The instance is stopped or terminated, so it can't serve traffic.",
@@ -138,7 +138,7 @@ export function LoadBalancerPanel({ lb }: { lb: ResourceDTO }) {
           <SendIcon className="size-4" /> Send requests
         </CardTitle>
         <CardDescription>
-          Visit the load balancer like someone on the internet would. CloudLab follows each request through DNS, the security group, the listener and the target
+          Visit the load balancer like someone on the internet would. Nuvora follows each request through DNS, the security group, the listener and the target
           group, and shows which server answered.
         </CardDescription>
       </CardHeader>
@@ -286,7 +286,7 @@ export function AutoScalingPanel({ group }: { group: ResourceDTO }) {
 
           <div className="space-y-1.5">
             <p className="text-sm">
-              Simulated traffic <span className="text-xs text-muted-foreground">(CloudLab only: turn the load up and watch the group react)</span>
+              Simulated traffic <span className="text-xs text-muted-foreground">(Nuvora only: turn the load up and watch the group react)</span>
             </p>
             <div className="flex flex-wrap gap-2">
               {TRAFFIC.map((t) => (

@@ -24,7 +24,7 @@ import { checkItem, checkValue, compare, itemSize, typeOf, validation, type Attr
  */
 
 export const MAX_ITEM_BYTES = 400 * 1024;
-/** CloudLab's limits: real tables have none. */
+/** Nuvora's limits: real tables have none. */
 export const MAX_ITEMS = 2_000;
 export const MAX_TABLE_BYTES = 4 * 1024 * 1024;
 /** Query and Scan stop at 1 MB of data read. */
@@ -108,7 +108,7 @@ async function consume(engine: Engine, t: Resource, kind: "read" | "write", unit
   if (t.config.billingMode === "PROVISIONED") {
     const limit = Number(kind === "read" ? t.config.readCapacity : t.config.writeCapacity);
     const used = await engine.countInWindow(`ddb-${kind}:${t.id}`, 1_000);
-    // countInWindow counts calls; each call is one unit-ish request in CloudLab's model.
+    // countInWindow counts calls; each call is one unit-ish request in Nuvora's model.
     if (used > limit) {
       await bump(engine, t, { throttled: 1 });
       await engine.setAttributes(t.accountId, t.id, { throttledAt: engine.now().toISOString() });
@@ -175,8 +175,8 @@ async function failOnCondition<T>(engine: Engine, t: Resource, fn: () => T): Pro
 }
 
 function checkLimits(items: Record<string, Item>) {
-  if (Object.keys(items).length > MAX_ITEMS) throw new EngineError("LimitExceededException", `CloudLab keeps at most ${MAX_ITEMS} items per table. Delete some first.`, 400);
-  if (Object.values(items).reduce((n, it) => n + itemSize(it), 0) > MAX_TABLE_BYTES) throw new EngineError("LimitExceededException", "CloudLab keeps at most 4 MB per table. Delete some items first.", 400);
+  if (Object.keys(items).length > MAX_ITEMS) throw new EngineError("LimitExceededException", `Nuvora keeps at most ${MAX_ITEMS} items per table. Delete some first.`, 400);
+  if (Object.values(items).reduce((n, it) => n + itemSize(it), 0) > MAX_TABLE_BYTES) throw new EngineError("LimitExceededException", "Nuvora keeps at most 4 MB per table. Delete some items first.", 400);
 }
 
 export interface WriteInput extends ExpressionInput {

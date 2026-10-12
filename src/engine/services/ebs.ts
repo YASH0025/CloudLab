@@ -10,7 +10,7 @@ import { systemOf, type Resource, type ResourceTypeDef, type SystemApi } from ".
  * aren't tied to a zone, so a volume restored from one can go to any zone in
  * the region, and copy-snapshot takes them to other regions.
  *
- * CloudLab volumes hold a few small files (written "from the server" while the
+ * Nuvora volumes hold a few small files (written "from the server" while the
  * volume is attached to a running instance), so backups and restores show
  * real data.
  */
@@ -345,9 +345,9 @@ export async function writeVolumeFile(
   if (inst.state !== "running") throw new EngineError("IncorrectInstanceState", `The instance ${inst.id} is ${inst.state ?? "not running"}. Start it to write to its disks.`);
   const path = input.path.trim();
   if (!/^\/[\w./-]{1,200}$/.test(path) || path.includes("..")) throw new EngineError("InvalidParameterValue", "Use an absolute path like /data/orders.csv (letters, digits, - _ . and /).");
-  if (Buffer.byteLength(input.content) > MAX_FILE_BYTES) throw new EngineError("InvalidParameterValue", `Keep files under ${MAX_FILE_BYTES / 1000} KB in CloudLab.`);
+  if (Buffer.byteLength(input.content) > MAX_FILE_BYTES) throw new EngineError("InvalidParameterValue", `Keep files under ${MAX_FILE_BYTES / 1000} KB in Nuvora.`);
   const files = filesOf(vol).filter((f) => f.path !== path);
-  if (files.length >= MAX_FILES) throw new EngineError("InvalidParameterValue", `A CloudLab volume holds up to ${MAX_FILES} files.`);
+  if (files.length >= MAX_FILES) throw new EngineError("InvalidParameterValue", `A Nuvora volume holds up to ${MAX_FILES} files.`);
   files.push({ path, content: input.content, modifiedAt: now.toISOString() });
   files.sort((a, b) => a.path.localeCompare(b.path));
   await setAttributes(vol.id, { files });
@@ -371,7 +371,7 @@ export async function createRootVolume(system: SystemApi, instance: Resource) {
     { ownedBy: instance.id },
   );
   await system.setAttributes(root.id, {
-    files: [{ path: "/etc/os-release", content: 'NAME="Amazon Linux"\nVERSION="2023"\nID="amzn"\nPRETTY_NAME="Amazon Linux 2023 (CloudLab)"\n', modifiedAt: root.createdAt }],
+    files: [{ path: "/etc/os-release", content: 'NAME="Amazon Linux"\nVERSION="2023"\nID="amzn"\nPRETTY_NAME="Amazon Linux 2023 (Nuvora)"\n', modifiedAt: root.createdAt }],
   });
 }
 

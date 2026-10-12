@@ -373,7 +373,7 @@ const EXPLANATIONS: Record<string, ErrorExplanation> = {
     fix: "Read the message: it names the setting. For roles, add lambda.amazonaws.com as a trusted service.",
   },
   TooManyRequestsException: {
-    meaning: "Too many invocations in a short time (CloudLab allows 60 a minute per account, like a small concurrency limit on AWS).",
+    meaning: "Too many invocations in a short time (Nuvora allows 60 a minute per account, like a small concurrency limit on AWS).",
     fix: "Wait a minute and try again.",
   },
   InvalidRequestContentException: {
@@ -481,12 +481,12 @@ const EXPLANATIONS: Record<string, ErrorExplanation> = {
     fix: "Wait a minute. The previous purge already removed what was there.",
   },
   OverLimit: {
-    meaning: "The queue has reached a limit (in CloudLab: 1,000 messages or 4 MB).",
+    meaning: "The queue has reached a limit (in Nuvora: 1,000 messages or 4 MB).",
     fix: "Receive and delete messages, or purge the queue.",
   },
   SubscriptionLimitExceeded: {
     meaning: "The topic has as many subscriptions as it's allowed.",
-    fix: "Remove subscriptions you no longer use (CloudLab allows 100 per topic).",
+    fix: "Remove subscriptions you no longer use (Nuvora allows 100 per topic).",
   },
   MissingParameter: {
     meaning: "A required option is missing.",

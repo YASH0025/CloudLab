@@ -15,7 +15,7 @@ export function compileFilter(pattern: string | undefined): (message: string) =>
   if (!p || p === '""') return () => true;
   if (p.startsWith("{")) return compileJson(p);
   if (p.startsWith("[")) {
-    throw new EngineError("InvalidParameterException", "CloudLab supports term, phrase and JSON filter patterns; space-delimited [w1, w2] patterns aren't simulated yet.");
+    throw new EngineError("InvalidParameterException", "Nuvora supports term, phrase and JSON filter patterns; space-delimited [w1, w2] patterns aren't simulated yet.");
   }
 
   const tokens: string[] = [];

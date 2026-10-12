@@ -2115,7 +2115,7 @@ const REAL_NAME: TutorialDef = {
     {
       id: "zone",
       title: `Create a hosted zone for ${TUTORIAL_DOMAIN}`,
-      why: "A hosted zone is where a domain's records live. Route 53 adds two right away: NS (which name servers answer for the domain) and SOA (who's in charge, and for how long answers may be cached). On AWS you'd also buy the domain and give the registrar these name servers; in CloudLab it works straight away.",
+      why: "A hosted zone is where a domain's records live. Route 53 adds two right away: NS (which name servers answer for the domain) and SOA (who's in charge, and for how long answers may be cached). On AWS you'd also buy the domain and give the registrar these name servers; in Nuvora it works straight away.",
       instructions: ["Click Take me there.", `Pre-filled: ${TUTORIAL_DOMAIN}. Click Create hosted zone.`, "On its page, look at the NS and SOA records it came with."],
       link: (c) => zoneLink(c) ?? { service: "route53", type: "hosted-zone", mode: "create", prefill: { name: TUTORIAL_DOMAIN } },
       cli: () => `aws route53 create-hosted-zone --name ${TUTORIAL_DOMAIN} --caller-reference my-first-zone`,
@@ -2241,7 +2241,7 @@ const DISKS_AND_BACKUPS: TutorialDef = {
     {
       id: "write",
       title: "Save some data on it",
-      why: "On a real server you'd format the disk once (mkfs) and mount it at /data; CloudLab does that for you. Then apps write files to it like any folder.",
+      why: "On a real server you'd format the disk once (mkfs) and mount it at /data; Nuvora does that for you. Then apps write files to it like any folder.",
       instructions: ["Open the volume app-data.", `Under Files on this volume, write ${DATA_FILE} with a couple of lines, e.g. id,item and 1,book.`],
       link: (c) => volumeLink(c.storageState?.data),
       check: async (c) => !!(await c.storage()).file,
@@ -2439,7 +2439,7 @@ const GET_ALERTED: TutorialDef = {
     {
       id: "subscribe",
       title: "Subscribe your email",
-      why: "A subscription connects one endpoint to the topic: here an email address. CloudLab doesn't send real email: each address gets a pretend inbox you can open.",
+      why: "A subscription connects one endpoint to the topic: here an email address. Nuvora doesn't send real email: each address gets a pretend inbox you can open.",
       instructions: ["Click Take me there.", `Pre-filled: the ${ALERTS_TOPIC} topic, protocol Email, endpoint ${ALERTS_EMAIL}. Use any address you like.`, "Click Create subscription. Its status is Pending confirmation."],
       link: (c) =>
         emailLink(c) ??

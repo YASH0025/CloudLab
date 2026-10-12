@@ -58,7 +58,7 @@ function RangePicker({ value, onChange }: { value: number; onChange: (m: number)
 }
 
 const SimulatedBadge = () => (
-  <Badge variant="secondary" title="Nothing really runs on this resource in CloudLab, so this metric is generated to behave like the real one.">
+  <Badge variant="secondary" title="Nothing really runs on this resource in Nuvora, so this metric is generated to behave like the real one.">
     Simulated
   </Badge>
 );

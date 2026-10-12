@@ -92,7 +92,7 @@ function ChallengeList() {
             </div>
             {confirm === c.id && (
               <p className="text-xs text-muted-foreground">
-                CloudLab builds the broken setup in your challenge account (anything left there from an earlier challenge is wiped) and switches the console to it.
+                Nuvora builds the broken setup in your challenge account (anything left there from an earlier challenge is wiped) and switches the console to it.
               </p>
             )}
           </div>

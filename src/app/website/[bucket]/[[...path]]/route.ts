@@ -4,8 +4,8 @@ import { getEngine } from "@/server/api";
 /**
  * A bucket's static website, served the way S3 website endpoints serve it.
  *
- * Learners' pages are untrusted HTML on CloudLab's own domain, so they are
- * locked in a sandbox: no scripts, no forms, no access to CloudLab's cookies
+ * Learners' pages are untrusted HTML on Nuvora's own domain, so they are
+ * locked in a sandbox: no scripts, no forms, no access to Nuvora's cookies
  * or APIs. Plain HTML, CSS and images work.
  */
 const SANDBOX = "sandbox; default-src 'self' data:; img-src 'self' data:; style-src 'self' 'unsafe-inline' data:; script-src 'none'; form-action 'none'";
