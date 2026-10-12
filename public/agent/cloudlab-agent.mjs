@@ -25,16 +25,17 @@
  */
 
 import { spawn, spawnSync } from "node:child_process";
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { cpSync, createReadStream, createWriteStream, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import readline from "node:readline";
 import http from "node:http";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 
-export const AGENT_VERSION = "0.6.0";
+export const AGENT_VERSION = "0.7.0";
 const DEFAULT_SERVER = "https://cloud-lab-livid.vercel.app";
 const HOME = path.join(os.homedir(), ".cloudlab");
 const CONFIG = path.join(HOME, "agent.json");
@@ -260,9 +261,9 @@ class Api {
     this.token = token;
   }
 
-  async post(pathname, body) {
+  async post(pathname, body, method = "POST") {
     const res = await fetch(this.server + pathname, {
-      method: "POST",
+      method,
       headers: { authorization: `Bearer ${this.token}`, "content-type": "application/json" },
       body: JSON.stringify(body),
     });
@@ -271,6 +272,7 @@ class Api {
     if (!res.ok) {
       const err = new Error(data?.error?.message ?? `CloudLab answered ${res.status}`);
       err.status = res.status;
+      err.code = data?.error?.code;
       throw err;
     }
     return data;
@@ -1364,7 +1366,20 @@ export class LocalS3 {
   }
 
   /** Writes an object from a stream (an HTTP request), checking its size and working out its ETag on the way. */
-  async put(bucket, key, stream, contentType) {
+  /** User metadata (x-amz-meta-*) of an object. */
+  metadata(bucket, key) {
+    return this.meta.objects[bucket]?.[key]?.metadata ?? {};
+  }
+
+  setEtag(bucket, key, etag) {
+    const m = this.meta.objects[bucket]?.[key];
+    if (m) {
+      m.etag = etag;
+      this.save();
+    }
+  }
+
+  async put(bucket, key, stream, contentType, metadata) {
     if (key.endsWith("/")) {
       mkdirSync(this.file(bucket, key.slice(0, -1)), { recursive: true });
       const folders = (this.meta.folders[bucket] ??= []);
@@ -1399,7 +1414,13 @@ export class LocalS3 {
     });
     renameSync(tmp, f);
     const st = lstatSync(f);
-    (this.meta.objects[bucket] ??= {})[key] = { etag: hash.digest("hex"), size: st.size, mtime: st.mtimeMs, contentType: contentType || guessType(key) };
+    (this.meta.objects[bucket] ??= {})[key] = {
+      etag: hash.digest("hex"),
+      size: st.size,
+      mtime: st.mtimeMs,
+      contentType: contentType || guessType(key),
+      ...(metadata && Object.keys(metadata).length ? { metadata } : {}),
+    };
     this.save();
     return this.info(bucket, key);
   }
@@ -1614,6 +1635,8 @@ export class LocalApi {
     if (given.length !== want.length || !timingSafeEqual(given, want)) return send(401, { error: { code: "Unauthorized", message: "Wrong key." } });
     try {
       const url = new URL(req.url ?? "/", "http://localhost");
+      // The keys for AWS SDKs and the AWS CLI: only ever handed to the console on this computer.
+      if (url.pathname === "/credentials" && req.method === "GET") return send(200, this.credentials?.() ?? null);
       const m = /^\/s3\/([^/]+)(?:\/(.*))?$/.exec(url.pathname);
       if (!m) return send(404, { error: { code: "NotFound", message: "Unknown path." } });
       const bucket = decodeURIComponent(m[1]);
@@ -1646,6 +1669,445 @@ export class LocalApi {
     } catch (e) {
       if (e instanceof S3Error) return send(e.status, { error: { code: e.code, message: e.message } });
       return send(500, { error: { code: "InternalError", message: String(e.message ?? e) } });
+    }
+  }
+}
+
+// ---------- the AWS endpoint: AWS's own APIs, on this computer ----------
+
+/**
+ * One address for every service's API, like an AWS region's endpoints rolled into
+ * one: http://localhost:4566 (and this computer's network address). Requests are
+ * signed with AWS Signature Version 4 using this computer's CloudLab keys; the
+ * signature also says which service a request is for (its credential scope), so
+ * S3 today, and DynamoDB, SQS, SNS, Lambda… as they arrive, share the port.
+ * Point an AWS SDK or the AWS CLI here with endpoint = http://localhost:4566.
+ */
+export const AWS_PORT = 4566;
+
+const XMLNS = "http://s3.amazonaws.com/doc/2006-03-01/";
+const xmlEscape = (s) => String(s).replace(/[<>&'"]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", "'": "&apos;", '"': "&quot;" })[c]);
+const xml = (root, inner, ns = true) => `<?xml version="1.0" encoding="UTF-8"?>\n<${root}${ns ? ` xmlns="${XMLNS}"` : ""}>${inner}</${root}>`;
+const tag = (name, value) => `<${name}>${xmlEscape(value)}</${name}>`;
+
+/** RFC 3986 encoding as SigV4 wants it (everything but A-Z a-z 0-9 - _ . ~). */
+export const uriEncode = (s, keepSlash = false) => {
+  const out = encodeURIComponent(s).replace(/[!'()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
+  return keepSlash ? out.replace(/%2F/g, "/") : out;
+};
+
+const sha256 = (data) => createHash("sha256").update(data).digest("hex");
+const hmac = (key, data) => createHmac("sha256", key).update(data).digest();
+
+export class AwsError extends Error {
+  constructor(code, message, status, extra = {}) {
+    super(message);
+    this.code = code;
+    this.status = status;
+    this.extra = extra;
+  }
+}
+
+/**
+ * Checks a request's AWS Signature Version 4 (an Authorization header, or a presigned
+ * URL's query string). Returns who signed it and for which service, or null for an
+ * unsigned request. Throws AWS's errors for a bad one.
+ */
+export function verifySigV4(req, url, keys, now = Date.now()) {
+  const q = url.searchParams;
+  const auth = req.headers.authorization;
+  let accessKeyId, scope, signedHeaders, signature, amzDate, payloadHash, presigned = false;
+  if (auth && auth.startsWith("AWS4-HMAC-SHA256")) {
+    const m = /Credential=([^/]+)\/([^,]+),\s*SignedHeaders=([^,]+),\s*Signature=([0-9a-f]+)/.exec(auth);
+    if (!m) throw new AwsError("AuthorizationHeaderMalformed", "The authorization header is malformed.", 400);
+    [, accessKeyId, scope, signedHeaders, signature] = m;
+    amzDate = req.headers["x-amz-date"] ?? "";
+    payloadHash = req.headers["x-amz-content-sha256"] ?? sha256("");
+  } else if (q.get("X-Amz-Algorithm") === "AWS4-HMAC-SHA256") {
+    presigned = true;
+    const cred = q.get("X-Amz-Credential") ?? "";
+    accessKeyId = cred.split("/")[0];
+    scope = cred.split("/").slice(1).join("/");
+    signedHeaders = q.get("X-Amz-SignedHeaders") ?? "host";
+    signature = q.get("X-Amz-Signature") ?? "";
+    amzDate = q.get("X-Amz-Date") ?? "";
+    payloadHash = "UNSIGNED-PAYLOAD";
+    const expires = Number(q.get("X-Amz-Expires") ?? 0);
+    const at = Date.parse(amzDate.replace(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z$/, "$1-$2-$3T$4:$5:$6Z"));
+    if (!Number.isFinite(at) || now > at + expires * 1000) throw new AwsError("AccessDenied", "Request has expired", 403);
+  } else if (auth) {
+    throw new AwsError("InvalidRequest", "The authorization mechanism you have provided is not supported. Please use AWS4-HMAC-SHA256.", 400);
+  } else return null;
+
+  const secret = keys[accessKeyId];
+  if (!secret) throw new AwsError("InvalidAccessKeyId", "The AWS Access Key Id you provided does not exist in our records.", 403, { AWSAccessKeyId: accessKeyId });
+  if (!presigned) {
+    const at = Date.parse(String(amzDate).replace(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z$/, "$1-$2-$3T$4:$5:$6Z"));
+    if (!Number.isFinite(at) || Math.abs(now - at) > 15 * 60_000) {
+      throw new AwsError("RequestTimeTooSkewed", "The difference between the request time and the current time is too large.", 403);
+    }
+  }
+  const [date, region, service] = scope.split("/");
+  const queryOf = (entries) =>
+    entries
+      .filter(([k]) => k !== "X-Amz-Signature")
+      .map(([k, v]) => [uriEncode(k), uriEncode(v)])
+      .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : a[1] < b[1] ? -1 : 1))
+      .map(([k, v]) => `${k}=${v}`)
+      .join("&");
+  // Sub-resources like ?uploads or ?delete have no value: some SDKs sign them as "uploads=", others leave them out.
+  const entries = [...q.entries()];
+  const queries = [...new Set([queryOf(entries), queryOf(entries.filter(([, v]) => v !== ""))])];
+  const names = signedHeaders.split(";");
+  const canonicalHeaders = names
+    .map((h) => {
+      const v = h === "host" ? (req.headers.host ?? "") : req.headers[h];
+      return `${h}:${String(Array.isArray(v) ? v.join(",") : (v ?? "")).trim().replace(/\s+/g, " ")}\n`;
+    })
+    .join("");
+  const rawPath = (req.url ?? "/").split("?")[0] || "/";
+  // Clients sign the path as they encoded it; S3 encodes each segment once.
+  const paths = [rawPath, rawPath.split("/").map((s) => uriEncode(decodeURIComponentSafe(s))).join("/")];
+  const key = hmac(hmac(hmac(hmac(`AWS4${secret}`, date), region), service), "aws4_request");
+  for (const p of paths) {
+    for (const canonicalQuery of queries) {
+      const canonical = [req.method, p, canonicalQuery, canonicalHeaders, signedHeaders, payloadHash].join("\n");
+      const toSign = ["AWS4-HMAC-SHA256", amzDate, scope, sha256(canonical)].join("\n");
+      if (createHmac("sha256", key).update(toSign).digest("hex") === signature) return { accessKeyId, region, service, presigned };
+    }
+  }
+  throw new AwsError("SignatureDoesNotMatch", "The request signature we calculated does not match the signature you provided. Check your key and signing method.", 403);
+}
+
+function decodeURIComponentSafe(s) {
+  try {
+    return decodeURIComponent(s);
+  } catch {
+    return s;
+  }
+}
+
+/** Reads a request body, decoding aws-chunked uploads (what SDKs send for streams, with checksums in trailers). */
+export function readBody(req, limit = MAX_OBJECT_BYTES) {
+  return new Promise((resolve, reject) => {
+    const parts = [];
+    let size = 0;
+    req.on("data", (c) => {
+      size += c.length;
+      if (size > limit + 1024 * 1024) {
+        req.destroy();
+        reject(new AwsError("EntityTooLarge", "Your proposed upload exceeds the maximum allowed size", 400));
+        return;
+      }
+      parts.push(c);
+    });
+    req.on("end", () => {
+      const raw = Buffer.concat(parts);
+      const chunked = /aws-chunked/.test(String(req.headers["content-encoding"] ?? "")) || String(req.headers["x-amz-content-sha256"] ?? "").startsWith("STREAMING-");
+      resolve(chunked ? decodeAwsChunked(raw) : raw);
+    });
+    req.on("error", reject);
+  });
+}
+
+export function decodeAwsChunked(raw) {
+  const out = [];
+  let i = 0;
+  while (i < raw.length) {
+    const lineEnd = raw.indexOf("\r\n", i);
+    if (lineEnd < 0) break;
+    const size = parseInt(raw.subarray(i, lineEnd).toString("latin1").split(";")[0], 16);
+    if (!Number.isFinite(size)) break;
+    if (size === 0) break; // the trailer (checksums) follows
+    out.push(raw.subarray(lineEnd + 2, lineEnd + 2 + size));
+    i = lineEnd + 2 + size + 2;
+  }
+  return Buffer.concat(out);
+}
+
+const httpDate = (iso) => new Date(iso).toUTCString();
+
+/**
+ * S3's REST API over CloudLab's own S3 (the bucket folders). Path-style
+ * (localhost:4566/bucket/key) and virtual-hosted style (bucket.localhost:4566/key).
+ */
+export class S3Api {
+  constructor(s3, { createBucket, deleteBucket, onChange, owner }) {
+    this.s3 = s3;
+    this.createBucketRemote = createBucket;
+    this.deleteBucketRemote = deleteBucket;
+    this.onChange = onChange;
+    this.owner = owner;
+    this.uploads = new Map();
+  }
+
+  /** Bucket and key from the request: virtual-hosted (bucket.localhost) or path style. */
+  target(req, url) {
+    const host = String(req.headers.host ?? "").replace(/:\d+$/, "");
+    const vhost = /^(.+)\.(localhost|s3\.localhost|s3\.local-1\.localhost)$/.exec(host);
+    const parts = url.pathname.split("/").slice(1);
+    if (vhost) return { bucket: vhost[1], key: parts.map(decodeURIComponentSafe).join("/") };
+    return { bucket: decodeURIComponentSafe(parts[0] ?? ""), key: parts.slice(1).map(decodeURIComponentSafe).join("/") };
+  }
+
+  /** Anonymous (unsigned) requests may only read objects of public buckets, like S3. */
+  allowAnonymous(req, bucket) {
+    const s = this.s3.meta.buckets[bucket];
+    return (req.method === "GET" || req.method === "HEAD") && !!s && !s.blockPublicAccess && s.publicRead;
+  }
+
+  async handle(req, res, url, who) {
+    const { bucket, key } = this.target(req, url);
+    const q = url.searchParams;
+    const send = (status, body = "", headers = {}) => {
+      res.writeHead(status, { "content-type": "application/xml", "x-amz-request-id": randomBytes(8).toString("hex").toUpperCase(), ...headers });
+      res.end(body);
+    };
+    if (!who && !(key && this.allowAnonymous(req, bucket))) throw new AwsError("AccessDenied", "Access Denied", 403);
+
+    // ---- the service: list buckets ----
+    if (!bucket) {
+      if (req.method !== "GET") throw new AwsError("MethodNotAllowed", "The specified method is not allowed against this resource.", 405);
+      const buckets = Object.keys(this.s3.meta.buckets).sort();
+      const items = buckets
+        .map((b) => {
+          let created = new Date().toISOString();
+          try {
+            created = new Date(lstatSync(path.join(this.s3.root, b)).birthtimeMs || Date.now()).toISOString();
+          } catch {}
+          return `<Bucket>${tag("Name", b)}${tag("CreationDate", created)}</Bucket>`;
+        })
+        .join("");
+      return send(200, xml("ListAllMyBucketsResult", `<Owner>${tag("ID", this.owner)}${tag("DisplayName", "cloudlab")}</Owner><Buckets>${items}</Buckets>`));
+    }
+
+    // ---- buckets ----
+    if (!key) {
+      if (req.method === "PUT" && ![...q.keys()].length) {
+        await this.createBucketRemote(bucket);
+        return send(200, "", { location: `/${bucket}` });
+      }
+      if (req.method === "DELETE" && ![...q.keys()].length) {
+        this.s3.spec(bucket);
+        if (this.s3.stats(bucket).objectCount > 0) throw new AwsError("BucketNotEmpty", "The bucket you tried to delete is not empty", 409, { BucketName: bucket });
+        await this.deleteBucketRemote(bucket);
+        return send(204);
+      }
+      this.bucketOrThrow(bucket);
+      if (req.method === "HEAD") return send(200, "", { "x-amz-bucket-region": "local-1" });
+      if (req.method === "GET" && q.has("location")) return send(200, xml("LocationConstraint", "local-1"));
+      if (req.method === "GET" && q.has("versioning")) {
+        const v = this.s3.meta.buckets[bucket].versioning;
+        return send(200, xml("VersioningConfiguration", v && v !== "Disabled" ? tag("Status", v) : ""));
+      }
+      if (req.method === "GET" && q.has("uploads")) return send(200, xml("ListMultipartUploadsResult", `${tag("Bucket", bucket)}<IsTruncated>false</IsTruncated>`));
+      if (req.method === "GET") return send(200, this.listXml(bucket, q));
+      if (req.method === "POST" && q.has("delete")) {
+        const body = (await readBody(req, 5 * 1024 * 1024)).toString("utf8");
+        const quiet = /<Quiet>\s*true\s*<\/Quiet>/i.test(body);
+        const keys = [...body.matchAll(/<Key>([\s\S]*?)<\/Key>/g)].map((m) => m[1].replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, "&"));
+        const done = [];
+        const errors = [];
+        for (const k of keys) {
+          try {
+            this.s3.delete(bucket, k);
+            done.push(k);
+          } catch (e) {
+            errors.push(`<Error>${tag("Key", k)}${tag("Code", e.code ?? "InternalError")}${tag("Message", e.message)}</Error>`);
+          }
+        }
+        this.onChange(bucket);
+        return send(200, xml("DeleteResult", (quiet ? "" : done.map((k) => `<Deleted>${tag("Key", k)}</Deleted>`).join("")) + errors.join("")));
+      }
+      throw new AwsError("NotImplemented", "A header or query you provided requested a function that is not implemented in CloudLab's S3.", 501);
+    }
+
+    // ---- objects ----
+    this.bucketOrThrow(bucket);
+    if (req.method === "POST" && q.has("uploads")) {
+      const uploadId = randomBytes(16).toString("hex");
+      this.uploads.set(uploadId, { bucket, key, parts: new Map(), contentType: req.headers["content-type"], metadata: userMetadata(req) });
+      return send(200, xml("InitiateMultipartUploadResult", tag("Bucket", bucket) + tag("Key", key) + tag("UploadId", uploadId)));
+    }
+    if (q.has("uploadId")) return this.multipart(req, send, bucket, key, q);
+    if (req.method === "PUT" && req.headers["x-amz-copy-source"]) {
+      const src = decodeURIComponentSafe(String(req.headers["x-amz-copy-source"]).split("?")[0]).replace(/^\//, "");
+      const [sb, ...sk] = src.split("/");
+      const from = this.s3.file(sb, sk.join("/"));
+      const info = this.s3.info(sb, sk.join("/"));
+      const replace = String(req.headers["x-amz-metadata-directive"] ?? "COPY").toUpperCase() === "REPLACE";
+      const o = await this.s3.put(bucket, key, Readable.from([readFileSync(from)]), replace ? req.headers["content-type"] : info.contentType, replace ? userMetadata(req) : this.s3.metadata(sb, sk.join("/")));
+      this.onChange(bucket);
+      return send(200, xml("CopyObjectResult", tag("LastModified", o.lastModified) + tag("ETag", `"${o.etag}"`)));
+    }
+    if (req.method === "PUT") {
+      const body = await readBody(req);
+      const o = await this.s3.put(bucket, key, Readable.from([body]), req.headers["content-type"], userMetadata(req));
+      this.onChange(bucket);
+      return send(200, "", { etag: `"${o.etag}"` });
+    }
+    if (req.method === "GET" || req.method === "HEAD") {
+      const info = this.s3.info(bucket, key);
+      const meta = this.s3.metadata(bucket, key);
+      const headers = {
+        "content-type": info.contentType,
+        etag: `"${info.etag}"`,
+        "last-modified": httpDate(info.lastModified),
+        "accept-ranges": "bytes",
+        ...Object.fromEntries(Object.entries(meta).map(([k, v]) => [`x-amz-meta-${k}`, v])),
+      };
+      const range = /^bytes=(\d*)-(\d*)$/.exec(String(req.headers.range ?? ""));
+      if (range && info.size > 0) {
+        let start = range[1] === "" ? Math.max(0, info.size - Number(range[2])) : Number(range[1]);
+        let end = range[1] !== "" && range[2] !== "" ? Math.min(Number(range[2]), info.size - 1) : info.size - 1;
+        if (start > end || start >= info.size) throw new AwsError("InvalidRange", "The requested range is not satisfiable", 416);
+        res.writeHead(206, { ...headers, "content-length": String(end - start + 1), "content-range": `bytes ${start}-${end}/${info.size}` });
+        if (req.method === "HEAD") return res.end();
+        return createReadStream(this.s3.file(bucket, key), { start, end }).pipe(res);
+      }
+      res.writeHead(200, { ...headers, "content-length": String(info.size) });
+      if (req.method === "HEAD") return res.end();
+      if (key.endsWith("/")) return res.end();
+      return createReadStream(this.s3.file(bucket, key)).pipe(res);
+    }
+    if (req.method === "DELETE") {
+      this.s3.delete(bucket, key);
+      this.onChange(bucket);
+      return send(204);
+    }
+    throw new AwsError("MethodNotAllowed", "The specified method is not allowed against this resource.", 405);
+  }
+
+  bucketOrThrow(bucket) {
+    if (!this.s3.meta.buckets[bucket]) throw new AwsError("NoSuchBucket", "The specified bucket does not exist", 404, { BucketName: bucket });
+  }
+
+  listXml(bucket, q) {
+    const v2 = q.get("list-type") === "2";
+    const prefix = q.get("prefix") ?? "";
+    const delimiter = q.get("delimiter") ?? "";
+    const max = Math.min(Number(q.get("max-keys") ?? 1000) || 1000, 1000);
+    const encode = q.get("encoding-type") === "url";
+    const enc = (s) => (encode ? uriEncode(s, true) : s);
+    const after = v2 ? (q.get("continuation-token") ? Buffer.from(q.get("continuation-token"), "base64url").toString() : (q.get("start-after") ?? "")) : (q.get("marker") ?? "");
+    const { objects, prefixes } = this.s3.list(bucket, prefix, delimiter);
+    const entries = [...objects.map((o) => ({ key: o.key, o })), ...prefixes.map((p) => ({ key: p, p }))].sort((a, b) => (a.key < b.key ? -1 : 1)).filter((e) => e.key > after);
+    const page = entries.slice(0, max);
+    const truncated = entries.length > max;
+    const last = page[page.length - 1]?.key ?? "";
+    const contents = page
+      .filter((e) => e.o)
+      .map((e) => `<Contents>${tag("Key", enc(e.o.key))}${tag("LastModified", e.o.lastModified)}${tag("ETag", `"${e.o.etag}"`)}${tag("Size", e.o.size)}${tag("StorageClass", "STANDARD")}</Contents>`)
+      .join("");
+    const common = page
+      .filter((e) => e.p)
+      .map((e) => `<CommonPrefixes>${tag("Prefix", enc(e.p))}</CommonPrefixes>`)
+      .join("");
+    const head =
+      tag("Name", bucket) +
+      tag("Prefix", enc(prefix)) +
+      (delimiter ? tag("Delimiter", enc(delimiter)) : "") +
+      tag("MaxKeys", max) +
+      (encode ? tag("EncodingType", "url") : "") +
+      tag("IsTruncated", truncated) +
+      (v2
+        ? tag("KeyCount", page.length) + (q.get("continuation-token") ? tag("ContinuationToken", q.get("continuation-token")) : "") + (truncated ? tag("NextContinuationToken", Buffer.from(last).toString("base64url")) : "") + (q.get("start-after") ? tag("StartAfter", enc(q.get("start-after"))) : "")
+        : tag("Marker", enc(q.get("marker") ?? "")) + (truncated && delimiter ? tag("NextMarker", enc(last)) : ""));
+    return xml("ListBucketResult", head + contents + common);
+  }
+
+  async multipart(req, send, bucket, key, q) {
+    const uploadId = q.get("uploadId");
+    const up = this.uploads.get(uploadId);
+    if (!up || up.bucket !== bucket || up.key !== key) throw new AwsError("NoSuchUpload", "The specified upload does not exist. The upload ID may be invalid, or the upload may have been aborted or completed.", 404, { UploadId: uploadId });
+    if (req.method === "PUT") {
+      const n = Number(q.get("partNumber"));
+      if (!Number.isInteger(n) || n < 1 || n > 10000) throw new AwsError("InvalidArgument", "Part number must be an integer between 1 and 10000, inclusive", 400);
+      const body = await readBody(req);
+      const etag = createHash("md5").update(body).digest("hex");
+      up.parts.set(n, { body, etag });
+      return send(200, "", { etag: `"${etag}"` });
+    }
+    if (req.method === "DELETE") {
+      this.uploads.delete(uploadId);
+      return send(204);
+    }
+    if (req.method === "GET") {
+      const parts = [...up.parts.entries()].sort((a, b) => a[0] - b[0]).map(([n, p]) => `<Part>${tag("PartNumber", n)}${tag("ETag", `"${p.etag}"`)}${tag("Size", p.body.length)}</Part>`).join("");
+      return send(200, xml("ListPartsResult", tag("Bucket", bucket) + tag("Key", key) + tag("UploadId", uploadId) + parts));
+    }
+    if (req.method === "POST") {
+      const body = (await readBody(req, 5 * 1024 * 1024)).toString("utf8");
+      const wanted = [...body.matchAll(/<Part>[\s\S]*?<PartNumber>(\d+)<\/PartNumber>[\s\S]*?<\/Part>/g)].map((m) => Number(m[1]));
+      const chunks = [];
+      for (const n of wanted) {
+        const p = up.parts.get(n);
+        if (!p) throw new AwsError("InvalidPart", "One or more of the specified parts could not be found. The part may not have been uploaded, or the specified entity tag may not match the part's entity tag.", 400);
+        chunks.push(p.body);
+      }
+      await this.s3.put(bucket, key, Readable.from([Buffer.concat(chunks)]), up.contentType, up.metadata);
+      // Like S3: the ETag of a multipart upload is the MD5 of the parts' MD5s, and their count.
+      const etag = `${createHash("md5").update(Buffer.concat(wanted.map((n) => Buffer.from(up.parts.get(n).etag, "hex")))).digest("hex")}-${wanted.length}`;
+      this.s3.setEtag(bucket, key, etag);
+      this.uploads.delete(uploadId);
+      this.onChange(bucket);
+      return send(200, xml("CompleteMultipartUploadResult", tag("Location", `http://localhost:${AWS_PORT}/${bucket}/${key}`) + tag("Bucket", bucket) + tag("Key", key) + tag("ETag", `"${etag}"`)));
+    }
+    throw new AwsError("MethodNotAllowed", "The specified method is not allowed against this resource.", 405);
+  }
+}
+
+const userMetadata = (req) => Object.fromEntries(Object.entries(req.headers).filter(([k]) => k.startsWith("x-amz-meta-")).map(([k, v]) => [k.slice(11), String(v)]));
+
+/** Serves the AWS endpoint: checks the signature, then hands the request to the service it was signed for. */
+export class AwsEndpoint {
+  constructor({ keys, services }) {
+    this.keys = keys;
+    this.services = services;
+    this.port = null;
+  }
+
+  async start(port = AWS_PORT) {
+    const server = http.createServer((req, res) => this.serve(req, res));
+    const ok = await new Promise((resolve) => {
+      server.once("error", () => resolve(false));
+      server.listen(port, "0.0.0.0", () => resolve(true));
+    });
+    if (!ok) return null;
+    this.server = server;
+    this.port = server.address().port;
+    return this.port;
+  }
+
+  async serve(req, res) {
+    const url = new URL(req.url ?? "/", "http://localhost");
+    // Browsers uploading with presigned URLs ask first (CORS).
+    const cors = {
+      "access-control-allow-origin": req.headers.origin ?? "*",
+      "access-control-allow-methods": "GET, PUT, POST, DELETE, HEAD",
+      "access-control-allow-headers": String(req.headers["access-control-request-headers"] ?? "*"),
+      "access-control-expose-headers": "ETag, x-amz-request-id, x-amz-version-id",
+    };
+    for (const [k, v] of Object.entries(cors)) res.setHeader(k, v);
+    if (req.method === "OPTIONS") {
+      res.writeHead(200);
+      return res.end();
+    }
+    let service = "s3";
+    try {
+      const who = verifySigV4(req, url, this.keys());
+      if (who) service = who.service;
+      const handler = this.services[service];
+      if (!handler) throw new AwsError("NotImplemented", `CloudLab doesn't run ${service} on your computer yet.`, 501);
+      await handler.handle(req, res, url, who);
+    } catch (e) {
+      if (res.headersSent) return res.end();
+      const code = e.code ?? "InternalError";
+      const status = e.status ?? 500;
+      const extra = Object.entries(e.extra ?? {}).map(([k, v]) => tag(k, v)).join("");
+      const body = req.method === "HEAD" ? "" : xml("Error", tag("Code", code) + tag("Message", e.message) + extra + tag("RequestId", randomBytes(8).toString("hex").toUpperCase()), false);
+      res.writeHead(status, { "content-type": "application/xml" });
+      res.end(body);
     }
   }
 }
@@ -2139,9 +2601,64 @@ export class Agent {
     this.localApi = new LocalApi(this.s3, { key: config.localKey, origin: new URL(config.server).origin, onChange: (b) => this.reportBucket(b) });
     const port = await this.localApi.start();
     if (!port) log("Couldn't open the local API (ports 4510–4529 are all in use): S3 files on this computer won't show in the console.");
+
+    // The AWS endpoint: AWS SDKs and the AWS CLI talk to CloudLab's services here, signed with this computer's keys.
+    const keys = { [config.awsAccessKeyId]: config.awsSecretAccessKey };
+    const createBucket = async (name) => {
+      try {
+        await this.api.post("/api/agent/s3/buckets", { name });
+      } catch (e) {
+        throw new AwsError(e.code ?? "InternalError", e.message, e.status ?? 500, { BucketName: name });
+      }
+      // Usable right away; CloudLab's own create-bucket task follows with the settings.
+      if (!this.s3.meta.buckets[name]) this.s3.createBucket({ name, versioning: "Disabled", blockPublicAccess: true, publicRead: false, websiteEnabled: false, indexDocument: null, errorDocument: null });
+    };
+    const deleteBucket = async (name) => {
+      try {
+        await this.api.post(`/api/agent/s3/buckets/${encodeURIComponent(name)}`, {}, "DELETE");
+      } catch (e) {
+        throw new AwsError(e.code ?? "InternalError", e.message, e.status ?? 500, { BucketName: name });
+      }
+      this.s3.deleteBucket(name);
+    };
+    this.aws = new AwsEndpoint({
+      keys: () => keys,
+      services: { s3: new S3Api(this.s3, { createBucket, deleteBucket, onChange: (b) => this.reportBucket(b), owner: config.awsAccessKeyId }) },
+    });
+    const awsPort = await this.aws.start();
+    if (awsPort) log(`AWS endpoint for SDKs and the AWS CLI: http://localhost:${awsPort} (S3 today)`);
+    else log(`Couldn't open the AWS endpoint: port ${AWS_PORT} is in use by another program.`);
+    this.localApi.credentials = () =>
+      awsPort ? { accessKeyId: config.awsAccessKeyId, secretAccessKey: config.awsSecretAccessKey, endpoint: `http://localhost:${awsPort}`, lanEndpoint: lanAddress() ? `http://${lanAddress()}:${awsPort}` : null, region: "local-1" } : null;
     await this.s3.restore();
-    // Files added to bucket folders by hand show up in CloudLab's counts too.
-    for (const name of Object.keys(this.s3.meta.buckets)) this.reportBucket(name);
+  }
+
+  /**
+   * After the first check-in (so deletes queued while this computer was off are done
+   * first): tell CloudLab about every bucket on this computer, counting files added to
+   * the folders by hand, and add buckets the account doesn't have yet (made before
+   * this computer was connected to it).
+   */
+  async syncBuckets() {
+    for (const name of Object.keys(this.s3.meta.buckets)) {
+      const attributes = await this.s3.report(name).catch(() => null);
+      if (!attributes) continue;
+      try {
+        await this.api.post(`/api/agent/resources/${encodeURIComponent(name)}`, { attributes });
+      } catch (e) {
+        if (e.code !== "ResourceNotFound") {
+          log(`Couldn't report bucket ${name}:`, e.message);
+          continue;
+        }
+        try {
+          await this.api.post("/api/agent/s3/buckets", { name });
+          log(`Bucket ${name} is on this computer but wasn't in your CloudLab account, so it was added (private).`);
+          this.reportBucket(name);
+        } catch (e2) {
+          log(`Bucket ${name} is on this computer but couldn't be added to your CloudLab account: ${e2.message}`);
+        }
+      }
+    }
   }
 
   async handle(task) {
@@ -2172,7 +2689,7 @@ export class Agent {
       ...base,
       lanIp: lanAddress(),
       gateway: base.docker.ok ? this.gateway.state : this.nativeGateway.state,
-      localApi: this.localApi?.port ? { port: this.localApi.port, key: this.localApi.key } : null,
+      localApi: this.localApi?.port ? { port: this.localApi.port, key: this.localApi.key, awsPort: this.aws?.port ?? null } : null,
     };
     const found = info.docker.ok ? await inventory() : null;
     const withLogs = Date.now() - this.lastLogs > LOGS_EVERY_MS;
@@ -2192,6 +2709,10 @@ export class Agent {
     for (const a of this.native.report(withLogs)) if (!this.busy.has(a.id)) apps.push(a);
     const { tasks, routes = [] } = await this.api.sync({ info, apps, complete: found !== null && this.busy.size === 0 });
     for (const t of tasks) await this.handle(t);
+    if (!this.bucketsSynced) {
+      this.bucketsSynced = true;
+      await this.syncBuckets();
+    }
     try {
       if (info.docker.ok) await this.gateway.update(routes, this.native.targets());
       else await this.nativeGateway.update(routes, this.native.targets());
@@ -2278,8 +2799,12 @@ async function main(argv) {
     return;
   }
 
-  if (!config.localKey) {
-    config.localKey = randomBytes(24).toString("base64url");
+  if (!config.localKey || !config.awsAccessKeyId) {
+    config.localKey ??= randomBytes(24).toString("base64url");
+    // This computer's keys for AWS SDKs and the AWS CLI (they never leave it).
+    const alnum = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+    config.awsAccessKeyId ??= `CLAK${[...randomBytes(16)].map((b) => alnum[b % 32]).join("")}`;
+    config.awsSecretAccessKey ??= randomBytes(30).toString("base64").replace(/[+/=]/g, "x");
     saveConfig(config);
   }
   const agent = new Agent(new Api(config.server, config.token));

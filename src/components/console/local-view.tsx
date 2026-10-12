@@ -8,6 +8,7 @@ import {
   DownloadIcon,
   ExternalLinkIcon,
   GlobeIcon,
+  KeyRoundIcon,
   FolderIcon,
   GitBranchIcon,
   LaptopIcon,
@@ -18,6 +19,7 @@ import {
   TriangleAlertIcon,
   UnplugIcon,
 } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
 import { useState, useSyncExternalStore } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -26,8 +28,10 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useDeployLocal, useDisconnectComputer, useLocal, useLocalAction, usePairComputer, useSetDomain } from "@/hooks/use-cloud";
 import { ApiError } from "@/lib/api-client";
+import { localCredentials } from "@/lib/objects-backend";
 import {
   AGENT_DOWNLOADS,
   AGENT_RELEASE,
@@ -295,6 +299,156 @@ function ComputerCard() {
           )}
         </CardContent>
       )}
+    </Card>
+  );
+}
+
+// ---------- AWS SDK and CLI access ----------
+
+const MASK = "••••••••••••••••••••••••••••••••••••••••";
+
+function sdkExamples(endpoint: string) {
+  return {
+    node: `// npm install @aws-sdk/client-s3
+import { S3Client, PutObjectCommand, ListObjectsV2Command } from "@aws-sdk/client-s3";
+
+const s3 = new S3Client({
+  region: "local-1",
+  endpoint: "${endpoint}",
+  forcePathStyle: true, // bucket name in the path: ${endpoint}/my-bucket/key
+  // keys come from AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY
+});
+
+await s3.send(new PutObjectCommand({ Bucket: "my-bucket", Key: "hello.txt", Body: "Hello!" }));
+const { Contents } = await s3.send(new ListObjectsV2Command({ Bucket: "my-bucket" }));
+console.log(Contents.map((o) => o.Key));`,
+    python: `# pip install boto3
+import boto3
+
+s3 = boto3.client("s3", region_name="local-1", endpoint_url="${endpoint}")
+# keys come from AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY
+
+s3.put_object(Bucket="my-bucket", Key="hello.txt", Body=b"Hello!")
+for o in s3.list_objects_v2(Bucket="my-bucket").get("Contents", []):
+    print(o["Key"])`,
+    cli: `aws s3 mb s3://my-bucket --endpoint-url ${endpoint}
+aws s3 cp ./photo.jpg s3://my-bucket/photos/ --endpoint-url ${endpoint}
+aws s3 ls s3://my-bucket --recursive --endpoint-url ${endpoint}
+aws s3 sync ./site s3://my-bucket --endpoint-url ${endpoint}`,
+  };
+}
+
+function keysCommand(os: Os, id: string, secret: string) {
+  if (os === "windows") return `$env:AWS_ACCESS_KEY_ID="${id}"\n$env:AWS_SECRET_ACCESS_KEY="${secret}"\n$env:AWS_REGION="local-1"`;
+  return `export AWS_ACCESS_KEY_ID=${id}\nexport AWS_SECRET_ACCESS_KEY=${secret}\nexport AWS_REGION=local-1`;
+}
+
+/**
+ * Keys and an address for using the AWS SDKs and the AWS CLI against this computer.
+ * The keys are read from the agent itself (http://127.0.0.1), so they stay on this computer.
+ */
+function SdkAccessCard({ info }: { info: AgentInfo }) {
+  const os = useOs();
+  const [show, setShow] = useState(false);
+  const api = info.localApi;
+  const creds = useQuery({
+    queryKey: ["local-credentials", api?.port, api?.key],
+    queryFn: () => localCredentials(api!),
+    enabled: !!api?.awsPort,
+    staleTime: Infinity,
+    retry: 1,
+  });
+
+  let body: React.ReactNode;
+  if (!api || api.awsPort === undefined) {
+    body = <p className="text-muted-foreground">Your agent is too old for this. Download the latest agent above and start it again.</p>;
+  } else if (api.awsPort === null) {
+    body = (
+      <p className="flex items-start gap-2">
+        <TriangleAlertIcon className="mt-0.5 size-4 shrink-0 text-warning" /> The agent couldn&apos;t open port 4566 because another program is using it (LocalStack,
+        maybe). Close that program and restart the agent.
+      </p>
+    );
+  } else if (creds.isLoading) {
+    body = <Skeleton className="h-24 w-full" />;
+  } else if (creds.error || !creds.data) {
+    body = <ErrorLine error={creds.error ?? new Error("The agent didn't return keys.")} />;
+  } else {
+    const c = creds.data;
+    const secret = show ? c.secretAccessKey : MASK;
+    const ex = sdkExamples(c.endpoint);
+    body = (
+      <div className="space-y-4">
+        <div className="grid gap-3 sm:grid-cols-2 [&>*]:min-w-0">
+          <div className="space-y-1">
+            <p className="text-xs text-muted-foreground">Endpoint (this computer)</p>
+            <CopyText text={c.endpoint} />
+          </div>
+          <div className="space-y-1">
+            <p className="text-xs text-muted-foreground">Endpoint (other devices on the same Wi-Fi)</p>
+            {c.lanEndpoint ? <CopyText text={c.lanEndpoint} /> : <p className="py-2 text-muted-foreground">Not on a network right now.</p>}
+          </div>
+          <div className="space-y-1">
+            <p className="text-xs text-muted-foreground">Access key ID</p>
+            <CopyText text={c.accessKeyId} />
+          </div>
+          <div className="space-y-1">
+            <p className="flex items-center justify-between text-xs text-muted-foreground">
+              Secret access key
+              <button type="button" className="text-primary hover:underline" onClick={() => setShow((s) => !s)}>
+                {show ? "Hide" : "Show"}
+              </button>
+            </p>
+            <CopyText text={secret} />
+          </div>
+        </div>
+        <div className="space-y-1">
+          <p className="font-medium">1. Put the keys in your terminal</p>
+          <p className="text-xs text-muted-foreground">
+            Or run <span className="font-mono">aws configure</span> once with them, and region <span className="font-mono">local-1</span>.
+            {!show && " Click Show above to copy the real secret."}
+          </p>
+          <CopyText text={keysCommand(os, c.accessKeyId, secret)} />
+        </div>
+        <div className="space-y-1">
+          <p className="font-medium">2. Point your code at {c.endpoint}</p>
+          <Tabs defaultValue="node">
+            <TabsList>
+              <TabsTrigger value="node">Node.js</TabsTrigger>
+              <TabsTrigger value="python">Python</TabsTrigger>
+              <TabsTrigger value="cli">AWS CLI</TabsTrigger>
+            </TabsList>
+            <TabsContent value="node">
+              <CopyText text={ex.node} />
+            </TabsContent>
+            <TabsContent value="python">
+              <CopyText text={ex.python} />
+            </TabsContent>
+            <TabsContent value="cli">
+              <CopyText text={ex.cli} />
+            </TabsContent>
+          </Tabs>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          Works today: S3 (buckets, uploads, downloads, multipart, copy, presigned URLs). Buckets your code creates show up in the S3 console under My computer
+          (local). Keep the secret to yourself: anyone with it, on your network, can use these buckets.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <KeyRoundIcon className="size-4" /> Use AWS SDKs and the AWS CLI
+        </CardTitle>
+        <CardDescription>
+          The agent answers AWS&apos;s own APIs on this computer, so code written for AWS works here: just set the endpoint. Same requests, same errors, and your files
+          stay on this computer.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="pb-5 text-sm">{body}</CardContent>
     </Card>
   );
 }
@@ -734,6 +888,7 @@ export function LocalView() {
         <>
           <ComputerCard />
           <DeployCard />
+          {data?.agent?.online && data.agent.info && <SdkAccessCard info={data.agent.info} />}
           <NetworkCard info={data?.agent?.info} apps={data?.apps ?? []} />
           {data && data.apps.length > 0 && (
             <section className="space-y-3">

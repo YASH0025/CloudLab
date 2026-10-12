@@ -45,6 +45,30 @@ const unreachable = () =>
     0,
   );
 
+export interface LocalCredentials {
+  accessKeyId: string;
+  secretAccessKey: string;
+  endpoint: string;
+  lanEndpoint: string | null;
+  region: string;
+}
+
+/**
+ * The keys an AWS SDK or the AWS CLI uses with the agent's AWS endpoint. They come
+ * straight from the agent on this computer and never pass through CloudLab's servers.
+ * Null when the agent couldn't open the endpoint.
+ */
+export async function localCredentials(info: LocalApiInfo): Promise<LocalCredentials | null> {
+  let res: Response;
+  try {
+    res = await fetch(`http://127.0.0.1:${info.port}/credentials`, { headers: { "x-cloudlab-key": info.key } });
+  } catch {
+    throw unreachable();
+  }
+  if (!res.ok) throw new ApiError("RequestFailed", res.statusText, res.status);
+  return res.json();
+}
+
 export function localObjects(info: LocalApiInfo): ObjectsBackend {
   const base = `http://127.0.0.1:${info.port}/s3`;
   const path = (bucket: string, key = "") => `${base}/${encodeURIComponent(bucket)}${key ? `/${key.split("/").map(encodeURIComponent).join("/")}` : ""}`;

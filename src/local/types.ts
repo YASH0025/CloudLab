@@ -123,7 +123,7 @@ export interface AgentInfo {
    * The agent's own API on this computer (S3 files and more for My computer (local)).
    * The console in the browser calls it directly, with this key, so files never leave the computer.
    */
-  localApi?: { port: number; key: string } | null;
+  localApi?: { port: number; key: string; awsPort?: number | null } | null;
   /** The agent's DNS server and web gateway for app domains, when any app has one. */
   gateway?: { running: boolean; dns: boolean; httpPort: number | null; error?: string | null } | null;
   /** Where the CloudLab folder is on the computer, and the project folders in it. */
@@ -206,7 +206,10 @@ export const syncBody = z.object({
     agentVersion: z.string().max(20),
     workspace: z.string().max(500).optional(),
     lanIp: z.string().max(64).nullable().optional(),
-    localApi: z.object({ port: z.number().int().min(1).max(65535), key: z.string().max(100) }).nullable().optional(),
+    localApi: z
+      .object({ port: z.number().int().min(1).max(65535), key: z.string().max(100), awsPort: z.number().int().min(1).max(65535).nullable().optional() })
+      .nullable()
+      .optional(),
     gateway: z
       .object({ running: z.boolean(), dns: z.boolean(), httpPort: z.number().int().nullable(), error: z.string().max(500).nullable().optional() })
       .nullable()
