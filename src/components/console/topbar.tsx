@@ -28,7 +28,7 @@ export function Topbar() {
       <div className="ml-auto flex min-w-0 items-center gap-2">
         <GlobeIcon className="hidden size-4 shrink-0 text-muted-foreground sm:block" />
         <Select value={region} onValueChange={setRegion}>
-          <SelectTrigger className="h-8 w-36 sm:w-60" aria-label="Region">
+          <SelectTrigger className="h-8 w-28 min-w-0 sm:w-60" aria-label="Region">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>

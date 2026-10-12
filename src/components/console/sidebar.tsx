@@ -12,6 +12,8 @@ import {
   ServerIcon,
   ShieldIcon,
   TerminalIcon,
+  TrophyIcon,
+  WaypointsIcon,
   XIcon,
 } from "lucide-react";
 import Link from "next/link";
@@ -71,6 +73,19 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
           <TerminalIcon className="size-4" />
           Terminal
         </Link>
+        {[
+          { href: routes.diagram(), label: "Network diagram", Icon: WaypointsIcon },
+          { href: routes.progress(), label: "My progress", Icon: TrophyIcon },
+        ].map(({ href, label, Icon }) => (
+          <Link
+            key={href}
+            href={href}
+            className={cn("mt-0.5 flex items-center gap-2 rounded-md px-2 py-1.5 hover:bg-sidebar-accent", pathname === href && "bg-sidebar-accent text-white")}
+          >
+            <Icon className="size-4" />
+            {label}
+          </Link>
+        ))}
         {isLoading &&
           Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="mx-2 mt-5 h-16 bg-sidebar-accent" />)}
         {data?.services.map((service) => {

@@ -185,8 +185,8 @@ export function ResourceDetailView() {
           <ChevronLeftIcon className="size-4" /> {typeDef.pluralLabel}
         </Link>
         <div className="mt-1 flex flex-wrap items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <h1 className="text-2xl font-semibold tracking-tight">{item.name || item.id}</h1>
+          <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+            <h1 className="min-w-0 text-2xl font-semibold tracking-tight [overflow-wrap:anywhere]">{item.name || item.id}</h1>
             {item.state && <StateBadge state={item.state} pending={item.pendingState} />}
             {item.type === "alarm" && typeof item.attributes.stateValue === "string" && <AlarmStateBadge state={item.attributes.stateValue} />}
             {systemBadge && (
@@ -212,7 +212,7 @@ export function ResourceDetailView() {
             </Button>
           </div>
         </div>
-        <p className="font-mono text-xs text-muted-foreground">{item.id}</p>
+        <p className="font-mono text-xs text-muted-foreground [overflow-wrap:anywhere]">{item.id}</p>
       </div>
 
       {/* For CloudWatch resources the graphs and logs are the point of the page, so they come first. */}
@@ -223,7 +223,7 @@ export function ResourceDetailView() {
       {item.service === "route53" && item.type === "health-check" && <HealthCheckPanel check={item} />}
       {item.service === "route53" && item.type === "record-set" && <DnsTestCard defaultName={item.name} title="Test this record" />}
 
-      <div className="grid gap-5 lg:grid-cols-2">
+      <div className="grid gap-5 lg:grid-cols-2 [&>*]:min-w-0">
         <Card>
           <CardHeader>
             <CardTitle>Summary</CardTitle>
@@ -262,7 +262,7 @@ export function ResourceDetailView() {
               <ul className="divide-y">
                 {referencedBy.map((r: ResourceDTO) => (
                   <li key={r.id} className="flex items-center justify-between gap-3 py-2 text-sm">
-                    <Link href={routes.detail(r.service, r.type, r.id)} className="text-primary hover:underline">
+                    <Link href={routes.detail(r.service, r.type, r.id)} className="min-w-0 text-primary [overflow-wrap:anywhere] hover:underline">
                       {r.name || r.id}
                       <span className="block font-mono text-xs text-muted-foreground">{r.id}</span>
                     </Link>

@@ -1,6 +1,7 @@
 import { Suspense } from "react";
 import { ChallengeBanner } from "@/components/console/challenge-panel";
 import { GuidePanel } from "@/components/console/guide-panel";
+import { ProgressSync } from "@/components/console/progress-sync";
 import { Sidebar } from "@/components/console/sidebar";
 import { Topbar } from "@/components/console/topbar";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -25,6 +26,7 @@ export default function ConsoleLayout({ children }: LayoutProps<"/console">) {
         </main>
       </div>
       <GuidePanel />
+      <ProgressSync />
     </div>
   );
 }

@@ -12,6 +12,7 @@ import { logsService } from "./services/logs";
 import { cloudWatchService } from "./services/cloudwatch";
 import { route53Service } from "./services/route53";
 import { objectType, storageService } from "./services/storage";
+import { progressType } from "./services/progress";
 import type { FieldDef, ResolvedServiceDef, ResolvedTypeDef, ResourceTypeDef, ServiceDef } from "./types";
 
 /** Every service the platform simulates. Add new service definitions here. */
@@ -31,7 +32,7 @@ export const SERVICES: ServiceDef[] = [
 ];
 
 /** Types managed through their own screens rather than the generic console pages (bucket objects). */
-const HIDDEN_TYPES: ResourceTypeDef[] = [objectType];
+const HIDDEN_TYPES: ResourceTypeDef[] = [objectType, progressType];
 
 /** Every resource type, including hidden ones. */
 export const allTypes = (): ResourceTypeDef[] => [...SERVICES.flatMap((s) => s.types), ...HIDDEN_TYPES];

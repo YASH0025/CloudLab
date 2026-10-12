@@ -6,7 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { useChallenge, useChallenges, useStartChallenge } from "@/hooks/use-cloud";
+import { useChallenge, useChallenges, useSaveProgress, useStartChallenge } from "@/hooks/use-cloud";
 import type { ChallengeInfo } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 import { useConsoleStore } from "@/stores/console-store";
@@ -109,6 +109,7 @@ function ChallengeRunner({ id, startedAt, hintsUsed }: { id: string; startedAt: 
   const { data: all } = useChallenges();
   const takeHint = useConsoleStore((s) => s.takeHint);
   const recordResult = useConsoleStore((s) => s.recordResult);
+  const saveProgress = useSaveProgress();
   const back = useBackToLab();
   const start = useStartChallenge();
   const solved = c?.solved === true;
@@ -123,6 +124,8 @@ function ChallengeRunner({ id, startedAt, hintsUsed }: { id: string; startedAt: 
     const seconds = Math.round((Date.now() - startedAt) / 1000);
     setSolvedAfter(seconds);
     recordResult(id, { score: scoreFor(hintsUsed), seconds, hints: hintsUsed, at: Date.now() });
+    saveProgress.mutate({ kind: "challenge", id, score: scoreFor(hintsUsed), seconds, hints: hintsUsed });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the mutation object changes every render
   }, [solved, id, hintsUsed, startedAt, recordResult]);
 
   if (isLoading) return <Skeleton className="h-80" />;

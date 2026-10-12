@@ -65,7 +65,7 @@ export function VolumePanel({ volume }: { volume: ResourceDTO }) {
   const mine = (snapshots.data ?? []).filter((s) => s.config.volumeId === volume.id);
 
   return (
-    <div className="grid gap-5 lg:grid-cols-2">
+    <div className="grid gap-5 lg:grid-cols-2 [&>*]:min-w-0">
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
@@ -173,7 +173,7 @@ export function SnapshotPanel({ snapshot }: { snapshot: ResourceDTO }) {
   const completed = snapshot.state === "completed";
 
   return (
-    <div className="grid gap-5 lg:grid-cols-2">
+    <div className="grid gap-5 lg:grid-cols-2 [&>*]:min-w-0">
       <Card>
         <CardHeader className="flex flex-row flex-wrap items-start justify-between gap-3">
           <div className="space-y-1.5">

@@ -1,6 +1,8 @@
 export const routes = {
   console: () => "/console",
   terminal: () => "/console/terminal",
+  progress: () => "/console/progress",
+  diagram: () => "/console/diagram",
   list: (service: string, type: string) => `/console/${service}/${type}`,
   create: (service: string, type: string) => `/console/${service}/${type}/new`,
   detail: (service: string, type: string, id: string) =>

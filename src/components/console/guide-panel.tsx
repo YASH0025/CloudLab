@@ -29,7 +29,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { explainError } from "@/guide/errors";
 import { advanceProgress } from "@/guide/progress";
 import type { GuideLink, Level, Suggestion, TutorialStepView } from "@/guide/types";
-import { useGuide, useTutorial, useTutorials } from "@/hooks/use-cloud";
+import { useGuide, useSaveProgress, useTutorial, useTutorials } from "@/hooks/use-cloud";
 import { routes } from "@/lib/routes";
 import { cn } from "@/lib/utils";
 import { useGuideStore, type GuideTab } from "@/stores/guide-store";
@@ -324,6 +324,7 @@ function TutorialRunner({ id }: { id: string }) {
   const restart = useGuideStore((s) => s.restartTutorial);
   const leave = useGuideStore((s) => s.leaveTutorial);
   const start = useGuideStore((s) => s.startTutorial);
+  const saveProgress = useSaveProgress();
 
   // Steps tick off in order as the learner's resources start satisfying them.
   useEffect(() => {
@@ -331,9 +332,11 @@ function TutorialRunner({ id }: { id: string }) {
     const next = advanceProgress(completed, tutorial.steps.map((s) => s.passes));
     if (next > completed) {
       setProgress(id, next);
+      saveProgress.mutate({ kind: "tutorial", id, steps: next, total: tutorial.steps.length });
       const last = tutorial.steps[next - 1];
       toast.success(next === tutorial.steps.length ? "Tutorial complete!" : `Step done: ${last.title}`);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the mutation object changes every render
   }, [tutorial, completed, id, setProgress]);
 
   if (isLoading) return <Skeleton className="h-80" />;
@@ -350,7 +353,10 @@ function TutorialRunner({ id }: { id: string }) {
         <Button variant="ghost" size="sm" className="-ml-2" onClick={leave}>
           <ArrowLeftIcon /> All tutorials
         </Button>
-        <Button variant="ghost" size="sm" onClick={() => restart(id)} disabled={done === 0}>
+        <Button variant="ghost" size="sm" onClick={() => {
+            restart(id);
+            saveProgress.mutate({ kind: "tutorial", id, steps: 0, total: tutorial.steps.length });
+          }} disabled={done === 0}>
           <RotateCcwIcon /> Restart
         </Button>
       </div>

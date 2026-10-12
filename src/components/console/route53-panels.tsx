@@ -113,7 +113,7 @@ export function HostedZonePanel({ zone }: { zone: ResourceDTO }) {
         </CardContent>
       </Card>
 
-      <div className="grid gap-5 lg:grid-cols-2">
+      <div className="grid gap-5 lg:grid-cols-2 [&>*]:min-w-0">
         <DnsTestCard defaultName={`www.${zone.name}`} />
         <div className="space-y-5">
           <AliasTargetsCard zone={zone} />

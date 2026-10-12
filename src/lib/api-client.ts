@@ -2,6 +2,7 @@ import type { ResolvedServiceDef, ResourceDTO } from "@/engine/types";
 import type { Region } from "@/engine/catalog";
 import type { ReachabilityInput, ReachabilityResult } from "@/engine/analysis/reachability";
 import type { Advice, TutorialInfo, TutorialView } from "@/guide/types";
+import type { Diagram } from "@/guide/diagram";
 import type { Evaluation } from "@/engine/iam/policy";
 import { useConsoleStore } from "@/stores/console-store";
 
@@ -32,6 +33,11 @@ export interface DnsTestResult {
     zoneId: string | null;
   };
   http?: { ok: true; status: number; statusText: string; servedBy: string; contentType: string | null; body: string } | { ok: false; error: string; reason: string };
+}
+
+export interface LearnerProgress {
+  tutorials: Record<string, { steps: number; total: number; completedAt?: string }>;
+  challenges: Record<string, { score: number; seconds: number; hints: number; at: string }>;
 }
 
 export interface ChallengeInfo {
@@ -172,6 +178,13 @@ export const api = {
 
   writeVolumeFile: (id: string, input: { path: string; content: string }) =>
     request<{ files: { path: string; content: string; modifiedAt: string }[] }>(`/api/resources/${encodeURIComponent(id)}/files`, { method: "POST", body: JSON.stringify(input) }),
+
+  diagram: (region: string) => request<{ diagram: Diagram }>(`/api/diagram?region=${encodeURIComponent(region)}`),
+
+  progress: () => request<{ progress: LearnerProgress }>(`/api/progress`),
+  saveProgress: (
+    input: { kind: "tutorial"; id: string; steps: number; total: number } | { kind: "challenge"; id: string; score: number; seconds: number; hints: number },
+  ) => request<{ progress: LearnerProgress }>(`/api/progress`, { method: "POST", body: JSON.stringify(input) }),
 
   challenges: () => request<{ challenges: ChallengeInfo[] }>(`/api/challenges`),
   challenge: (id: string, hints: number) => request<{ challenge: ChallengeView }>(`/api/challenges/${encodeURIComponent(id)}?hints=${hints}`),

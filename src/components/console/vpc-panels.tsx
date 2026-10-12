@@ -25,7 +25,7 @@ const isDefault = (r: ResourceDTO) => !!(r.attributes.system as { isDefault?: bo
 function RulesTable({ rules, title, hint }: { rules: AclRule[]; title: string; hint: string }) {
   const sorted = [...rules].sort((a, b) => a.ruleNumber - b.ruleNumber);
   return (
-    <div className="space-y-2">
+    <div className="min-w-0 space-y-2">
       <div>
         <h3 className="text-sm font-medium">{title}</h3>
         <p className="text-xs text-muted-foreground">{hint}</p>
@@ -75,7 +75,7 @@ export function NetworkAclPanel({ acl }: { acl: ResourceDTO }) {
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-5 pb-5">
-        <div className="grid gap-5 lg:grid-cols-2">
+        <div className="grid gap-5 lg:grid-cols-2 [&>*]:min-w-0">
           <RulesTable rules={(acl.config.inboundRules as AclRule[] | undefined) ?? []} title="Inbound" hint="Traffic coming into the subnet, including replies to connections it started." />
           <RulesTable rules={(acl.config.outboundRules as AclRule[] | undefined) ?? []} title="Outbound" hint="Traffic leaving the subnet, including replies to visitors (ports 1024–65535)." />
         </div>

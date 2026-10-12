@@ -40,7 +40,7 @@ export function TerminalView() {
           Practice the real CLI commands. Everything you create here shows up in the console too, and vice versa.
         </p>
       </div>
-      <div className="grid gap-5 lg:grid-cols-[1fr_18rem]">
+      <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_18rem]">
         <div className="h-[60vh]">
           <Terminal ref={terminal} />
         </div>

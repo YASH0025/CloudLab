@@ -44,7 +44,10 @@ export function ActingAs() {
         title="The IAM identity the console and terminal use"
       >
         {isRoot ? <ShieldIcon className="size-4 shrink-0" /> : identity.startsWith("role/") ? <UserRoundCogIcon className="size-4 shrink-0" /> : <UserIcon className="size-4 shrink-0" />}
-        <SelectValue />
+        {/* On a phone the icon is enough (it turns amber when you're not root); the name shows from sm up. */}
+        <span className="hidden min-w-0 truncate sm:inline">
+          <SelectValue />
+        </span>
       </SelectTrigger>
       <SelectContent align="end">
         <SelectItem value="root">Root user</SelectItem>

@@ -99,6 +99,26 @@ export function useWriteVolumeFile(id: string) {
   });
 }
 
+/** The region's network, drawn as VPCs → zones → subnets, refreshed every 10 seconds. */
+export function useDiagram() {
+  const region = useConsoleStore((s) => s.region);
+  return useQuery({ queryKey: ["diagram", region], queryFn: async () => (await api.diagram(region)).diagram, refetchInterval: 10_000 });
+}
+
+/** The learner's saved progress (tutorials and challenges), kept with their lab on the server. */
+export function useProgress() {
+  return useQuery({ queryKey: ["progress"], queryFn: async () => (await api.progress()).progress, staleTime: 30_000 });
+}
+
+/** Saves a tutorial step or a challenge result. Best effort: progress also lives in the browser. */
+export function useSaveProgress() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.saveProgress,
+    onSuccess: ({ progress }) => qc.setQueryData(["progress"], progress),
+  });
+}
+
 export function useChallenges() {
   return useQuery({ queryKey: ["challenges"], queryFn: async () => (await api.challenges()).challenges, staleTime: Infinity });
 }

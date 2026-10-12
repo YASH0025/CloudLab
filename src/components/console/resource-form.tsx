@@ -175,7 +175,7 @@ function FieldControl({ field, name, control, errors, disabled, lockReason, comp
         />
         <div className="space-y-1">
           <Label htmlFor={id}>{field.label}</Label>
-          {field.description && <p className="text-xs text-muted-foreground">{field.description}</p>}
+          {field.description && <p className="text-xs text-muted-foreground [overflow-wrap:anywhere]">{field.description}</p>}
         </div>
       </div>
     );
@@ -285,7 +285,7 @@ function FieldControl({ field, name, control, errors, disabled, lockReason, comp
       ) : lockReason ? (
         <p className="text-xs text-muted-foreground">{lockReason}</p>
       ) : (
-        field.description && !compact && <p className="text-xs text-muted-foreground">{field.description}</p>
+        field.description && !compact && <p className="text-xs text-muted-foreground [overflow-wrap:anywhere]">{field.description}</p>
       )}
     </div>
   );
@@ -318,7 +318,7 @@ function RefControl({
   if (!isLoading && options.length === 0) {
     return (
       <p className="rounded-md border border-dashed px-3 py-2 text-sm text-muted-foreground">
-        No {inSentence(field.label)} in this region yet. {field.required ? "Create one first." : "You can create one first, or carry on without."}
+        No {inSentence(field.label.replace(/^or /, ""))} in this region yet. {field.required ? "Create one first." : "You can create one first, or carry on without."}
       </p>
     );
   }
@@ -386,48 +386,49 @@ function ListControl({
   const items = field.item ?? [];
   const listError = errorMessage(errors, name);
 
+  // Wide enough: a table, one row per item. Narrow (a phone, or the guide panel open): each item is a small card.
+  const columns = { "--cols": `repeat(${items.length}, minmax(0, 1fr)) 2.25rem` } as React.CSSProperties;
+  const unit = field.itemLabel ?? "rule";
+
   return (
-    <fieldset className="space-y-2">
+    <fieldset className="@container min-w-0 space-y-2">
       <legend className="text-sm font-medium">{field.label}</legend>
-      {field.description && <p className="text-xs text-muted-foreground">{field.description}</p>}
-      <div className="overflow-x-auto rounded-md border">
+      {field.description && <p className="text-xs text-muted-foreground [overflow-wrap:anywhere]">{field.description}</p>}
+      <div className="rounded-md border">
         <div
-          className="grid min-w-[860px] gap-2 border-b bg-muted/60 px-3 py-2 text-xs font-medium text-muted-foreground"
-          style={{ gridTemplateColumns: `repeat(${items.length}, minmax(0, 1fr)) 2.25rem` }}
+          className="hidden gap-2 border-b bg-muted/60 px-3 py-2 text-xs font-medium text-muted-foreground @3xl:grid @3xl:[grid-template-columns:var(--cols)]"
+          style={columns}
         >
           {items.map((i) => (
             <span key={i.key}>{i.label}</span>
           ))}
           <span />
         </div>
-        {rows.length === 0 && <p className="px-3 py-3 text-sm text-muted-foreground">No rules.</p>}
+        {rows.length === 0 && <p className="px-3 py-3 text-sm text-muted-foreground">No {unit}s yet.</p>}
         {rows.map((row, index) => (
           <div
             key={row.id}
-            className="grid min-w-[860px] items-start gap-2 border-b px-3 py-2 last:border-0"
-            style={{ gridTemplateColumns: `repeat(${items.length}, minmax(0, 1fr)) 2.25rem` }}
+            className="grid grid-cols-1 items-start gap-2 border-b px-3 py-3 last:border-0 @md:grid-cols-2 @3xl:py-2 @3xl:[grid-template-columns:var(--cols)]"
+            style={columns}
           >
             {items.map((i) => (
-              <FieldControl
-                key={i.key}
-                field={i}
-                name={`${name}.${index}.${i.key}`}
-                control={control}
-                errors={errors}
-                disabled={disabled}
-                compact
-              />
+              <div key={i.key} className="min-w-0 space-y-1 @3xl:space-y-0">
+                <span className="block text-xs font-medium text-muted-foreground @3xl:hidden">{i.label}</span>
+                <FieldControl field={i} name={`${name}.${index}.${i.key}`} control={control} errors={errors} disabled={disabled} compact />
+              </div>
             ))}
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              aria-label="Remove rule"
-              disabled={disabled}
-              onClick={() => remove(index)}
-            >
-              <Trash2Icon />
-            </Button>
+            <div className="flex justify-end @md:col-span-2 @3xl:col-span-1">
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                aria-label={`Remove ${unit} ${index + 1}`}
+                disabled={disabled}
+                onClick={() => remove(index)}
+              >
+                <Trash2Icon />
+              </Button>
+            </div>
           </div>
         ))}
       </div>
@@ -439,7 +440,7 @@ function ListControl({
         disabled={disabled || (field.maxItems !== undefined && rows.length >= field.maxItems)}
         onClick={() => append(defaultValues(items) as never)}
       >
-        <PlusIcon /> Add {field.itemLabel ?? "rule"}
+        <PlusIcon /> Add {unit}
       </Button>
     </fieldset>
   );

@@ -1,7 +1,8 @@
 import { z } from "zod";
 import { isRegion } from "@/engine";
 import { EngineError } from "@/engine/errors";
-import { getAccountId, getEngine, handle } from "@/server/api";
+import { resetTutorialSteps } from "@/guide/progress-store";
+import { getAccountId, getEngine, getLabAccountId, handle } from "@/server/api";
 
 const body = z.object({ region: z.string() });
 
@@ -14,6 +15,7 @@ export async function POST(request: Request) {
     const engine = getEngine();
     const removed = await engine.resetRegion(accountId, region);
     await engine.ensureDefaults(accountId, region);
+    if (accountId === (await getLabAccountId())) await resetTutorialSteps(engine, accountId);
     return Response.json({ region, removed });
   });
 }
