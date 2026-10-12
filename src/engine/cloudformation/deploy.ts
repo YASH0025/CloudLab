@@ -221,6 +221,8 @@ async function deleteOne(run: Run, r: StackResource) {
   // Instances are terminated, not deleted, as CloudFormation does.
   if (exists.type === "instance") {
     if (exists.state !== "terminated") await run.engine.runAction(run.accountId, exists.id, "terminate");
+    // CloudFormation waits for termination before it moves on (the instance's security group can't go before it).
+    await run.engine.finishTransition(run.accountId, exists.id);
     return;
   }
   await run.engine.remove(run.accountId, r.resourceId);
@@ -503,7 +505,11 @@ export async function deleteStackResources(engine: Engine, stack: Resource, reta
   for (const o of (stack.attributes.outputs as StackOutput[] | undefined) ?? []) {
     if (!o.exportName) continue;
     const user = stacks.find((s) => s.id !== stack.id && ((s.attributes.imports as string[] | undefined) ?? []).includes(o.exportName!));
-    if (user) throw validationError(`Export ${o.exportName} cannot be deleted as it is in use by ${user.name}`);
+    if (user) {
+      // Remembered (never shown) so the guide can tell the learner met this rule.
+      await engine.setAttributes(stack.accountId, stack.id, { deleteBlockedBy: user.name });
+      throw validationError(`Export ${o.exportName} cannot be deleted as it is in use by ${user.name}`);
+    }
   }
   run.stackEvent("DELETE_IN_PROGRESS", "User Initiated");
   const created = [...run.resources.values()];

@@ -413,6 +413,18 @@ export class Engine {
   }
 
   /** Merges platform-assigned attributes without re-validating (scaling status, counters). */
+  /**
+   * Finishes a resource's pending transition right away, as if its time had
+   * come (an instance that's shutting down becomes terminated). For services
+   * that wait on another one, like CloudFormation waiting for an instance to
+   * terminate before deleting its security group.
+   */
+  async finishTransition(accountId: string, id: string): Promise<Resource> {
+    const r = await this.get(accountId, id);
+    if (!r.pendingState || !r.transitionAt) return r;
+    return this.settleAndSave({ ...r, transitionAt: this.now().toISOString() });
+  }
+
   async setAttributes(accountId: string, id: string, patch: Record<string, unknown>): Promise<void> {
     const r = await this.store.get(accountId, id);
     if (r) await this.store.update({ ...r, attributes: { ...r.attributes, ...patch }, updatedAt: this.now().toISOString() });

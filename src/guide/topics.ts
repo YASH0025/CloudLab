@@ -23,6 +23,9 @@ export const TOPIC_OF: Record<string, Topic> = {
   "disks-and-backups": "Storage",
   "highly-available-website": "Compute",
   "connect-and-protect": "Networking",
+  "stacks-that-share": "Infrastructure as code",
+  "dns-failover": "DNS",
+  "on-call-serverless": "Serverless",
   // challenges
   "site-down": "Networking",
   "no-updates": "Networking",

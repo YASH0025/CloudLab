@@ -5,10 +5,12 @@ import {
   ArrowRightIcon,
   BookOpenIcon,
   CheckCircle2Icon,
+  CheckIcon,
   ChevronDownIcon,
   CircleIcon,
   ClockIcon,
   CompassIcon,
+  CopyIcon,
   Loader2Icon,
   PartyPopperIcon,
   RefreshCwIcon,
@@ -62,12 +64,44 @@ function NumberedSteps({ steps }: { steps: string[] }) {
           <span className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-semibold text-primary">
             {i + 1}
           </span>
-          <span>
-            <WithFileLinks text={step} />
-          </span>
+          {step.includes("\n") ? (
+            <Snippet text={step} />
+          ) : (
+            <span>
+              <WithFileLinks text={step} />
+            </span>
+          )}
         </li>
       ))}
     </ol>
+  );
+}
+
+/** A multi-line instruction (code or a template fragment to paste), kept as written and copyable. */
+function Snippet({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <div className="relative min-w-0 flex-1">
+      <pre className="overflow-x-auto rounded-md bg-muted py-2 pr-9 pl-2.5 font-mono text-xs leading-relaxed">{text.replace(/\n$/, "")}</pre>
+      <Button
+        type="button"
+        size="icon"
+        variant="ghost"
+        className="absolute top-1 right-1 size-6"
+        aria-label="Copy"
+        onClick={() => {
+          navigator.clipboard?.writeText(text).then(
+            () => {
+              setCopied(true);
+              setTimeout(() => setCopied(false), 1500);
+            },
+            () => undefined,
+          );
+        }}
+      >
+        {copied ? <CheckIcon className="size-3.5" /> : <CopyIcon className="size-3.5" />}
+      </Button>
+    </div>
   );
 }
 

@@ -225,6 +225,36 @@ export const CLOUDFORMATION_COMMANDS: Command[] = [
   }),
   cmd({
     service: "cloudformation",
+    operation: "list-exports",
+    apiName: "ListExports",
+    summary: "Values stacks export for other stacks to import (Outputs with an Export name)",
+    usage: "",
+    mutates: false,
+    async run(_args, ctx) {
+      const all = await stacks(ctx);
+      return {
+        Exports: all.flatMap((s) =>
+          ((s.attributes.outputs as StackOutput[] | undefined) ?? []).flatMap((o) => (o.exportName ? [{ ExportingStackId: s.id, Name: o.exportName, Value: o.value }] : [])),
+        ),
+      };
+    },
+  }),
+  cmd({
+    service: "cloudformation",
+    operation: "list-imports",
+    apiName: "ListImports",
+    summary: "Stacks that import an exported value (they block deleting it)",
+    usage: "--export-name <name>",
+    mutates: false,
+    async run(args, ctx) {
+      const name = args.required("export-name");
+      const users = (await stacks(ctx)).filter((s) => ((s.attributes.imports as string[] | undefined) ?? []).includes(name));
+      if (users.length === 0) throw validationError(`Export '${name}' is not imported by any stack.`);
+      return { Imports: users.map((s) => s.name) };
+    },
+  }),
+  cmd({
+    service: "cloudformation",
     operation: "describe-stack-events",
     apiName: "DescribeStackEvents",
     summary: "What happened, newest first: each resource created, updated, failed or deleted",

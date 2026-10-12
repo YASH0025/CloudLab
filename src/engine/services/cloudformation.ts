@@ -72,6 +72,7 @@ const stack: ResourceTypeDef = {
   apiNoun: "stack",
   stateErrorCode: "ValidationError",
   panelAttributes: ["events", "resources", "outputs", "imports", "parametersResolved", "lastOperation", "rollbackConfig", "description"],
+  privateAttributes: ["deleteBlockedBy"],
   fields: [
     {
       key: "name",

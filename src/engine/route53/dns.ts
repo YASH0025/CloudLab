@@ -41,6 +41,8 @@ export interface Resolution {
   endpoint?: Endpoint;
   /** How the answer was reached, in plain words, for the console. */
   steps: string[];
+  /** Which failover record answered, when one did. */
+  failover?: "PRIMARY" | "SECONDARY";
 }
 
 export interface ResolveOptions {
@@ -124,7 +126,8 @@ async function isHealthy(engine: Engine, accountId: string, rec: Resource, optio
 }
 
 /** Picks the record that answers among several with the same name and type. */
-async function choose(engine: Engine, accountId: string, records: Resource[], options: ResolveOptions, depth: number, steps: string[]): Promise<Resource | null> {
+async function choose(engine: Engine, accountId: string, records: Resource[], options: ResolveOptions, depth: number, out: Resolution): Promise<Resource | null> {
+  const steps = out.steps;
   const policy = recordConfig(records[0]).routingPolicy ?? "simple";
   if (policy === "simple") return records[0];
 
@@ -135,11 +138,14 @@ async function choose(engine: Engine, accountId: string, records: Resource[], op
       const h = await isHealthy(engine, accountId, primary, options, depth);
       if (h.healthy || !secondary) {
         steps.push(`Failover: the primary record (${recordConfig(primary).setIdentifier}) is ${h.healthy ? "healthy" : "unhealthy, but there's no secondary"} (${h.why}).`);
+        out.failover = "PRIMARY";
         return primary;
       }
       steps.push(`Failover: the primary record (${recordConfig(primary).setIdentifier}) is unhealthy (${h.why}), so Route 53 answers with the secondary (${recordConfig(secondary).setIdentifier}).`);
+      out.failover = "SECONDARY";
       return secondary;
     }
+    if (secondary) out.failover = "SECONDARY";
     return secondary ?? null;
   }
 
@@ -234,6 +240,7 @@ export async function resolve(engine: Engine, accountId: string, rawName: string
     out.authority = next.authority;
     out.status = next.status;
     out.endpoint = next.endpoint;
+    out.failover ??= next.failover;
     if (out.endpoint?.kind === "apigateway") out.endpoint = { ...out.endpoint, ownHost: false };
     out.steps.push(...next.steps);
     return out;
@@ -245,7 +252,7 @@ export async function resolve(engine: Engine, accountId: string, rawName: string
     out.steps.push(`${name} exists, but has no ${type} record (it has ${[...new Set(named.map((r) => r.config.type))].join(", ")}).`);
     return out;
   }
-  const pick = await choose(engine, accountId, candidates, options, depth, out.steps);
+  const pick = await choose(engine, accountId, candidates, options, depth, out);
   if (!pick) return out;
   const c: RecordConfig = recordConfig(pick);
 
@@ -255,6 +262,7 @@ export async function resolve(engine: Engine, accountId: string, rawName: string
     out.answers = next.answers.filter((a) => a.type === type).map((a) => ({ ...a, name, ttl: Math.min(a.ttl, 60) }));
     out.status = next.status === "SERVFAIL" ? "SERVFAIL" : "NOERROR";
     out.endpoint = next.endpoint;
+    out.failover ??= next.failover;
     if (out.endpoint?.kind === "apigateway") out.endpoint = { ...out.endpoint, ownHost: false };
     out.steps.push(`${name} is an alias for ${c.aliasTarget}: Route 53 looks up the target itself and answers with its addresses.`);
     out.steps.push(...next.steps.filter((s) => !s.startsWith("The hosted zone")));
@@ -311,11 +319,21 @@ const albError = (status: number) => {
 const helloPage = (instance: Resource, extra = "") =>
   `<!DOCTYPE html>\n<html><head><title>Hello</title></head><body><h1>Hello from ${instance.id}</h1><p>${instance.name ? `${instance.name}, ` : ""}${String(instance.config.availabilityZone ?? instance.region)}${extra}</p></body></html>\n`;
 
-async function recordRequest(engine: Engine, accountId: string, zone: Resource, host: string, status: number | null) {
+/** A request through a hosted zone, as remembered on the zone. */
+export interface ZoneRequest {
+  at: string;
+  host: string;
+  status: number | null;
+  /** Which failover record answered, when the name uses failover routing. */
+  failover?: "PRIMARY" | "SECONDARY";
+}
+
+async function recordRequest(engine: Engine, accountId: string, zone: Resource, host: string, status: number | null, failover?: "PRIMARY" | "SECONDARY") {
   const fresh = await engine.get(accountId, zone.id).catch(() => null);
   if (!fresh) return;
-  const previous = (fresh.attributes.recentRequests as { at: string; host: string; status: number | null }[] | undefined) ?? [];
-  await engine.setAttributes(accountId, zone.id, { recentRequests: [{ at: engine.now().toISOString(), host, status }, ...previous].slice(0, 20) });
+  const previous = (fresh.attributes.recentRequests as ZoneRequest[] | undefined) ?? [];
+  const item: ZoneRequest = { at: engine.now().toISOString(), host, status, ...(failover ? { failover } : {}) };
+  await engine.setAttributes(accountId, zone.id, { recentRequests: [item, ...previous].slice(0, 20) });
 }
 
 /**
@@ -339,7 +357,7 @@ export async function request(
   const port = Number(parsed.port || (parsed.protocol === "https:" ? 443 : 80));
   const resolution = await resolve(engine, accountId, host, "A", options);
   const done = async (r: WebResult) => {
-    if (options.recordOn !== false && resolution.zone) await recordRequest(engine, accountId, resolution.zone, host, r.kind === "response" ? r.status : null);
+    if (options.recordOn !== false && resolution.zone) await recordRequest(engine, accountId, resolution.zone, host, r.kind === "response" ? r.status : null, resolution.failover);
     return { ...r, resolution };
   };
   if (resolution.status !== "NOERROR" || !resolution.endpoint) {

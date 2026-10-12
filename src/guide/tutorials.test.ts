@@ -72,8 +72,19 @@ describe("tutorials", () => {
       "highly-available-website",
       "connect-and-protect",
       "infrastructure-as-code",
+      "stacks-that-share",
+      "dns-failover",
+      "on-call-serverless",
     ]);
     expect(listTutorials().filter((t) => t.level === "intermediate")).toHaveLength(12);
+    expect(listTutorials().filter((t) => t.level === "advanced").map((t) => t.id)).toEqual([
+      "highly-available-website",
+      "connect-and-protect",
+      "infrastructure-as-code",
+      "stacks-that-share",
+      "dns-failover",
+      "on-call-serverless",
+    ]);
     expect(listTutorials().find((t) => t.id === "troubleshoot-reachability")?.nextId).toBe("static-website");
   });
 
@@ -269,6 +280,101 @@ describe("tutorials", () => {
     });
     expect(steps).toBe(6);
     expect(await engine.list(ACCOUNT, { service: "sqs", type: "queue", region: REGION })).toHaveLength(0);
+  });
+
+  it("completes 'Split your infrastructure into stacks': export, import, a blocked delete, teardown in order", { timeout: 60_000 }, async () => {
+    const stackNamed = async (name: string) => (await engine.list(ACCOUNT, { service: "cloudformation", type: "stack", region: REGION })).find((s) => s.name === name);
+    const steps = await play("stacks-that-share", {
+      blocked: async () => {
+        await expect(engine.remove(ACCOUNT, (await stackNamed("network"))!.id)).rejects.toMatchObject({
+          code: "ValidationError",
+          message: "Export network-VpcId cannot be deleted as it is in use by web-app",
+        });
+        expect(await stackNamed("network")).toBeDefined();
+      },
+      teardown: async () => {
+        await engine.remove(ACCOUNT, (await stackNamed("web-app"))!.id);
+        await engine.remove(ACCOUNT, (await stackNamed("network"))!.id);
+      },
+    });
+    expect(steps).toBe(6);
+    expect((await engine.list(ACCOUNT, { service: "networking", type: "vpc", region: REGION })).filter((v) => v.name === "shared-vpc")).toHaveLength(0);
+    expect(await engine.list(ACCOUNT, { service: "compute", type: "instance", region: REGION }).then((l) => l.filter((i) => i.state !== "terminated"))).toHaveLength(0);
+  });
+
+  it("completes 'Stay online when a server dies': Elastic IP, standby, health check, failover and back", { timeout: 60_000 }, async () => {
+    const { request } = await import("@/engine/route53/dns");
+    await play("first-web-server");
+    await play("website-real-name", { visit: async () => void (await request(engine, ACCOUNT, "http://www.myshop.com/")) });
+    const primaryOf = async () => (await engine.list(ACCOUNT, { service: "compute", type: "instance", region: REGION })).find((i) => i.name === "web-1")!;
+    const settle = async () => {
+      for (let i = 0; i < 3; i++) {
+        tick();
+        await engine.ensureDefaults(ACCOUNT, REGION);
+        await engine.list(ACCOUNT, { service: "compute", type: "instance", region: REGION });
+      }
+    };
+    let eip = "";
+    const steps = await play("dns-failover", {
+      visit: async () => {
+        const res = await request(engine, ACCOUNT, "http://app.myshop.com/");
+        expect(res).toMatchObject({ kind: "response", status: 200 });
+        expect(res.kind === "response" && res.body).toContain((await primaryOf()).id);
+        eip = String((await primaryOf()).attributes.publicIp);
+      },
+      outage: async () => {
+        await engine.runAction(ACCOUNT, (await primaryOf()).id, "stop");
+        await settle();
+        expect((await primaryOf()).state).toBe("stopped");
+        const res = await request(engine, ACCOUNT, "http://app.myshop.com/");
+        expect(res).toMatchObject({ kind: "response", status: 200 });
+        expect(res.kind === "response" && res.servedBy).not.toContain((await primaryOf()).id);
+      },
+      recover: async () => {
+        await engine.runAction(ACCOUNT, (await primaryOf()).id, "start");
+        await settle();
+        expect((await primaryOf()).attributes.publicIp).toBe(eip);
+        await request(engine, ACCOUNT, "http://app.myshop.com/");
+      },
+    });
+    expect(steps).toBe(9);
+    const zone = (await engine.list(ACCOUNT, { service: "route53", type: "hosted-zone", region: "global" }))[0];
+    const answers = (zone.attributes.recentRequests as { host: string; failover?: string }[]).filter((q) => q.host === "app.myshop.com").map((q) => q.failover);
+    expect(answers.slice(0, 3)).toEqual(["PRIMARY", "SECONDARY", "PRIMARY"]);
+  });
+
+  it("completes 'On call: fix a broken serverless API': a 404, a crash in the logs, a 400, and green again", { timeout: 60_000 }, async () => {
+    const fnOf = async () => (await engine.list(ACCOUNT, { service: "lambda", type: "function", region: REGION }))[0];
+    const apiOf = async () => (await engine.list(ACCOUNT, { service: "apigateway", type: "api", region: REGION }))[0];
+    const call = async (path: string, query = "") =>
+      handleApiRequest(engine, { apiId: (await apiOf()).id, method: "GET", path, query, headers: {}, body: "", sourceIp: "198.51.100.1" });
+    await play("serverless-api", {
+      test: async () => void (await invokeFunction(engine, ACCOUNT, await fnOf(), {}, "console")),
+      "first-call": async () => void (await call("/hello", "name=Ada")),
+      permission: async () => addPermission(engine, ACCOUNT, await fnOf(), { statementId: "apigw", action: "lambda:InvokeFunction", principal: "apigateway.amazonaws.com" }),
+      success: async () => void (await call("/hello", "name=Ada")),
+    });
+    const code = async (step: string) => {
+      const text = (await view("on-call-serverless")).steps.find((x) => x.id === step)!.instructions.find((l) => l.startsWith("export const handler"))!;
+      await engine.update(ACCOUNT, (await fnOf()).id, { files: { "index.mjs": text } });
+      tick();
+    };
+    const steps = await play("on-call-serverless", {
+      "not-found": async () => expect((await call("/helo", "name=Ada")).status).toBe(404),
+      crash: async () => {
+        await code("crash");
+        expect((await call("/hello", "name=Ada")).body).toBe('{"message":"HELLO, ADA!"}');
+        expect((await call("/hello")).status).toBe(500);
+        const errors = await engine.logs.filter(ACCOUNT, REGION, "/aws/lambda/hello", { pattern: "ERROR" });
+        expect(errors.some((e) => e.message.includes("TypeError"))).toBe(true);
+      },
+      fix: async () => {
+        await code("fix");
+        expect((await call("/hello")).status).toBe(400);
+      },
+      verify: async () => expect((await call("/hello", "name=Ada")).status).toBe(200),
+    });
+    expect(steps).toBe(5);
   });
 
   it("completes 'Give your website a real name': zone, A record, a visit, an apex alias, a health check", { timeout: 60_000 }, async () => {

@@ -30,6 +30,8 @@ import { loadIac, TUTORIAL_STACK, type IacState } from "./iac";
 import { loadDns, TUTORIAL_DOMAIN, type DnsState } from "./dns";
 import { DATA_FILE, loadStorage, type StorageState } from "./storage";
 import { loadVpcx, type VpcxState } from "./vpcx";
+import { APP_STACK, APP_TEMPLATE, loadStacks, NETWORK_STACK, NETWORK_TEMPLATE, type StacksState } from "./stacks";
+import { FAILOVER_NAME, loadFailover, STANDBY, type FailoverState } from "./failover";
 import { listenersOf } from "@/engine/services/loadbalancing";
 
 /**
@@ -141,6 +143,14 @@ interface Ctx {
   vpcx(): Promise<VpcxState>;
   /** The same, preloaded for tutorials that declare `needsVpcx`. */
   vpcxState?: VpcxState;
+  /** The cross-stack tutorial's network and app stacks (loaded once, on demand). */
+  stacks(): Promise<StacksState>;
+  /** The same, preloaded for tutorials that declare `needsStacks`. */
+  stacksState?: StacksState;
+  /** The DNS failover tutorial's servers, health check and records (loaded once, on demand). */
+  failover(): Promise<FailoverState>;
+  /** The same, preloaded for tutorials that declare `needsFailover`. */
+  failoverState?: FailoverState;
   /** Runs a reachability check (memoised per instance and input). */
   check(instance: Resource | undefined, input: ReachabilityInput): Promise<ReachabilityResult | null>;
 }
@@ -186,6 +196,10 @@ interface TutorialDef {
   needsStorage?: boolean;
   /** Load the networking tutorial's state before resolving links and text. */
   needsVpcx?: boolean;
+  /** Load the cross-stack tutorial's state before resolving links and text. */
+  needsStacks?: boolean;
+  /** Load the DNS failover tutorial's state before resolving links and text. */
+  needsFailover?: boolean;
   steps: StepDef[];
 }
 
@@ -251,6 +265,8 @@ async function buildCtx(engine: Engine, accountId: string, region: string, ident
   let dnsData: Promise<DnsState> | null = null;
   let storageData: Promise<StorageState> | null = null;
   let vpcxData: Promise<VpcxState> | null = null;
+  let stacksData: Promise<StacksState> | null = null;
+  let failoverData: Promise<FailoverState> | null = null;
   const iamList = (type: string) => engine.list(accountId, { service: "iam", type, region: "global" });
   return {
     identity,
@@ -285,6 +301,14 @@ async function buildCtx(engine: Engine, accountId: string, region: string, ident
     iac() {
       iacData ??= loadIac(engine, accountId, region);
       return iacData;
+    },
+    stacks() {
+      stacksData ??= loadStacks(engine, accountId, region);
+      return stacksData;
+    },
+    failover() {
+      failoverData ??= loadFailover(engine, accountId, region, vpc?.id);
+      return failoverData;
     },
     vpcx() {
       vpcxData ??= loadVpcx(engine, accountId, region, vpc, instance);
@@ -2735,6 +2759,7 @@ const IAC: TutorialDef = {
   summary:
     "Clicking through the console is fine once. Teams describe their infrastructure in a template instead, so it can be reviewed, repeated and rolled back. Create a stack, update it (in place and by replacement), watch a broken update roll back, and delete everything in one go.",
   minutes: 15,
+  nextId: "stacks-that-share",
   needsIac: true,
   steps: [
     {
@@ -2811,7 +2836,417 @@ const IAC: TutorialDef = {
   ],
 };
 
-TUTORIALS.push(SERVERLESS_API, WATCH_YOUR_APP, GET_ALERTED, DECOUPLE, NOSQL, MANAGED_DATABASE, REAL_NAME, DISKS_AND_BACKUPS, HIGHLY_AVAILABLE, CONNECT_AND_PROTECT, IAC);
+// ---------- CloudFormation: stacks that share ----------
+
+const stacksLink = (r: Resource | undefined): GuideLink | undefined => (r ? { service: "cloudformation", type: "stack", mode: "detail", id: r.id } : undefined);
+
+const STACKS: TutorialDef = {
+  id: "stacks-that-share",
+  title: "Split your infrastructure into stacks",
+  level: "advanced",
+  summary:
+    "One giant template gets slow and risky to change. Teams split it: a network stack that rarely changes, and app stacks that build on it. Export values from one stack, import them in another, meet the rule that protects them, and tear down in the right order.",
+  minutes: 15,
+  nextId: "dns-failover",
+  needsStacks: true,
+  steps: [
+    {
+      id: "network",
+      title: `Create the network stack: ${NETWORK_STACK}`,
+      why: "The network (VPC, subnet, internet gateway, routes) is shared by many apps and changes rarely, so it gets a stack of its own. Its Outputs export the IDs other stacks need, under names like network-VpcId.",
+      instructions: [
+        "Click Take me there. The template is pre-filled: read its Outputs section, where each value has an Export name.",
+        "Note !Select [0, !GetAZs \"\"]: the first availability zone of whatever region you're in, so the template works in any region.",
+        "Click Create stack and wait for CREATE_COMPLETE.",
+      ],
+      link: (c) => stacksLink(c.stacksState?.network) ?? { service: "cloudformation", type: "stack", mode: "create", prefill: { name: NETWORK_STACK, templateBody: NETWORK_TEMPLATE } },
+      cli: () => `aws cloudformation create-stack --stack-name ${NETWORK_STACK} --template-body file://network.yaml`,
+      check: async (c) => (await c.stacks()).exports.length >= 2,
+    },
+    {
+      id: "exports",
+      title: "See what it shares",
+      why: "An export is a value with a name that's unique in the account and region. Any stack can import it by that name, without knowing which stack made it.",
+      instructions: [
+        "On the stack's page, open Outputs: VpcId and PublicSubnetId, each with an export name.",
+        "In the terminal, aws cloudformation list-exports shows every export in the region.",
+      ],
+      link: (c) => stacksLink(c.stacksState?.network),
+      cli: () => "aws cloudformation list-exports",
+      check: async (c) => (await c.stacks()).exports.length >= 2,
+    },
+    {
+      id: "app",
+      title: `Create the app stack: ${APP_STACK}`,
+      why: "The app stack asks for the network by name with Fn::ImportValue, then adds a security group and a web server on it. It can be created, changed and deleted many times without touching the network.",
+      instructions: [
+        "Click Take me there. Pre-filled: a template whose VpcId and SubnetId come from Fn::ImportValue, built from the parameter NetworkStack (network).",
+        "Click Create stack and wait for CREATE_COMPLETE.",
+        "(If an import names an export that doesn't exist, the create fails straight away with “No export named … found”.)",
+      ],
+      link: (c) => stacksLink(c.stacksState?.app) ?? { service: "cloudformation", type: "stack", mode: "create", prefill: { name: APP_STACK, templateBody: APP_TEMPLATE } },
+      cli: () => `aws cloudformation create-stack --stack-name ${APP_STACK} --template-body file://app.yaml`,
+      check: async (c) => (await c.stacks()).imports.length >= 2,
+    },
+    {
+      id: "visit",
+      title: "Open the website",
+      why: "Two stacks, one working app: the server the app stack made sits in the subnet the network stack made, and the internet can reach it.",
+      instructions: (c) => [
+        `On ${APP_STACK}'s page, open Outputs and copy WebsiteUrl.`,
+        c.stacksState?.server ? `Open the server ${label(c.stacksState.server)} and run the HTTP reachability check: every link green.` : "Open the server from the Resources tab and run the HTTP reachability check.",
+        "Or in the terminal: curl the WebsiteUrl.",
+      ],
+      link: (c) => (c.stacksState?.server ? { service: "compute", type: "instance", mode: "detail", id: c.stacksState.server.id } : stacksLink(c.stacksState?.app)),
+      cli: () => `aws cloudformation describe-stacks --stack-name ${APP_STACK} --query "Stacks[0].Outputs"`,
+      check: async (c) => ok(c.check((await c.stacks()).server, { protocol: "tcp", port: 80 })),
+    },
+    {
+      id: "blocked",
+      title: `Try to delete ${NETWORK_STACK} first`,
+      why: "If the network went away, the app would be left without one. CloudFormation won't allow it: an export can't be deleted (or changed) while another stack imports it.",
+      instructions: [
+        `Delete the ${NETWORK_STACK} stack. It's refused: “Export ${NETWORK_STACK}-VpcId cannot be deleted as it is in use by ${APP_STACK}”. Nothing was deleted.`,
+        `aws cloudformation list-imports --export-name ${NETWORK_STACK}-VpcId shows who's using it.`,
+      ],
+      link: (c) => stacksLink(c.stacksState?.network),
+      cli: () => `aws cloudformation delete-stack --stack-name ${NETWORK_STACK}`,
+      check: async (c) => (await c.stacks()).deleteBlocked,
+    },
+    {
+      id: "teardown",
+      title: "Tear down in the right order",
+      why: "Delete in reverse: the stacks that import first, the stack that exports last. That's also how you'd retire an environment without leaving anything behind.",
+      instructions: [`Delete ${APP_STACK} (its server and security group go with it).`, `Then delete ${NETWORK_STACK}: now nothing imports its exports, so it goes.`],
+      link: (c) => stacksLink(c.stacksState?.app ?? c.stacksState?.network) ?? { service: "cloudformation", type: "stack", mode: "list" },
+      cli: () => `aws cloudformation delete-stack --stack-name ${APP_STACK} && aws cloudformation delete-stack --stack-name ${NETWORK_STACK}`,
+      check: async (c) => {
+        const s = await c.stacks();
+        return !s.app && !s.network;
+      },
+    },
+  ],
+};
+
+// ---------- Route 53: fail over to a standby ----------
+
+const UBUNTU = "ami-0ubuntu24040lts01";
+const fo = (c: Ctx) => c.failoverState;
+const ipOf = (i: Resource | undefined) => (i?.attributes.publicIp as string | undefined) ?? undefined;
+const instanceLink = (i: Resource | undefined): GuideLink | undefined => (i ? { service: "compute", type: "instance", mode: "detail", id: i.id } : undefined);
+const failoverZoneLink = (c: Ctx): GuideLink | undefined => (fo(c)?.zone ? { service: "route53", type: "hosted-zone", mode: "detail", id: fo(c)!.zone!.id } : undefined);
+const http80 = { protocol: "tcp" as const, port: 80 };
+
+/** A public subnet for the standby, in another zone than the primary when there is one. */
+const standbySubnet = (c: Ctx) => {
+  const primarySubnet = c.s.subnets.find((x) => x.id === fo(c)?.primary?.config.subnetId);
+  const publicOnes = c.subnets.filter((x) => isPublicSubnet(c.s, x));
+  return publicOnes.find((x) => x.config.availabilityZone !== primarySubnet?.config.availabilityZone) ?? primarySubnet ?? c.pubSub;
+};
+
+const failoverRecord = (c: Ctx, role: "PRIMARY" | "SECONDARY"): GuideLink | undefined => {
+  const f = fo(c);
+  const existing = role === "PRIMARY" ? f?.primaryRecord : f?.secondaryRecord;
+  if (existing) return { service: "route53", type: "record-set", mode: "detail", id: existing.id };
+  if (!f?.zone) return undefined;
+  const server = role === "PRIMARY" ? f.primary : f.standby;
+  return {
+    service: "route53",
+    type: "record-set",
+    mode: "create",
+    prefill: {
+      zoneId: f.zone.id,
+      name: FAILOVER_NAME,
+      type: "A",
+      ttl: 60,
+      values: [{ value: ipOf(server) ?? "" }],
+      routingPolicy: "failover",
+      setIdentifier: role === "PRIMARY" ? "primary" : STANDBY,
+      failover: role,
+      ...(role === "PRIMARY" && f.healthCheck ? { healthCheckId: f.healthCheck.id } : {}),
+    },
+  };
+};
+
+const FAILOVER: TutorialDef = {
+  id: "dns-failover",
+  title: "Stay online when a server dies: DNS failover",
+  level: "advanced",
+  summary:
+    "Servers fail. Keep a standby ready, let a Route 53 health check watch the main server, and have DNS send visitors to the standby the moment it goes down, and back when it recovers. Along the way: why the main server needs an Elastic IP.",
+  minutes: 15,
+  nextId: "on-call-serverless",
+  needsFailover: true,
+  steps: [
+    {
+      id: "start",
+      title: "Start with a web server and a hosted zone",
+      why: "This builds on 'Launch your first web server' (the server that normally answers: the primary) and 'Give your website a real name' (the myshop.com hosted zone).",
+      instructions: (c) => [
+        fo(c)?.primary ? `Primary: ${label(fo(c)!.primary!)}. Its HTTP reachability check must pass.` : "You don't have a web server yet: do 'Launch your first web server' first.",
+        fo(c)?.zone ? `Hosted zone: ${fo(c)!.zone!.name}.` : "You don't have a hosted zone yet: do the first two steps of 'Give your website a real name'.",
+      ],
+      link: (c) => instanceLink(fo(c)?.primary) ?? { service: "compute", type: "instance", mode: "list" },
+      check: async (c) => {
+        const f = await c.failover();
+        return !!f.zone && ok(c.check(f.primary, http80));
+      },
+    },
+    {
+      id: "eip",
+      title: "Give the primary an address that stays",
+      why: "A stopped server gives its public IP back and gets a new one when it starts. DNS records and health checks point at an address, so after a restart they'd point at nothing. An Elastic IP is yours until you release it, and stays with the server through stop and start.",
+      instructions: (c) => [
+        "Click Take me there.",
+        `Pre-filled: name primary, associated with ${fo(c)?.primary ? label(fo(c)!.primary!) : "your server"}. Click Allocate.`,
+        "The server's public IP changes to the Elastic IP. (Anything still using the old address, like an earlier health check or www record, now points at nothing: that's exactly the problem this avoids next time.)",
+      ],
+      link: (c) =>
+        fo(c)?.primary?.attributes.elasticIp
+          ? { service: "compute", type: "elastic-ip", mode: "detail", id: String(fo(c)!.primary!.attributes.elasticIp) }
+          : { service: "compute", type: "elastic-ip", mode: "create", prefill: { name: "primary", instanceId: fo(c)?.primary?.id } },
+      cli: (c) => `aws ec2 allocate-address --domain vpc && aws ec2 associate-address --instance-id ${fo(c)?.primary?.id ?? "<instance-id>"} --allocation-id <allocation-id>`,
+      check: async (c) => !!(await c.failover()).primary?.attributes.elasticIp,
+    },
+    {
+      id: "standby",
+      title: "Launch a standby server",
+      why: "Failover needs somewhere to fail over to. The standby runs the same site, ideally in another availability zone, so whatever takes down the primary (a bad deploy, a zone outage) is less likely to take it down too.",
+      instructions: (c) => {
+        const sub = standbySubnet(c);
+        return [
+          "Click Take me there.",
+          `Pre-filled: name ${STANDBY}, Ubuntu, t3.micro, subnet ${sub ? label(sub) : "a public subnet"}${sub?.config.availabilityZone ? ` (${String(sub.config.availabilityZone)})` : ""}, the primary's security group, public IP on.`,
+          "Click Create instance and wait until it's running. Its HTTP reachability check should pass.",
+        ];
+      },
+      link: (c) => {
+        if (fo(c)?.standby) return instanceLink(fo(c)!.standby);
+        const sub = standbySubnet(c);
+        return {
+          service: "compute",
+          type: "instance",
+          mode: "create",
+          prefill: {
+            name: STANDBY,
+            imageId: UBUNTU,
+            instanceType: "t3.micro",
+            subnetId: sub?.id,
+            securityGroupIds: (fo(c)?.primary?.config.securityGroupIds as string[] | undefined) ?? [],
+            associatePublicIp: "enable",
+          },
+        };
+      },
+      cli: (c) => {
+        const sub = standbySubnet(c);
+        const sg = (fo(c)?.primary?.config.securityGroupIds as string[] | undefined)?.[0];
+        return sub && sg
+          ? `aws ec2 run-instances --image-id ${UBUNTU} --instance-type t3.micro --subnet-id ${sub.id} --security-group-ids ${sg} --associate-public-ip-address --tag-specifications 'ResourceType=instance,Tags=[{Key=Name,Value=${STANDBY}}]'`
+          : undefined;
+      },
+      check: async (c) => {
+        const f = await c.failover();
+        return f.standby?.state === "running" && ok(c.check(f.standby, http80));
+      },
+    },
+    {
+      id: "health",
+      title: "Watch the primary with a health check",
+      why: "Route 53 can't guess that a server is down. A health check calls it from the internet every 30 seconds; a failover record follows the check's verdict.",
+      instructions: (c) => [
+        "Click Take me there.",
+        `Pre-filled: name primary, HTTP to ${ipOf(fo(c)?.primary) ?? "the primary's Elastic IP"} port 80, path /. Click Create health check.`,
+        "Its page shows Healthy.",
+      ],
+      link: (c) =>
+        fo(c)?.healthCheck
+          ? { service: "route53", type: "health-check", mode: "detail", id: fo(c)!.healthCheck!.id }
+          : { service: "route53", type: "health-check", mode: "create", prefill: { name: "primary", type: "HTTP", ipAddress: ipOf(fo(c)?.primary), port: 80, resourcePath: "/" } },
+      cli: (c) => `aws route53 create-health-check --caller-reference primary-check --health-check-config Type=HTTP,IPAddress=${ipOf(fo(c)?.primary) ?? "<ip>"},Port=80,ResourcePath=/`,
+      check: async (c) => (await c.failover()).healthy,
+    },
+    {
+      id: "primary-record",
+      title: (c) => `The primary record: ${FAILOVER_NAME}.${fo(c)?.zone?.name ?? "myshop.com"} → the primary`,
+      why: "Failover routing means two records with the same name and type: Route 53 answers with the primary while its health check passes, else with the secondary. TTL 60 keeps resolvers from remembering a dead address for long.",
+      instructions: (c) => [
+        "Click Take me there.",
+        `Pre-filled: name ${FAILOVER_NAME}, type A, value ${ipOf(fo(c)?.primary) ?? "the primary's IP"}, TTL 60, routing policy Failover, record ID primary, Primary, and the health check.`,
+        "Click Create record.",
+      ],
+      link: (c) => failoverRecord(c, "PRIMARY"),
+      check: async (c) => !!(await c.failover()).primaryRecord?.config.healthCheckId,
+    },
+    {
+      id: "secondary-record",
+      title: "The secondary record → the standby",
+      why: "The secondary is what Route 53 answers with when the primary is unhealthy. It doesn't need a health check of its own (if it has one and both fail, Route 53 answers with the primary anyway).",
+      instructions: (c) => [
+        "Click Take me there.",
+        `Pre-filled: the same name and type, value ${ipOf(fo(c)?.standby) ?? "the standby's IP"}, routing policy Failover, record ID ${STANDBY}, Secondary.`,
+        "Click Create record.",
+      ],
+      link: (c) => failoverRecord(c, "SECONDARY"),
+      check: async (c) => !!(await c.failover()).secondaryRecord,
+    },
+    {
+      id: "visit",
+      title: (c) => `Open ${fo(c)?.host ?? "app.myshop.com"}: the primary answers`,
+      why: "Both records exist, the primary is healthy, so everyone is sent to the primary.",
+      instructions: (c) => [
+        `On the hosted zone's page, under Test a name, test ${fo(c)?.host ?? "app.myshop.com"}. The steps say the primary is healthy, and the page comes from ${fo(c)?.primary ? label(fo(c)!.primary!) : "the primary"}.`,
+        `Or in the terminal: curl http://${fo(c)?.host ?? "app.myshop.com"}`,
+      ],
+      link: failoverZoneLink,
+      cli: (c) => `curl -i http://${fo(c)?.host ?? "app.myshop.com"}`,
+      check: async (c) => (await c.failover()).requests.some((q) => q.status === 200 && q.failover === "PRIMARY"),
+    },
+    {
+      id: "outage",
+      title: "Pull the plug: stop the primary",
+      why: "This is the moment failover exists for. The health check fails, Route 53 stops giving out the primary's address, and visitors land on the standby. No one had to wake up.",
+      instructions: (c) => [
+        `Stop ${fo(c)?.primary ? label(fo(c)!.primary!) : "the primary"} (Instance state, Stop).`,
+        "Its health check turns Unhealthy within seconds.",
+        `Test ${fo(c)?.host ?? "app.myshop.com"} again: “the primary record is unhealthy, so Route 53 answers with the secondary”, and the page comes from ${STANDBY}.`,
+      ],
+      link: (c) => instanceLink(fo(c)?.primary),
+      cli: (c) => `aws ec2 stop-instances --instance-ids ${fo(c)?.primary?.id ?? "<instance-id>"} && curl -i http://${fo(c)?.host ?? "app.myshop.com"}`,
+      check: async (c) => {
+        const f = await c.failover();
+        return !f.healthy && f.requests[0]?.status === 200 && f.requests[0].failover === "SECONDARY";
+      },
+    },
+    {
+      id: "recover",
+      title: "Bring it back, and watch traffic return",
+      why: "Start the primary again. Thanks to the Elastic IP it comes back on the same address, the health check passes again, and Route 53 goes back to the primary by itself. (Without the Elastic IP, it would have come back on a new address that nothing points at.)",
+      instructions: (c) => [
+        `Start ${fo(c)?.primary ? label(fo(c)!.primary!) : "the primary"} and wait until it's running: same Elastic IP.`,
+        `The health check turns Healthy; test ${fo(c)?.host ?? "app.myshop.com"} once more: the primary answers.`,
+      ],
+      link: (c) => instanceLink(fo(c)?.primary),
+      cli: (c) => `aws ec2 start-instances --instance-ids ${fo(c)?.primary?.id ?? "<instance-id>"} && curl -i http://${fo(c)?.host ?? "app.myshop.com"}`,
+      check: async (c) => {
+        const f = await c.failover();
+        return f.healthy && f.requests[0]?.status === 200 && f.requests[0].failover === "PRIMARY";
+      },
+    },
+  ],
+};
+
+// ---------- On call: a broken serverless API ----------
+
+const BUGGY_CODE = `export const handler = async (event) => {
+  // New feature: shout the name back.
+  const name = event.queryStringParameters.name.toUpperCase();
+  console.log("Saying hello to", name);
+  return {
+    statusCode: 200,
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ message: \`HELLO, \${name}!\` }),
+  };
+};
+`;
+
+const FIXED_CODE = `export const handler = async (event) => {
+  const name = event.queryStringParameters?.name;
+  if (!name) {
+    // The caller's mistake: say so with a 400, don't crash.
+    console.log("Rejected a request without ?name=");
+    return {
+      statusCode: 400,
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ message: "Add your name: /hello?name=Ada" }),
+    };
+  }
+  console.log("Saying hello to", name);
+  return {
+    statusCode: 200,
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ message: \`HELLO, \${name.toUpperCase()}!\` }),
+  };
+};
+`;
+
+const apiLink = (c: Ctx): GuideLink | undefined => (c.slsState?.api ? { service: "apigateway", type: "api", mode: "detail", id: c.slsState.api.id } : undefined);
+const helloFnLink = (c: Ctx): GuideLink | undefined => (c.slsState?.fn ? { service: "lambda", type: "function", mode: "detail", id: c.slsState.fn.id } : undefined);
+const apiUrl = (c: Ctx, path: string) => (c.slsState?.api ? `https://${c.slsState.api.id}.execute-api.${c.region}.cloudlab.local${path}` : `<your API's endpoint>${path}`);
+const crashed = (r: ServerlessState["requests"][number]) => r.status === 500 && !!r.reason?.startsWith("The function failed");
+
+const ON_CALL: TutorialDef = {
+  id: "on-call-serverless",
+  title: "On call: fix a broken serverless API",
+  level: "advanced",
+  summary:
+    "Your API is live and people are calling it. Then the errors start. Tell a wrong address (404) from a crash (500) from the caller's mistake (400), find the crash in the logs, ship a fix, and prove it works: the everyday loop of running something in production.",
+  minutes: 12,
+  needsServerless: true,
+  steps: [
+    {
+      id: "working",
+      title: "Start from a working API",
+      why: "This builds on 'Your first serverless API': the hello function behind hello-api, answering GET /hello with 200.",
+      instructions: (c) =>
+        c.slsState?.route && c.slsState.permitted
+          ? ["On the API's page, under Try it, send GET /hello?name=Ada: 200."]
+          : ["You don't have a working API yet: do 'Your first serverless API' first, then come back."],
+      link: (c) => apiLink(c) ?? { service: "apigateway", type: "api", mode: "list" },
+      cli: (c) => `curl -i "${apiUrl(c, "/hello?name=Ada")}"`,
+      check: async (c) => {
+        const s = await c.sls();
+        return !!s.route && s.permitted && s.requests.some((r) => r.status === 200);
+      },
+    },
+    {
+      id: "not-found",
+      title: "A user says “404”: check the address",
+      why: "A 404 from API Gateway means the request never reached your code: no route matches the method and path (or the stage in the URL doesn't exist). Nothing shows up in the function's logs, because the function never ran.",
+      instructions: (c) => [
+        "Under Try it, send GET /helo?name=Ada (a typo, as users make). You get 404 {\"message\":\"Not Found\"}.",
+        "Read the Why line, and the Recent requests table: no route matches, and it lists the routes there are.",
+        `Or: curl -i "${apiUrl(c, "/helo")}"`,
+      ],
+      link: apiLink,
+      cli: (c) => `curl -i "${apiUrl(c, "/helo?name=Ada")}"`,
+      check: async (c) => (await c.sls()).requests.some((r) => r.status === 404),
+    },
+    {
+      id: "crash",
+      title: "Ship a bug, and get a 500",
+      why: "Here's a new feature with a bug: it assumes every request has ?name=. Requests with a name work; the first one without crashes the function, and API Gateway turns the crash into 500 Internal Server Error. The caller learns nothing; the details are in your logs.",
+      instructions: (c) => [
+        "Open the hello function. Under Code, replace index.mjs with this, then click Deploy:",
+        BUGGY_CODE,
+        "Send GET /hello?name=Ada: 200, HELLO, ADA!. Now send GET /hello with no name: 500.",
+        `Find out why: the Why line says “The function failed: TypeError…”. The same error is in the function's logs (log group /aws/lambda/${c.slsState?.fn?.name ?? "hello"}), on a line with ERROR. On call, that's where you look first.`,
+      ],
+      link: helloFnLink,
+      cli: (c) => `aws logs filter-log-events --log-group-name /aws/lambda/${c.slsState?.fn?.name ?? "hello"} --filter-pattern ERROR`,
+      check: async (c) => (await c.sls()).requests.some(crashed),
+    },
+    {
+      id: "fix",
+      title: "Fix it: a 400 for the caller's mistake",
+      why: "A missing name is the caller's mistake, not a server failure. Check the input and answer 400 Bad Request with a helpful message. A 500 says “we're broken”, sets off alarms and hides the real problem; a 400 tells the caller what to change.",
+      instructions: ["Replace index.mjs with this and Deploy:", FIXED_CODE, "Send GET /hello with no name again: 400 and a message saying what to add."],
+      link: helloFnLink,
+      cli: (c) => `curl -i "${apiUrl(c, "/hello")}"`,
+      check: async (c) => (await c.sls()).requests.some((r) => r.status === 400),
+    },
+    {
+      id: "verify",
+      title: "Prove the fix: the happy path still works",
+      why: "A fix isn't done until the normal case is checked again: a fix that breaks the main feature is a new incident.",
+      instructions: (c) => ["Send GET /hello?name=Ada once more: 200 and HELLO, ADA!.", `Or: curl "${apiUrl(c, "/hello?name=Ada")}"`],
+      link: apiLink,
+      cli: (c) => `curl -i "${apiUrl(c, "/hello?name=Ada")}"`,
+      check: async (c) => (await c.sls()).requests[0]?.status === 200,
+    },
+  ],
+};
+
+TUTORIALS.push(SERVERLESS_API, WATCH_YOUR_APP, GET_ALERTED, DECOUPLE, NOSQL, MANAGED_DATABASE, REAL_NAME, DISKS_AND_BACKUPS, HIGHLY_AVAILABLE, CONNECT_AND_PROTECT, IAC, STACKS, FAILOVER, ON_CALL);
 
 const info = (t: TutorialDef): TutorialInfo => ({
   id: t.id,
@@ -2854,6 +3289,8 @@ export async function viewTutorial(
   if (t.needsQueues) c.queuesState = await c.queues();
   if (t.needsNosql) c.nosqlState = await c.nosql();
   if (t.needsIac) c.iacState = await c.iac();
+  if (t.needsStacks) c.stacksState = await c.stacks();
+  if (t.needsFailover) c.failoverState = await c.failover();
   const steps = await Promise.all(
     t.steps.map(async (st) => ({
       id: st.id,

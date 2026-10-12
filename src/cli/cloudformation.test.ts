@@ -181,6 +181,9 @@ describe("aws cloudformation", { timeout: 60_000 }, () => {
     file("user.yaml", 'Resources:\n  S:\n    Type: AWS::EC2::Subnet\n    Properties:\n      VpcId: !ImportValue web-vpc\n      CidrBlock: 10.20.9.0/24\n');
     await json("aws cloudformation create-stack --stack-name user --template-body file://user.yaml");
     expect(await fails("aws cloudformation delete-stack --stack-name web")).toEqual({ code: "ValidationError", message: "Export web-vpc cannot be deleted as it is in use by user" });
+    expect((await json("aws cloudformation list-exports")).Exports).toEqual([expect.objectContaining({ Name: "web-vpc", Value: vpc.id })]);
+    expect(await json("aws cloudformation list-imports --export-name web-vpc")).toEqual({ Imports: ["user"] });
+    expect(await fails("aws cloudformation list-imports --export-name nope")).toEqual({ code: "ValidationError", message: "Export 'nope' is not imported by any stack." });
     await json("aws cloudformation delete-stack --stack-name user");
     await json("aws cloudformation delete-stack --stack-name web");
     expect(await list("networking", "vpc").then((v) => v.filter((x) => x.name === "dev-vpc"))).toHaveLength(0);

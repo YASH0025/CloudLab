@@ -11,6 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import type { ResourceDTO } from "@/engine/types";
+import type { ZoneRequest } from "@/engine/route53/dns";
 import { useDeleteResource, useDnsTest, useHealthCheckStatus, useResources } from "@/hooks/use-cloud";
 import { ApiError, type DnsTestResult } from "@/lib/api-client";
 import { routes } from "@/lib/routes";
@@ -40,7 +41,7 @@ export function HostedZonePanel({ zone }: { zone: ResourceDTO }) {
     .filter((r) => r.config.zoneId === zone.id)
     .sort((a, b) => a.name.split(".").reverse().join(".").localeCompare(b.name.split(".").reverse().join(".")) || String(a.config.type).localeCompare(String(b.config.type)));
   const nameServers = (zone.attributes.nameServers as string[] | undefined) ?? [];
-  const recent = (zone.attributes.recentRequests as { at: string; host: string; status: number | null }[] | undefined) ?? [];
+  const recent = (zone.attributes.recentRequests as ZoneRequest[] | undefined) ?? [];
 
   return (
     <>
@@ -144,6 +145,7 @@ export function HostedZonePanel({ zone }: { zone: ResourceDTO }) {
                     <li key={i} className="flex items-center justify-between gap-3 py-1.5">
                       <span className="truncate font-mono text-xs">{q.host}</span>
                       <span className="flex items-center gap-2 text-xs text-muted-foreground">
+                        {q.failover && <span title="Which failover record answered">{q.failover === "PRIMARY" ? "primary" : "secondary"}</span>}
                         <Badge variant={q.status && q.status < 400 ? "success" : "destructive"}>{q.status ?? "no answer"}</Badge>
                         {formatDistanceToNowStrict(new Date(q.at), { addSuffix: true })}
                       </span>
