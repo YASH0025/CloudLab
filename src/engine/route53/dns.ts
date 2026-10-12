@@ -8,7 +8,7 @@ import { inZone, isIPv4, normalizeName, recordConfig, recordValues, type RecordC
 import type { Resource } from "../types";
 
 /**
- * Nuvora's DNS resolver and web client. `resolve` answers a DNS question the
+ * CloudLab's DNS resolver and web client. `resolve` answers a DNS question the
  * way a resolver on the internet would, from your hosted zones (CNAMEs are
  * followed, alias records become the target's addresses, weighted and failover
  * records consult health checks) and from the names AWS gives your resources.
@@ -201,7 +201,7 @@ export async function resolve(engine: Engine, accountId: string, rawName: string
   const zone = zones[0];
   if (!zone) {
     out.status = "NXDOMAIN";
-    out.steps.push(`No hosted zone in your account covers ${name}, so nothing answers for it. (Nuvora's terminal has no internet, so other domains don't resolve.)`);
+    out.steps.push(`No hosted zone in your account covers ${name}, so nothing answers for it. (CloudLab's terminal has no internet, so other domains don't resolve.)`);
     return out;
   }
   out.zone = zone;
@@ -421,7 +421,7 @@ export async function request(
     if (r.status === 200) {
       const target = r.targetId ? await engine.get(accountId, r.targetId).catch(() => null) : null;
       const body = target ? helloPage(target, `, behind ${ep.lb.name}`) : "OK\n";
-      return done({ kind: "response", status: 200, statusText: "OK", headers: { "content-type": "text/html", server: "Nuvora (simulated web server)" }, body, ip, servedBy: `${r.targetId ?? "a target"} behind ${ep.lb.name}` });
+      return done({ kind: "response", status: 200, statusText: "OK", headers: { "content-type": "text/html", server: "CloudLab (simulated web server)" }, body, ip, servedBy: `${r.targetId ?? "a target"} behind ${ep.lb.name}` });
     }
     return done({ kind: "response", status: r.status, statusText: r.statusText, headers: { "content-type": "text/html", server: "awselb/2.0" }, body: albError(r.status), ip, servedBy: `${ep.lb.name}: ${result.summary}` });
   }
@@ -438,7 +438,7 @@ export async function request(
     kind: "response",
     status: 200,
     statusText: "OK",
-    headers: { "content-type": "text/html", server: "Nuvora (simulated web server)" },
+    headers: { "content-type": "text/html", server: "CloudLab (simulated web server)" },
     body: helloPage(instance),
     ip: ep.ip,
     servedBy: `the instance ${instance.id}`,

@@ -123,7 +123,7 @@ export function PermissionChecker({ kind, name }: { kind: "user" | "group" | "ro
             )}
             {res.result.skippedConditions.length > 0 && (
               <p className="text-xs text-muted-foreground">
-                {res.result.skippedConditions.length} statement(s) with a Condition were skipped: Nuvora doesn&apos;t evaluate conditions yet.
+                {res.result.skippedConditions.length} statement(s) with a Condition were skipped: CloudLab doesn&apos;t evaluate conditions yet.
               </p>
             )}
             <p className="text-xs text-muted-foreground">

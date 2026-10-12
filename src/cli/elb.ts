@@ -124,7 +124,7 @@ function forwardTarget(args: Args): string {
   const parsed = structured(raw.join(" "));
   const action = (Array.isArray(parsed) ? parsed[0] : parsed) as Record<string, unknown> | undefined;
   if (!action || String(action.Type ?? "").toLowerCase() !== "forward") {
-    throw new EngineError("ValidationError", "Nuvora supports 'forward' default actions only: Type=forward,TargetGroupArn=<arn>");
+    throw new EngineError("ValidationError", "CloudLab supports 'forward' default actions only: Type=forward,TargetGroupArn=<arn>");
   }
   const fc = action.ForwardConfig as { TargetGroups?: { TargetGroupArn?: string }[] } | undefined;
   const arn = action.TargetGroupArn ?? fc?.TargetGroups?.[0]?.TargetGroupArn;
@@ -346,9 +346,9 @@ export const ELB_COMMANDS: Command[] = [
     mutates: true,
     async run(args, ctx) {
       const protocol = (args.one("protocol") ?? "HTTP").toUpperCase();
-      if (protocol !== "HTTP") throw new EngineError("ValidationError", `Nuvora simulates HTTP target groups only, not '${protocol}'`);
+      if (protocol !== "HTTP") throw new EngineError("ValidationError", `CloudLab simulates HTTP target groups only, not '${protocol}'`);
       const type = args.one("target-type") ?? "instance";
-      if (type !== "instance") throw new EngineError("ValidationError", `Nuvora supports target type 'instance' only, not '${type}'`);
+      if (type !== "instance") throw new EngineError("ValidationError", `CloudLab supports target type 'instance' only, not '${type}'`);
       const port = nums(args, "port");
       if (port === undefined) throw new EngineError("ValidationError", "A port must be specified");
       const vpcId = args.one("vpc-id");
@@ -467,7 +467,7 @@ export const ELB_COMMANDS: Command[] = [
     mutates: true,
     async run(args, ctx) {
       const type = args.one("type") ?? "application";
-      if (type !== "application") throw new EngineError("ValidationError", `Nuvora simulates application load balancers only, not '${type}'`);
+      if (type !== "application") throw new EngineError("ValidationError", `CloudLab simulates application load balancers only, not '${type}'`);
       const subnetIds = args.list("subnets");
       if (subnetIds.length === 0) throw new EngineError("ValidationError", "At least two subnets in two different Availability Zones must be specified");
       let securityGroupIds = args.list("security-groups");
@@ -532,7 +532,7 @@ export const ELB_COMMANDS: Command[] = [
     async run(args, ctx) {
       const lb = await load(ctx, "loadbalancing", "load-balancer", args.required("load-balancer-arn"));
       const protocol = (args.one("protocol") ?? "HTTP").toUpperCase();
-      if (protocol !== "HTTP") throw new EngineError("ValidationError", `Nuvora simulates HTTP listeners only, not '${protocol}'`);
+      if (protocol !== "HTTP") throw new EngineError("ValidationError", `CloudLab simulates HTTP listeners only, not '${protocol}'`);
       const port = nums(args, "port");
       if (port === undefined) throw new EngineError("ValidationError", "A listener port must be specified");
       const targetGroupId = forwardTarget(args);
@@ -691,7 +691,7 @@ export const ELB_COMMANDS: Command[] = [
       if (max === undefined) throw new UsageError("the following arguments are required: --max-size");
       const subnetIds = args.list("vpc-zone-identifier");
       if (subnetIds.length === 0) {
-        throw new EngineError("ValidationError", "Nuvora needs --vpc-zone-identifier with the subnets to launch into, e.g. subnet-aaa,subnet-bbb");
+        throw new EngineError("ValidationError", "CloudLab needs --vpc-zone-identifier with the subnets to launch into, e.g. subnet-aaa,subnet-bbb");
       }
       await create(ctx, "autoscaling", "auto-scaling-group", {
         name: args.required("auto-scaling-group-name"),
@@ -840,21 +840,21 @@ export const ELB_COMMANDS: Command[] = [
       const policyName = args.required("policy-name");
       const type = args.one("policy-type") ?? "SimpleScaling";
       if (type !== "TargetTrackingScaling") {
-        throw new EngineError("ValidationError", `Nuvora simulates TargetTrackingScaling policies only, not '${type}'`);
+        throw new EngineError("ValidationError", `CloudLab simulates TargetTrackingScaling policies only, not '${type}'`);
       }
       const raw = args.raw("target-tracking-configuration");
       if (raw.length === 0) throw new EngineError("ValidationError", "TargetTrackingConfiguration is required for policy type TargetTrackingScaling");
       const conf = structured(raw.join(" ")) as { PredefinedMetricSpecification?: { PredefinedMetricType?: string }; TargetValue?: number };
       const metric = conf.PredefinedMetricSpecification?.PredefinedMetricType;
       if (metric !== "ASGAverageCPUUtilization") {
-        throw new EngineError("ValidationError", `Nuvora simulates the ASGAverageCPUUtilization metric only${metric ? `, not '${metric}'` : ""}`);
+        throw new EngineError("ValidationError", `CloudLab simulates the ASGAverageCPUUtilization metric only${metric ? `, not '${metric}'` : ""}`);
       }
       const target = Number(conf.TargetValue);
       if (!Number.isFinite(target)) throw new EngineError("ValidationError", "TargetValue is required");
-      if (target < 10 || target > 90) throw new EngineError("ValidationError", "Nuvora accepts a TargetValue between 10 and 90 for CPU utilization");
+      if (target < 10 || target > 90) throw new EngineError("ValidationError", "CloudLab accepts a TargetValue between 10 and 90 for CPU utilization");
       const other = g.attributes.policyName;
       if (g.config.targetCpu && other && other !== policyName) {
-        throw new EngineError("ValidationError", `Nuvora supports one scaling policy per group; delete '${other}' first`);
+        throw new EngineError("ValidationError", `CloudLab supports one scaling policy per group; delete '${other}' first`);
       }
       const updated = await ctx.engine.update(ctx.accountId, g.id, { targetCpu: Math.round(target) });
       await ctx.engine.setAttributes(ctx.accountId, g.id, { policyName });

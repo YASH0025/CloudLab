@@ -266,7 +266,7 @@ export const VPC_EXTRA_COMMANDS: Command[] = [
     mutates: true,
     async run(args, ctx) {
       if (args.one("peer-region") && args.one("peer-region") !== ctx.region) {
-        throw new EngineError("InvalidParameterValue", "Nuvora peers VPCs in the same region only (inter-region peering isn't simulated yet).");
+        throw new EngineError("InvalidParameterValue", "CloudLab peers VPCs in the same region only (inter-region peering isn't simulated yet).");
       }
       const p = await ctx.engine.create(ctx.accountId, {
         service: "networking",
@@ -332,7 +332,7 @@ export const VPC_EXTRA_COMMANDS: Command[] = [
     mutates: true,
     async run(args, ctx) {
       const type = args.one("vpc-endpoint-type") ?? "Gateway";
-      if (type !== "Gateway") throw new EngineError("InvalidParameter", "Nuvora simulates Gateway endpoints (S3 and DynamoDB) only; Interface endpoints aren't simulated yet.");
+      if (type !== "Gateway") throw new EngineError("InvalidParameter", "CloudLab simulates Gateway endpoints (S3 and DynamoDB) only; Interface endpoints aren't simulated yet.");
       const e = await ctx.engine.create(ctx.accountId, {
         service: "networking",
         type: "vpc-endpoint",

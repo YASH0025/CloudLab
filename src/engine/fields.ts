@@ -111,7 +111,7 @@ function fieldSchema(field: FieldDef): z.ZodType {
         )
         .refine((f) => Object.keys(f).length <= MAX_FILES, { message: `At most ${MAX_FILES} files.` })
         .refine((f) => Object.values(f).reduce((n, c) => n + c.length, 0) <= MAX_CODE_BYTES, {
-          message: `The code is too large: Nuvora allows ${MAX_CODE_BYTES / 1024} KB of source in total.`,
+          message: `The code is too large: CloudLab allows ${MAX_CODE_BYTES / 1024} KB of source in total.`,
           params: kind("files-size"),
         });
       if (!required) return files.optional();

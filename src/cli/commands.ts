@@ -488,7 +488,7 @@ export const COMMANDS: Command[] = [
     async run(args, ctx) {
       const type = args.one("connectivity-type") ?? "public";
       if (type !== "public") {
-        throw new EngineError("InvalidParameterValue", `Value (${type}) for parameter connectivityType is invalid. Nuvora supports public.`);
+        throw new EngineError("InvalidParameterValue", `Value (${type}) for parameter connectivityType is invalid. CloudLab supports public.`);
       }
       const subnet = await load(ctx, "networking", "subnet", args.required("subnet-id"));
       const allocationId = args.one("allocation-id");
@@ -764,7 +764,7 @@ export const COMMANDS: Command[] = [
       }
       const count = Number(args.one("count") ?? "1");
       if (!Number.isInteger(count) || count < 1 || count > 10) {
-        throw new EngineError("InvalidParameterValue", `Value (${args.one("count")}) for parameter maxCount is invalid. Nuvora allows 1 to 10.`);
+        throw new EngineError("InvalidParameterValue", `Value (${args.one("count")}) for parameter maxCount is invalid. CloudLab allows 1 to 10.`);
       }
       const pub = args.bool("associate-public-ip-address");
       const instances = [];
@@ -872,7 +872,7 @@ export const COMMANDS: Command[] = [
     async run(args, ctx) {
       const format = args.one("key-format") ?? "pem";
       if (format !== "pem") {
-        throw new EngineError("InvalidParameterValue", `Value (${format}) for parameter keyFormat is invalid. Nuvora supports pem.`);
+        throw new EngineError("InvalidParameterValue", `Value (${format}) for parameter keyFormat is invalid. CloudLab supports pem.`);
       }
       const r = await create(ctx, "compute", "key-pair", {
         name: args.required("key-name"),

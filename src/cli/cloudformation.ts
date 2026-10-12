@@ -25,7 +25,7 @@ async function stackByName(ctx: CliContext, nameOrId: string): Promise<Resource>
 function templateArg(ctx: CliContext, args: Args): string | undefined {
   const raw = args.one("template-body");
   if (raw === undefined) {
-    if (args.has("template-url")) throw validationError("Nuvora can't fetch templates from S3 URLs: pass --template-body file://template.yaml");
+    if (args.has("template-url")) throw validationError("CloudLab can't fetch templates from S3 URLs: pass --template-body file://template.yaml");
     return undefined;
   }
   const m = /^file:\/\/(.+)$/.exec(raw);

@@ -11,7 +11,7 @@ import type { Resource } from "./types";
  * blob storage so listing a bucket never loads file contents.
  */
 
-/** Nuvora's limits. Real S3 allows 5 TB per object; a practice lab doesn't need that. */
+/** CloudLab's limits. Real S3 allows 5 TB per object; a practice lab doesn't need that. */
 export const LIMITS = {
   objectBytes: 1024 * 1024,
   objectsPerBucket: 500,
@@ -117,7 +117,7 @@ export class ObjectStorage {
     if (data.length > LIMITS.objectBytes) {
       throw new EngineError(
         "EntityTooLarge",
-        `Your proposed upload exceeds the maximum allowed size (Nuvora allows ${LIMITS.objectBytes / 1024 / 1024} MB per object).`,
+        `Your proposed upload exceeds the maximum allowed size (CloudLab allows ${LIMITS.objectBytes / 1024 / 1024} MB per object).`,
       );
     }
 
@@ -128,7 +128,7 @@ export class ObjectStorage {
       if (inBucket.length >= LIMITS.objectsPerBucket) {
         throw new EngineError(
           "ServiceQuotaExceededException",
-          `Nuvora keeps up to ${LIMITS.objectsPerBucket} objects per bucket. Delete some, or use another bucket.`,
+          `CloudLab keeps up to ${LIMITS.objectsPerBucket} objects per bucket. Delete some, or use another bucket.`,
         );
       }
     }
@@ -137,7 +137,7 @@ export class ObjectStorage {
     if (used + data.length > LIMITS.accountBytes) {
       throw new EngineError(
         "ServiceQuotaExceededException",
-        `Nuvora keeps up to ${LIMITS.accountBytes / 1024 / 1024} MB of files per account. Delete some objects first.`,
+        `CloudLab keeps up to ${LIMITS.accountBytes / 1024 / 1024} MB of files per account. Delete some objects first.`,
       );
     }
 

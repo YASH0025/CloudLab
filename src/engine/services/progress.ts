@@ -10,7 +10,7 @@ export const progressType: ResourceTypeDef = {
   type: "progress",
   label: "Progress",
   pluralLabel: "Progress",
-  description: "Your Nuvora learning progress.",
+  description: "Your CloudLab learning progress.",
   idPrefix: "progress",
   global: true,
   hidden: true,

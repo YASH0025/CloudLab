@@ -57,12 +57,12 @@ export async function invokeFunction(engine: Engine, accountId: string, fn: Reso
     );
   }
   if (JSON.stringify(event ?? {}).length > MAX_EVENT_BYTES) {
-    throw new EngineError("RequestTooLargeException", `Request must be smaller than ${MAX_EVENT_BYTES} bytes for the InvokeFunction operation in Nuvora.`, 413);
+    throw new EngineError("RequestTooLargeException", `Request must be smaller than ${MAX_EVENT_BYTES} bytes for the InvokeFunction operation in CloudLab.`, 413);
   }
   const count = await engine.countInWindow(`lambda-invoke:${accountId}`, 60_000);
   if (count > INVOKES_PER_MINUTE) {
     await engine.metrics.lambdaInvoked(fn, { durationMs: 0, error: false, throttled: true });
-    throw new EngineError("TooManyRequestsException", `Rate Exceeded. (Nuvora allows ${INVOKES_PER_MINUTE} invocations a minute per account.)`, 429);
+    throw new EngineError("TooManyRequestsException", `Rate Exceeded. (CloudLab allows ${INVOKES_PER_MINUTE} invocations a minute per account.)`, 429);
   }
 
   const now = engine.now();
@@ -142,7 +142,7 @@ function trimLogs(lines: string[]): string[] {
   for (const l of lines) {
     n += l.length;
     if (n > KEEP_LOG_CHARS) {
-      out.push("[Nuvora: older lines of this invocation's log were trimmed]");
+      out.push("[CloudLab: older lines of this invocation's log were trimmed]");
       out.push(lines.at(-1)!);
       break;
     }
@@ -189,7 +189,7 @@ export async function addPermission(engine: Engine, accountId: string, fn: Resou
     );
   }
   if (!/^lambda:(InvokeFunction|\*)$/.test(input.action)) {
-    throw new EngineError("InvalidParameterValueException", `Nuvora supports the action lambda:InvokeFunction, not ${input.action}.`);
+    throw new EngineError("InvalidParameterValueException", `CloudLab supports the action lambda:InvokeFunction, not ${input.action}.`);
   }
   const statements = (fn.attributes.permissions as PermissionStatement[] | undefined) ?? [];
   if (statements.some((s) => s.Sid === input.statementId)) {

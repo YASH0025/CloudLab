@@ -1,4 +1,4 @@
-# Nuvora
+# CloudLab
 
 A hands-on cloud and DevOps practice platform. Learners build networks, launch servers and create storage in a simulated cloud that follows the same rules, workflows and error codes as the real thing, without any cloud bill.
 
@@ -55,7 +55,7 @@ Supported commands:
 
 ### Reachability check
 
-Every instance page has a **reachability check**: pick HTTP, HTTPS, SSH, ping or any protocol/port/source, and Nuvora walks the same chain a real network would (instance state → public IP → subnet route table → route → internet gateway → security group rules). Each link passes or fails with an explanation and, when it fails, the exact fix. Network ACLs are not simulated yet.
+Every instance page has a **reachability check**: pick HTTP, HTTPS, SSH, ping or any protocol/port/source, and CloudLab walks the same chain a real network would (instance state → public IP → subnet route table → route → internet gateway → security group rules). Each link passes or fails with an explanation and, when it fails, the exact fix. Network ACLs are not simulated yet.
 
 ## Default VPCs, like a real account
 
@@ -197,4 +197,4 @@ Errors come back as `{ "error": { "code", "message", "details?" } }`.
 
 ---
 
-Nuvora simulates cloud services for learning and is not affiliated with any cloud provider.
+CloudLab simulates cloud services for learning and is not affiliated with any cloud provider.

@@ -9,7 +9,7 @@ const body = z.object({
   count: z.coerce.number().int().min(1).max(20).default(6),
 });
 
-/** Nuvora's stand-in for opening the load balancer's address: simulated requests, with a diagnosis. */
+/** CloudLab's stand-in for opening the load balancer's address: simulated requests, with a diagnosis. */
 export async function POST(request: NextRequest, ctx: RouteContext<"/api/resources/[id]/test-requests">) {
   return handle(async () => {
     const { id } = await ctx.params;

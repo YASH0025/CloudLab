@@ -2,7 +2,7 @@ import type { PolicyDocument } from "./policy";
 
 /**
  * AWS managed policies: ready-made policies every account can attach. These
- * follow the real ones, trimmed to the services Nuvora simulates.
+ * follow the real ones, trimmed to the services CloudLab simulates.
  */
 
 export interface ManagedPolicy {

@@ -196,7 +196,7 @@ const topic: ResourceTypeDef = {
   invalidValue({ field, value }) {
     if (field.key === "name") {
       if (typeof value === "string" && value.endsWith(".fifo")) {
-        return invalid("Topic Name (Nuvora simulates standard topics; FIFO topics, ending in .fifo, aren't available yet)");
+        return invalid("Topic Name (CloudLab simulates standard topics; FIFO topics, ending in .fifo, aren't available yet)");
       }
       return invalid("Topic Name");
     }
@@ -264,7 +264,7 @@ const subscription: ResourceTypeDef = {
       maxLength: 512,
       param: "Endpoint",
       placeholder: "you@example.com  or  arn:aws:lambda:…:function:hello  or  arn:aws:sqs:…:orders-queue",
-      description: "For email: the address. For Lambda: the function's ARN. For SQS: the queue's ARN (both on their pages). In Nuvora no real email is sent: it lands in the subscription's inbox.",
+      description: "For email: the address. For Lambda: the function's ARN. For SQS: the queue's ARN (both on their pages). In CloudLab no real email is sent: it lands in the subscription's inbox.",
     },
     {
       key: "rawMessageDelivery",
@@ -302,7 +302,7 @@ const subscription: ResourceTypeDef = {
     arn: (r) => r.id,
   },
   invalidValue({ field }) {
-    if (field.key === "protocol") return invalid("Invalid protocol type (Nuvora supports email, email-json, lambda and sqs)");
+    if (field.key === "protocol") return invalid("Invalid protocol type (CloudLab supports email, email-json, lambda and sqs)");
     if (field.key === "endpoint") return invalid("Endpoint");
     if (field.key === "filterPolicy") return invalid("FilterPolicy: failed to parse JSON.");
     return undefined;
@@ -327,7 +327,7 @@ const subscription: ResourceTypeDef = {
       );
       if (same) throw invalid(`This endpoint is already subscribed to the topic (${same.id}).`);
       const topicSubs = (await ctx.list("sns", "subscription")).filter((s) => s.config.topicArn === config.topicArn);
-      if (topicSubs.length >= 100) throw new EngineError("SubscriptionLimitExceeded", "Nuvora allows 100 subscriptions per topic.");
+      if (topicSubs.length >= 100) throw new EngineError("SubscriptionLimitExceeded", "CloudLab allows 100 subscriptions per topic.");
     }
   },
   async derive({ config, existing }) {

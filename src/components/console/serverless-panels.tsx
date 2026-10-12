@@ -111,7 +111,7 @@ function CodeCard({ fn }: { fn: ResourceDTO }) {
       <CardContent className="pb-5">
         <CodeEditor value={files} onChange={setFiles} />
         <p className="mt-2 text-xs text-muted-foreground">
-          Nuvora runs your code for real in a sandbox: plain JavaScript and your own files work; packages (npm, the AWS SDK) and network calls don&apos;t
+          CloudLab runs your code for real in a sandbox: plain JavaScript and your own files work; packages (npm, the AWS SDK) and network calls don&apos;t
           yet. setTimeout runs on simulated time.
         </p>
       </CardContent>

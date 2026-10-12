@@ -3,7 +3,7 @@ import { EngineError } from "../errors";
 import { MAX_CODE_BYTES, MAX_FILES } from "../fields";
 
 /**
- * Function code arrives as a .zip, as with real Lambda. Nuvora keeps the text
+ * Function code arrives as a .zip, as with real Lambda. CloudLab keeps the text
  * files (source, JSON); folders inside the zip stay as path prefixes, so a zip
  * of a folder (myfn/index.mjs) fails to find "index" just like on AWS.
  */
@@ -22,7 +22,7 @@ export function filesFromZip(data: Buffer): Record<string, string> {
     if (total > MAX_CODE_BYTES) {
       throw new EngineError(
         "InvalidParameterValueException",
-        `Unzipped size must be smaller than ${MAX_CODE_BYTES} bytes in Nuvora (no node_modules: Nuvora functions can't use packages yet).`,
+        `Unzipped size must be smaller than ${MAX_CODE_BYTES} bytes in CloudLab (no node_modules: CloudLab functions can't use packages yet).`,
       );
     }
     const text = Buffer.from(bytes).toString("utf8");
@@ -31,7 +31,7 @@ export function filesFromZip(data: Buffer): Record<string, string> {
     files[path] = text;
   }
   if (Object.keys(files).length === 0) throw new EngineError("InvalidParameterValueException", "Uploaded file must be a non-empty zip");
-  if (Object.keys(files).length > MAX_FILES) throw new EngineError("InvalidParameterValueException", `Nuvora allows at most ${MAX_FILES} files per function.`);
+  if (Object.keys(files).length > MAX_FILES) throw new EngineError("InvalidParameterValueException", `CloudLab allows at most ${MAX_FILES} files per function.`);
   return files;
 }
 

@@ -363,7 +363,7 @@ export const DYNAMODB_COMMANDS: Command[] = [
     async run(args, ctx) {
       const t = await tableByName(ctx, args.required("table-name"));
       const update = args.one("update-expression");
-      if (!update) throw ddbError("ValidationException", "Nuvora needs --update-expression (the older --attribute-updates form isn't supported)");
+      if (!update) throw ddbError("ValidationException", "CloudLab needs --update-expression (the older --attribute-updates form isn't supported)");
       return emptyAsNothing(await updateItem(ctx.engine, t, requireJson(ctx, args, "key"), { ...expressionInput(ctx, args), update, condition: args.one("condition-expression"), returnValues: args.one("return-values") }));
     },
   }),

@@ -6,10 +6,10 @@ import { getEngine } from "@/server/api";
  * The public address of a learner's HTTP API: /apigw/<api-id>/<stage?>/<path>.
  * Anyone can call it (browser, curl, another app), like a real API Gateway URL.
  *
- * The responses are written by learners' functions and served from Nuvora's
+ * The responses are written by learners' functions and served from CloudLab's
  * own domain, so they're contained:
- * - Nuvora's own cookies are removed before the request reaches a function;
- * - a function may set cookies only for its own API's path, never Nuvora's names;
+ * - CloudLab's own cookies are removed before the request reaches a function;
+ * - a function may set cookies only for its own API's path, never CloudLab's names;
  * - every response is sandboxed (no scripts) and can't change security headers.
  */
 
@@ -67,7 +67,7 @@ async function serve(request: NextRequest, ctx: RouteContext<"/apigw/[apiId]/[[.
 
   const out = new Headers();
   for (const [k, v] of Object.entries(res.headers)) if (!BLOCKED_HEADERS.has(k.toLowerCase())) out.set(k, v);
-  // Cookies a function sets stay on its own API's path and can't touch Nuvora's.
+  // Cookies a function sets stay on its own API's path and can't touch CloudLab's.
   for (const raw of (res.headers["set-cookie"] ?? "").split(/,\s*(?=[^;=]+=)/).filter(Boolean)) {
     const name = raw.split("=")[0].trim();
     if (OWN_COOKIES.test(name)) continue;

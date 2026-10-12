@@ -24,7 +24,7 @@ import type { Resource } from "../types";
  * Publishing: SNS checks the message, then hands a copy to each confirmed
  * subscription whose filter policy matches. What happened to each copy is
  * kept on the topic ("deliveries"), which AWS only shows through metrics and
- * delivery logs; Nuvora shows it so you can see why something didn't arrive.
+ * delivery logs; CloudLab shows it so you can see why something didn't arrive.
  */
 
 export const MAX_MESSAGE_BYTES = 256 * 1024;
@@ -191,7 +191,7 @@ async function deliverOne(
       return { status: "failed", reason: e instanceof EngineError ? `${e.code}: ${e.message}` : String(e) };
     }
   }
-  return { status: "failed", reason: `Nuvora can't deliver to the ${protocol} protocol yet.` };
+  return { status: "failed", reason: `CloudLab can't deliver to the ${protocol} protocol yet.` };
 }
 
 /** Publish: checks the message, fans it out, records deliveries and metrics. */

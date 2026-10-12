@@ -51,7 +51,7 @@ export interface QueueCounts {
   oldestAgeSeconds: number;
 }
 
-/** Nuvora's limits: real queues hold unlimited messages. */
+/** CloudLab's limits: real queues hold unlimited messages. */
 export const MAX_MESSAGES = 1000;
 export const MAX_QUEUE_BYTES = 4 * 1024 * 1024;
 const PURGE_COOLDOWN_MS = 60_000;
@@ -154,8 +154,8 @@ export async function sendMessage(engine: Engine, q: Resource, input: SendInput)
   const now = engine.now().getTime();
   const fresh = await engine.get(q.accountId, q.id);
   const msgs = retained(fresh, messagesOf(fresh), now);
-  if (msgs.length >= MAX_MESSAGES) throw new EngineError("OverLimit", `Nuvora keeps at most ${MAX_MESSAGES} messages in a queue. Receive and delete some, or purge the queue.`, 403);
-  if (msgs.reduce((n, m) => n + m.body.length, 0) + size > MAX_QUEUE_BYTES) throw new EngineError("OverLimit", "Nuvora keeps at most 4 MB of messages in a queue. Receive and delete some, or purge the queue.", 403);
+  if (msgs.length >= MAX_MESSAGES) throw new EngineError("OverLimit", `CloudLab keeps at most ${MAX_MESSAGES} messages in a queue. Receive and delete some, or purge the queue.`, 403);
+  if (msgs.reduce((n, m) => n + m.body.length, 0) + size > MAX_QUEUE_BYTES) throw new EngineError("OverLimit", "CloudLab keeps at most 4 MB of messages in a queue. Receive and delete some, or purge the queue.", 403);
 
   const m: StoredMessage = {
     messageId: randomUUID(),
@@ -218,7 +218,7 @@ export async function receiveMessages(engine: Engine, q: Resource, input: Receiv
 
   const out: ReceivedMessage[] = [];
   const toDlq: StoredMessage[] = [];
-  // Standard queues don't promise order; Nuvora hands out the oldest ready messages first.
+  // Standard queues don't promise order; CloudLab hands out the oldest ready messages first.
   for (const m of [...msgs].sort((a, b) => a.sentAt - b.sentAt)) {
     if (out.length >= max) break;
     if (m.visibleAt > now) continue;
@@ -315,7 +315,7 @@ function conditionHolds(cond: PolicyStatement["Condition"], sourceArn: string): 
   if (!cond) return true;
   for (const [op, entries] of Object.entries(cond)) {
     for (const [key, val] of Object.entries(entries)) {
-      if (key.toLowerCase() !== "aws:sourcearn") return false; // conditions Nuvora doesn't know about don't match
+      if (key.toLowerCase() !== "aws:sourcearn") return false; // conditions CloudLab doesn't know about don't match
       const values = arr(val);
       const ok = /^(ArnEquals|StringEquals)$/i.test(op)
         ? values.some((v) => v === sourceArn)

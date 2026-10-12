@@ -9,7 +9,7 @@ import type { HookContext, Resource, ResourceTypeDef, ServiceDef } from "../type
  * domain's apex, where CNAMEs aren't allowed. Health checks let failover and
  * weighted records skip what's down.
  *
- * In Nuvora, every hosted zone answers straight away, as if you had
+ * In CloudLab, every hosted zone answers straight away, as if you had
  * registered the domain and pointed it at Route 53's name servers. The
  * terminal's dig, nslookup and curl use them.
  */
@@ -180,7 +180,7 @@ const hostedZone: ResourceTypeDef = {
   label: "Hosted zone",
   pluralLabel: "Hosted zones",
   description:
-    "The DNS records for one domain, like myshop.com: which address www.myshop.com points to, where its email goes, and so on. In Nuvora it answers straight away, as if you'd registered the domain.",
+    "The DNS records for one domain, like myshop.com: which address www.myshop.com points to, where its email goes, and so on. In CloudLab it answers straight away, as if you'd registered the domain.",
   idPrefix: "hostedzone",
   global: true,
   makeId: () => newZoneId(),

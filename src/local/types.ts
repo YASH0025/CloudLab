@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 /**
- * Local mode: real apps on the learner's own computer. Nuvora's website is the
+ * Local mode: real apps on the learner's own computer. CloudLab's website is the
  * remote control; a small agent the learner runs on their computer does the work
  * with Docker. These shapes are shared by the server, the console and the agent
  * protocol. Safe to import in the browser.
@@ -157,7 +157,7 @@ export const syncBody = z.object({
     docker: z.object({ ok: z.boolean(), version: z.string().max(100).optional(), error: z.string().max(500).optional() }),
     agentVersion: z.string().max(20),
   }),
-  /** Every Nuvora app container the agent found, with its state. Apps being deployed are left out. */
+  /** Every CloudLab app container the agent found, with its state. Apps being deployed are left out. */
   apps: z.array(report.extend({ id: z.string().max(64) })).max(50),
   /** True when `apps` is the complete inventory, so apps missing from it can be marked missing. */
   complete: z.boolean().default(false),

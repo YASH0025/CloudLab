@@ -1,7 +1,7 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 
 /**
- * Encryption for access key secrets. Like AWS, Nuvora must keep a key's secret
+ * Encryption for access key secrets. Like AWS, CloudLab must keep a key's secret
  * to check request signatures (for SDK access), but it never shows it again
  * after creation. Secrets are stored AES-256-GCM encrypted.
  *

@@ -6,7 +6,7 @@ import { trustedPrincipals } from "./iam";
 
 /**
  * AWS Lambda: functions that run your code when called, with no server to
- * manage. Nuvora really runs Node.js functions, in a sandbox (see
+ * manage. CloudLab really runs Node.js functions, in a sandbox (see
  * lambda/runtime.ts). A function needs an execution role that Lambda may
  * assume; other services (API Gateway) may only call it if its resource-based
  * policy allows them (add-permission).
@@ -90,7 +90,7 @@ const lambdaFunction: ResourceTypeDef = {
   label: "Function",
   pluralLabel: "Functions",
   description:
-    "Code that runs when something calls it (an API, a schedule, an upload) and stops when it's done. No server to manage, and you pay only while it runs. Nuvora really runs your Node.js code, in a sandbox.",
+    "Code that runs when something calls it (an API, a schedule, an upload) and stops when it's done. No server to manage, and you pay only while it runs. CloudLab really runs your Node.js code, in a sandbox.",
   idPrefix: "function",
   makeId: ({ name, region, accountId }) => functionArn(region, accountId, name),
   idPattern: LAMBDA_ARN,
@@ -123,7 +123,7 @@ const lambdaFunction: ResourceTypeDef = {
       default: "nodejs22.x",
       options: LAMBDA_RUNTIMES,
       param: "Runtime",
-      description: "Nuvora runs Node.js. Python and others are planned.",
+      description: "CloudLab runs Node.js. Python and others are planned.",
     },
     {
       key: "handler",
@@ -224,7 +224,7 @@ const lambdaFunction: ResourceTypeDef = {
       }
       return new EngineError(
         "InvalidParameterValueException",
-        `Nuvora runs Node.js functions only for now (nodejs22.x or nodejs20.x), not ${v}.`,
+        `CloudLab runs Node.js functions only for now (nodejs22.x or nodejs20.x), not ${v}.`,
       );
     }
     if (field.key === "memorySize") {
@@ -240,7 +240,7 @@ const lambdaFunction: ResourceTypeDef = {
       );
     }
     if (field.key === "files") {
-      return new EngineError("InvalidParameterValueException", "Unzipped size must be smaller than 262144 bytes in Nuvora.");
+      return new EngineError("InvalidParameterValueException", "Unzipped size must be smaller than 262144 bytes in CloudLab.");
     }
     return undefined;
   },

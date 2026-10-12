@@ -163,7 +163,7 @@ describe("static website hosting", () => {
     expect((await website("my-site-bucket", "")).status).toBe(403);
   });
 
-  it("rejects policies Nuvora doesn't understand, and bad JSON", async () => {
+  it("rejects policies CloudLab doesn't understand, and bad JSON", async () => {
     await ok("aws s3 mb s3://policy-bucket-1");
     await ok("aws s3api delete-public-access-block --bucket policy-bucket-1");
     expect((await run("aws s3api put-bucket-policy --bucket policy-bucket-1 --policy 'not json'")).output).toContain("(MalformedPolicy)");

@@ -95,7 +95,7 @@ export const Terminal = forwardRef<TerminalHandle>(function Terminal(_props, ref
     execRef.current = exec.mutateAsync;
   });
 
-  const prompt = () => `${C.green}learner@nuvora${C.reset}:${C.cyan}${regionRef.current}${C.reset}$ `;
+  const prompt = () => `${C.green}learner@cloudlab${C.reset}:${C.cyan}${regionRef.current}${C.reset}$ `;
 
   const redraw = () => {
     const term = termRef.current;
@@ -163,7 +163,7 @@ export const Terminal = forwardRef<TerminalHandle>(function Terminal(_props, ref
       history.current = loadHistory();
       historyIndex.current = history.current.length;
 
-      term.writeln(`${C.bold}Nuvora terminal${C.reset} ${C.dim}— a simulated AWS CLI. Nothing here touches a real account.${C.reset}`);
+      term.writeln(`${C.bold}CloudLab terminal${C.reset} ${C.dim}— a simulated AWS CLI. Nothing here touches a real account.${C.reset}`);
       term.writeln(`${C.dim}Type 'help' to see supported commands. Tab completes, ↑/↓ browse history.${C.reset}`);
       term.writeln("");
       term.write(prompt());
@@ -204,7 +204,7 @@ export const Terminal = forwardRef<TerminalHandle>(function Terminal(_props, ref
             return;
           }
           if (picked.size > MAX_UPLOAD_BYTES) {
-            term.writeln(`${C.red}${picked.name} is ${(picked.size / 1024 / 1024).toFixed(1)} MB; Nuvora accepts files up to 1 MB.${C.reset}`);
+            term.writeln(`${C.red}${picked.name} is ${(picked.size / 1024 / 1024).toFixed(1)} MB; CloudLab accepts files up to 1 MB.${C.reset}`);
             busy.current = false;
             term.write(prompt());
             return;

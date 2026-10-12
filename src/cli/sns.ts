@@ -139,7 +139,7 @@ export const SNS_COMMANDS: Command[] = [
     async run(args, ctx) {
       const name = args.required("name");
       const attrs = attributesArg(ctx, args);
-      for (const k of Object.keys(attrs)) if (k !== "DisplayName") throw invalid("Attributes Reason: Unknown attribute (Nuvora supports DisplayName)");
+      for (const k of Object.keys(attrs)) if (k !== "DisplayName") throw invalid("Attributes Reason: Unknown attribute (CloudLab supports DisplayName)");
       // CreateTopic is idempotent: the same name gives back the same topic.
       const existing = (await listOf(ctx, "topic")).find((t) => t.name === name);
       if (existing) {
@@ -199,7 +199,7 @@ export const SNS_COMMANDS: Command[] = [
     async run(args, ctx) {
       const t = await topicByArn(ctx, args.required("topic-arn"));
       const name = args.required("attribute-name");
-      if (name !== "DisplayName") throw invalid("AttributeName (Nuvora supports DisplayName)");
+      if (name !== "DisplayName") throw invalid("AttributeName (CloudLab supports DisplayName)");
       await ctx.engine.update(ctx.accountId, t.id, { displayName: args.one("attribute-value") ?? "" });
     },
   }),
@@ -215,15 +215,15 @@ export const SNS_COMMANDS: Command[] = [
       const protocol = args.required("protocol");
       if (!KNOWN_PROTOCOLS.includes(protocol)) throw invalid("Invalid protocol type: " + protocol);
       if (!PROTOCOL_LIST.includes(protocol as (typeof PROTOCOLS)[number])) {
-        throw invalid(`Protocol: Nuvora doesn't simulate ${protocol} subscriptions yet (try ${PROTOCOL_LIST.join(", ")})`);
+        throw invalid(`Protocol: CloudLab doesn't simulate ${protocol} subscriptions yet (try ${PROTOCOL_LIST.join(", ")})`);
       }
       const endpoint = args.one("notification-endpoint");
       if (!endpoint) throw invalid("Endpoint");
       const attrs = attributesArg(ctx, args);
       for (const k of Object.keys(attrs)) {
-        if (!["FilterPolicy", "FilterPolicyScope", "RawMessageDelivery"].includes(k)) throw invalid(`Attributes Reason: Unknown attribute ${k} (Nuvora supports FilterPolicy and RawMessageDelivery)`);
+        if (!["FilterPolicy", "FilterPolicyScope", "RawMessageDelivery"].includes(k)) throw invalid(`Attributes Reason: Unknown attribute ${k} (CloudLab supports FilterPolicy and RawMessageDelivery)`);
       }
-      if (attrs.FilterPolicyScope && attrs.FilterPolicyScope !== "MessageAttributes") throw invalid("FilterPolicyScope: Nuvora filters on MessageAttributes only");
+      if (attrs.FilterPolicyScope && attrs.FilterPolicyScope !== "MessageAttributes") throw invalid("FilterPolicyScope: CloudLab filters on MessageAttributes only");
       const existing = (await listOf(ctx, "subscription")).find((s) => s.config.topicArn === t.id && s.config.protocol === protocol && s.config.endpoint === endpoint.trim());
       const returnArn = args.bool("return-subscription-arn") === true;
       if (existing) return { SubscriptionArn: returnArn || existing.state === "confirmed" ? existing.id : "pending confirmation" };
@@ -325,7 +325,7 @@ export const SNS_COMMANDS: Command[] = [
         await ctx.engine.update(ctx.accountId, s.id, { rawMessageDelivery: value === "true" });
         return;
       }
-      if (name !== "FilterPolicy") throw invalid("AttributeName (Nuvora supports FilterPolicy and RawMessageDelivery)");
+      if (name !== "FilterPolicy") throw invalid("AttributeName (CloudLab supports FilterPolicy and RawMessageDelivery)");
       // An empty policy removes it.
       if (value && value !== "{}") checkFilterPolicy(value);
       await ctx.engine.update(ctx.accountId, s.id, { filterPolicy: value && value !== "{}" ? value : undefined });
@@ -341,7 +341,7 @@ export const SNS_COMMANDS: Command[] = [
     async run(args, ctx) {
       const arn = args.one("topic-arn") ?? args.one("target-arn");
       if (!arn) {
-        if (args.has("phone-number")) throw invalid("PhoneNumber: Nuvora doesn't send SMS");
+        if (args.has("phone-number")) throw invalid("PhoneNumber: CloudLab doesn't send SMS");
         throw invalid("TopicArn or TargetArn Reason: no value for required parameter");
       }
       const t = await topicByArn(ctx, arn);

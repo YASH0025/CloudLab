@@ -113,7 +113,7 @@ export function parseTemplate(body: string): Template {
   const known = ["AWSTemplateFormatVersion", "Description", "Metadata", "Parameters", "Mappings", "Conditions", "Transform", "Resources", "Outputs", "Rules"];
   const unknown = Object.keys(t).filter((k) => !known.includes(k));
   if (unknown.length) throw formatError(`Invalid template property or properties [${unknown.join(", ")}]`);
-  if (t.Transform) throw formatError("Transforms (like AWS::Serverless) aren't simulated in Nuvora yet.");
+  if (t.Transform) throw formatError("Transforms (like AWS::Serverless) aren't simulated in CloudLab yet.");
   if (t.AWSTemplateFormatVersion !== undefined && String(t.AWSTemplateFormatVersion) !== "2010-09-09") {
     throw formatError(`'${String(t.AWSTemplateFormatVersion)}' is not a supported version. Use '2010-09-09'.`);
   }
@@ -345,7 +345,7 @@ export function resolve(v: Json, ctx: ResolveContext): Json {
         return ctx.conditions[name];
       }
       case "Fn::Cidr":
-        throw formatError("Fn::Cidr isn't simulated in Nuvora yet; write the subnet ranges out.");
+        throw formatError("Fn::Cidr isn't simulated in CloudLab yet; write the subnet ranges out.");
     }
   }
   const out: Record<string, Json> = {};

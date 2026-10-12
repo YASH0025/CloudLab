@@ -534,7 +534,7 @@ export const S3_COMMANDS: Command[] = [
     service: "s3api",
     operation: "put-bucket-policy",
     apiName: "PutBucketPolicy",
-    summary: "Attach a bucket policy (Nuvora understands public-read policies)",
+    summary: "Attach a bucket policy (CloudLab understands public-read policies)",
     usage: "--bucket <name> --policy '<json>'",
     mutates: true,
     async run(args, ctx) {
@@ -542,7 +542,7 @@ export const S3_COMMANDS: Command[] = [
       if (!grantsPublicRead(args.required("policy"), b.id)) {
         throw new EngineError(
           "MalformedPolicy",
-          `Nuvora only simulates public-read policies: Effect Allow, Principal "*", Action s3:GetObject, Resource arn:aws:s3:::${b.id}/*`,
+          `CloudLab only simulates public-read policies: Effect Allow, Principal "*", Action s3:GetObject, Resource arn:aws:s3:::${b.id}/*`,
         );
       }
       await ctx.engine.update(ctx.accountId, b.id, { publicRead: true });
@@ -585,7 +585,7 @@ export const S3_COMMANDS: Command[] = [
       const b = await objects(ctx).bucket(ctx.accountId, args.required("bucket"));
       const conf = parseShorthand(args.required("public-access-block-configuration"));
       const on = (k: string) => String(conf[k]).toLowerCase() === "true" || conf[k] === (true as unknown);
-      // Bucket policies are what Nuvora simulates, so the two policy settings decide.
+      // Bucket policies are what CloudLab simulates, so the two policy settings decide.
       await ctx.engine.update(ctx.accountId, b.id, { blockPublicAccess: on("BlockPublicPolicy") || on("RestrictPublicBuckets") });
     },
   }),

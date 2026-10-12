@@ -28,7 +28,7 @@ function splitRedirect(tokens: string[]): { tokens: string[]; saveAs?: string } 
   const file = inline || tokens[i + 1];
   const rest = tokens.slice(i + (inline ? 1 : 2));
   if (!file || rest.length > 0) return { error: "syntax error near unexpected token `newline'" };
-  if (!/^[\w.@+-]+$/.test(file)) return { error: `${file}: Nuvora can only save to a plain file name, like my-key.pem` };
+  if (!/^[\w.@+-]+$/.test(file)) return { error: `${file}: CloudLab can only save to a plain file name, like my-key.pem` };
   return { tokens: tokens.slice(0, i), saveAs: file };
 }
 
@@ -65,7 +65,7 @@ function helpText(service?: string): string {
     const ops = COMMANDS.filter((c) => c.service === service);
     const width = Math.max(...ops.map((c) => c.operation.length));
     return [
-      `Available ${service} commands in Nuvora:`,
+      `Available ${service} commands in CloudLab:`,
       "",
       ...ops.map((c) => `  ${c.operation.padEnd(width)}  ${c.summary}`),
       "",
@@ -73,7 +73,7 @@ function helpText(service?: string): string {
     ].join("\n");
   }
   return [
-    "Nuvora CLI: a simulated AWS CLI. Nothing here touches a real cloud account.",
+    "CloudLab CLI: a simulated AWS CLI. Nothing here touches a real cloud account.",
     "",
     "Supported services:",
     ...servicesList().map((s) => `  aws ${s} help`),
@@ -156,7 +156,7 @@ export async function executeCli(line: string, ctx: CliContext): Promise<CliResu
   const region = parsed.region ?? ctx.region;
   if (!isRegion(region)) {
     return {
-      output: `Could not connect to the endpoint URL: "https://${parsed.service}.${region}.cloudlab.local/"\n(Nuvora regions: us-east-1, us-west-2, eu-west-1, ap-south-1)`,
+      output: `Could not connect to the endpoint URL: "https://${parsed.service}.${region}.cloudlab.local/"\n(CloudLab regions: us-east-1, us-west-2, eu-west-1, ap-south-1)`,
       exitCode: 255,
       changed: false,
     };

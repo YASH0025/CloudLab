@@ -147,7 +147,7 @@ const alarm: ResourceTypeDef = {
     arn: (r) => r.id,
   },
   invalidValue({ field, value }) {
-    if (field.key === "period") return new EngineError("ValidationError", `Period must be 10, 20, 30 or a multiple of 60 (Nuvora supports 60 and up, not ${value})`);
+    if (field.key === "period") return new EngineError("ValidationError", `Period must be 10, 20, 30 or a multiple of 60 (CloudLab supports 60 and up, not ${value})`);
     return undefined;
   },
   async validate({ config }) {

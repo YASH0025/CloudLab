@@ -6,8 +6,8 @@ import type { ResourceTypeDef, ServiceDef } from "../types";
  * Amazon API Gateway, HTTP APIs (v2): a public HTTPS address whose routes
  * ("GET /hello") send each request to a Lambda function through an
  * integration. A stage ("$default", or "prod") is what's deployed at the
- * address; Nuvora stages always auto-deploy. Each API really answers at
- * /apigw/<api-id>/… on Nuvora, so you can call it from a browser or curl.
+ * address; CloudLab stages always auto-deploy. Each API really answers at
+ * /apigw/<api-id>/… on CloudLab, so you can call it from a browser or curl.
  */
 
 const ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789";

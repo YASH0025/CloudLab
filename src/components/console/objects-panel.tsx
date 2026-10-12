@@ -282,7 +282,7 @@ export function WebsiteCard({ bucket }: { bucket: ResourceDTO }) {
         </CardTitle>
         <CardDescription>
           Serve this bucket&apos;s files as a website. Change these settings under Edit settings below. Pages run without
-          JavaScript in Nuvora, for safety.
+          JavaScript in CloudLab, for safety.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">

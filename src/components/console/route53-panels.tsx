@@ -122,7 +122,7 @@ export function HostedZonePanel({ zone }: { zone: ResourceDTO }) {
             <CardHeader>
               <CardTitle>Name servers</CardTitle>
               <CardDescription>
-                On AWS, you’d copy these to the company where you registered {zone.name}, so the internet knows to ask Route 53. In Nuvora the zone works straight away.
+                On AWS, you’d copy these to the company where you registered {zone.name}, so the internet knows to ask Route 53. In CloudLab the zone works straight away.
               </CardDescription>
             </CardHeader>
             <CardContent className="pb-5">
@@ -335,7 +335,7 @@ export function HealthCheckPanel({ check }: { check: ResourceDTO }) {
           )}
           <span className="font-mono text-sm">{String(check.attributes.endpoint)}</span>
         </CardTitle>
-        <CardDescription>Checkers in several regions call the endpoint; Nuvora checks again every 10 seconds while this page is open.</CardDescription>
+        <CardDescription>Checkers in several regions call the endpoint; CloudLab checks again every 10 seconds while this page is open.</CardDescription>
       </CardHeader>
       <CardContent className="space-y-3 pb-5 text-sm">
         {status.error && <p className="text-destructive">{errorText(status.error)}</p>}

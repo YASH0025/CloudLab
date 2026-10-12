@@ -240,7 +240,7 @@ export const RDS_COMMANDS: Command[] = [
       const engine = args.required("engine");
       if (!DB_ENGINES[engine]) throw new EngineError("InvalidParameterValue", `Invalid DB engine: ${engine}`);
       if (args.has("manage-master-user-password")) {
-        throw new EngineError("InvalidParameterValue", "Nuvora doesn't simulate Secrets Manager yet; pass --master-user-password.");
+        throw new EngineError("InvalidParameterValue", "CloudLab doesn't simulate Secrets Manager yet; pass --master-user-password.");
       }
       const storage = int(args, "allocated-storage");
       if (storage === undefined) {

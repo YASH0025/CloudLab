@@ -1,7 +1,7 @@
 import { useId } from "react";
 import { cn } from "@/lib/utils";
 
-/** The Nuvora mark: a blue cloud with a white peak cut through it ("build, then climb"). */
+/** The CloudLab mark: a blue cloud with a white peak cut through it ("build, then climb"). */
 export function LogoMark({ className }: { className?: string }) {
   const id = useId().replace(/:/g, "");
   return (
@@ -29,13 +29,13 @@ export function LogoMark({ className }: { className?: string }) {
   );
 }
 
-/** Mark + wordmark. "Nu" takes the text color, "vora" is brand blue. */
+/** Mark + wordmark. "Cloud" takes the text color, "Lab" is brand blue. */
 export function Logo({ className, markClassName }: { className?: string; markClassName?: string }) {
   return (
     <span className={cn("inline-flex items-center gap-2 font-semibold tracking-tight", className)}>
       <LogoMark className={markClassName} />
       <span>
-        Nu<span className="lab text-[#1a73ff] dark:text-[#4fa3ff]">vora</span>
+        Cloud<span className="lab text-[#1a73ff] dark:text-[#4fa3ff]">Lab</span>
       </span>
     </span>
   );
