@@ -1,10 +1,9 @@
 "use client";
 
-import { BoxIcon } from "lucide-react";
+import { Logo } from "@/components/brand/logo";
 import Link from "next/link";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { site } from "@/config/site";
 import { useMe } from "@/hooks/use-cloud";
 import { SignInButtons } from "./sign-in-buttons";
 
@@ -15,10 +14,7 @@ export function SignInView() {
     <div className="flex min-h-dvh items-center justify-center px-4 py-10">
       <div className="w-full max-w-sm space-y-6">
         <Link href="/" className="flex items-center justify-center gap-2 font-semibold">
-          <span className="flex size-8 items-center justify-center rounded-md bg-primary text-primary-foreground">
-            <BoxIcon className="size-4" />
-          </span>
-          {site.name}
+          <Logo className="text-lg" markClassName="size-9" />
         </Link>
         <Card>
           <CardContent className="space-y-5 py-6">

@@ -1,5 +1,6 @@
 "use client";
 
+import { Logo } from "@/components/brand/logo";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import {
   BoxIcon,
@@ -21,7 +22,6 @@ import { usePathname } from "next/navigation";
 import { useState, type ComponentType } from "react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { site } from "@/config/site";
 import { useServices } from "@/hooks/use-cloud";
 import { routes } from "@/lib/routes";
 import { cn } from "@/lib/utils";
@@ -47,10 +47,7 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
         onClick={onNavigate}
         className="flex h-14 shrink-0 items-center gap-2 border-b border-white/10 px-4 font-semibold"
       >
-        <span className="flex size-7 items-center justify-center rounded-md bg-primary text-primary-foreground">
-          <BoxIcon className="size-4" />
-        </span>
-        {site.name}
+        <Logo className="[&_.lab]:text-[#4fa3ff]" />
       </Link>
       <nav className="relative min-h-0 flex-1 overflow-y-auto px-2 py-3 text-sm" onClick={(e) => (e.target as HTMLElement).closest("a") && onNavigate?.()}>
         <Link

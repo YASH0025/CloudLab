@@ -1,4 +1,5 @@
-import { ArrowRightIcon, BoxIcon, DatabaseIcon, NetworkIcon, ServerIcon, ShieldCheckIcon } from "lucide-react";
+import { Logo } from "@/components/brand/logo";
+import { ArrowRightIcon, DatabaseIcon, NetworkIcon, ServerIcon, ShieldCheckIcon } from "lucide-react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { site } from "@/config/site";
@@ -30,12 +31,7 @@ export default function HomePage() {
   return (
     <div className="flex min-h-dvh flex-col">
       <header className="mx-auto flex w-full max-w-6xl items-center justify-between px-6 py-5">
-        <span className="flex items-center gap-2 font-semibold">
-          <span className="flex size-7 items-center justify-center rounded-md bg-primary text-primary-foreground">
-            <BoxIcon className="size-4" />
-          </span>
-          {site.name}
-        </span>
+        <Logo className="text-lg" markClassName="size-8" />
         <Button asChild size="sm">
           <Link href="/console">Open console</Link>
         </Button>
