@@ -19,6 +19,21 @@ export interface ServiceHost {
   };
   /** True where the data really is: the agent, for resources on My computer (local). */
   readonly holdsLocalItems?: boolean;
+  /**
+   * Sends an HTTP request for an SNS http/https subscription. Only the agent has this:
+   * CloudLab's servers never call out, the agent calls apps on the learner's network.
+   */
+  deliverHttp?(url: string, headers: Record<string, string>, body: string): Promise<{ status: number }>;
+  /** Where SNS's own links (SubscribeURL, UnsubscribeURL) point: the agent's AWS endpoint. */
+  readonly snsEndpoint?: string;
+  /**
+   * Running Lambda functions, for services that call them (SNS). The engine has it;
+   * the agent doesn't yet, and leaving it out keeps the Lambda runtime out of the agent.
+   */
+  readonly lambda?: {
+    allows(fn: Resource, service: string, sourceArn: string): boolean;
+    invoke(accountId: string, fn: Resource, event: unknown, source: string): Promise<{ requestId: string; functionError?: string }>;
+  };
 }
 
 /** DynamoDB's name for it. */

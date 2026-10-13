@@ -35,9 +35,28 @@ import os from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
-import { dynamodbApi, EngineError, explore, FileQueueHost, FileTableHost, QueueWaiters, queueConsole, sqsApi, sqsErrorNames } from "./lib/core.mjs";
+import {
+  dynamodbApi,
+  EngineError,
+  explore,
+  FileQueueHost,
+  FileSubscriptionHost,
+  FileTableHost,
+  FileTopicHost,
+  LocalHosts,
+  publish,
+  QueueWaiters,
+  queueConsole,
+  SNS_UNSIGNED,
+  snsApi,
+  snsErrorXml,
+  snsResponseXml,
+  sqsApi,
+  sqsErrorNames,
+  subscriptionConfirmation,
+} from "./lib/core.mjs";
 
-export const AGENT_VERSION = "0.9.0";
+export const AGENT_VERSION = "0.10.0";
 const DEFAULT_SERVER = "https://cloud-lab-livid.vercel.app";
 const HOME = path.join(os.homedir(), ".cloudlab");
 const CONFIG = path.join(HOME, "agent.json");
@@ -1639,6 +1658,12 @@ export class LocalApi {
       const url = new URL(req.url ?? "/", "http://localhost");
       // The keys for AWS SDKs and the AWS CLI: only ever handed to the console on this computer.
       if (url.pathname === "/credentials" && req.method === "GET") return send(200, this.credentials?.() ?? null);
+      // A topic's "Publish message", for the console.
+      if (url.pathname === "/sns/console" && req.method === "POST") {
+        if (!this.sns) return send(404, { error: { code: "NotFound", message: "SNS isn't running on this computer." } });
+        const input = JSON.parse((await readBody(req, 1024 * 1024)).toString("utf8") || "{}");
+        return send(200, await this.sns.console(input));
+      }
       // A queue's messages, for the console's "Send and receive messages".
       if (url.pathname === "/sqs/console" && req.method === "POST") {
         if (!this.sqs) return send(404, { error: { code: "NotFound", message: "SQS isn't running on this computer." } });
@@ -2113,7 +2138,8 @@ export class AwsEndpoint {
     }
     // Unsigned requests can't name a service in a signature: DynamoDB's say who they're for in X-Amz-Target.
     const target = String(req.headers["x-amz-target"] ?? "");
-    let service = target.startsWith("DynamoDB_") ? "dynamodb" : target.startsWith("AmazonSQS.") ? "sqs" : "s3";
+    // …and SNS's links (SubscribeURL, UnsubscribeURL) carry an Action.
+    let service = target.startsWith("DynamoDB_") ? "dynamodb" : target.startsWith("AmazonSQS.") ? "sqs" : url.searchParams.has("Action") && url.pathname === "/" ? "sns" : "s3";
     // Errors in the signature itself come back in the shape of the service it was for.
     const scope = /Credential=[^/,]+\/\d{8}\/[^/]+\/([^/]+)\//.exec(String(req.headers.authorization ?? "")) ?? /^[^/]+\/\d{8}\/[^/]+\/([^/]+)\//.exec(url.searchParams.get("X-Amz-Credential") ?? "");
     if (scope && this.services[scope[1]]) service = scope[1];
@@ -2280,6 +2306,80 @@ export class SqsApi {
 }
 
 const randomUUIDv4 = () => randomBytes(16).toString("hex").replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/, "$1-$2-$3-$4-$5");
+
+// ---------- SNS ----------
+
+/**
+ * Sends an SNS message to an HTTP(S) subscriber (an app on this computer or its
+ * network). 15 seconds at most, like SNS. Only the agent does this: CloudLab's
+ * servers never call out.
+ */
+export async function deliverHttp(url, headers, body) {
+  const res = await fetch(url, { method: "POST", headers, body, signal: AbortSignal.timeout(15_000), redirect: "manual" });
+  await res.arrayBuffer().catch(() => undefined);
+  return { status: res.status };
+}
+
+/**
+ * SNS's API on the AWS endpoint. SNS speaks AWS's Query protocol: form-encoded
+ * parameters (Action=Publish&…), XML answers. The work is CloudLab's own SNS code
+ * (lib/core.mjs), publishing to queues and apps on this computer. Like SNS, the
+ * links it sends (SubscribeURL, UnsubscribeURL) work without signing.
+ */
+export class SnsApi {
+  constructor(hosts, ctx) {
+    this.hosts = hosts;
+    this.ctx = { host: hosts, accountId: "local", region: "local-1", ...ctx };
+  }
+
+  async params(req, url) {
+    const params = new Map(url.searchParams);
+    if (req.method === "POST") {
+      const raw = (await readBody(req, 2 * 1024 * 1024)).toString("utf8");
+      for (const [k, v] of new URLSearchParams(raw)) params.set(k, v);
+    }
+    return params;
+  }
+
+  async handle(req, res, url, who) {
+    const params = await this.params(req, url);
+    if (!who && !SNS_UNSIGNED.includes(params.get("Action") ?? "")) throw new AwsError("MissingAuthenticationToken", "Request is missing Authentication Token", 403);
+    const { action, result } = await snsApi(params, this.ctx);
+    const requestId = randomUUIDv4();
+    const xmlBody = snsResponseXml(action, result, requestId);
+    res.writeHead(200, { "content-type": "text/xml", "x-amzn-requestid": requestId, "content-length": Buffer.byteLength(xmlBody) });
+    res.end(xmlBody);
+  }
+
+  sendError(res, e) {
+    const auth = {
+      InvalidAccessKeyId: ["InvalidClientTokenId", "The security token included in the request is invalid.", 403],
+      SignatureDoesNotMatch: ["SignatureDoesNotMatch", e.message, 403],
+      RequestTimeTooSkewed: ["SignatureDoesNotMatch", "Signature expired: the request's time is more than 15 minutes from this computer's time.", 403],
+    }[e.code];
+    if (auth) e = new AwsError(auth[0], auth[1], auth[2]);
+    const known = e instanceof EngineError || e instanceof AwsError;
+    if (!known) log("SNS:", e.stack ?? e);
+    const status = known ? (e.status ?? 400) : 500;
+    const requestId = randomUUIDv4();
+    res.writeHead(status, { "content-type": "text/xml", "x-amzn-requestid": requestId });
+    res.end(snsErrorXml(known ? e.code : "InternalError", known ? e.message : "Internal error", status, requestId));
+  }
+
+  /** The console's "Publish message" for a topic on this computer. */
+  async console(input) {
+    const topic = await this.hosts.get("local", String(input?.topic ?? ""));
+    if (input?.action !== "publish") throw new EngineError("ValidationException", "Unknown action.", 400);
+    const { settled, ...result } = await publish(this.hosts, "local", topic, {
+      message: String(input.message ?? ""),
+      subject: input.subject || undefined,
+      messageStructure: input.messageStructure,
+      attributes: input.attributes ?? {},
+    });
+    void settled;
+    return { result };
+  }
+}
 
 // ---------- EC2 in My computer (local) ----------
 
@@ -2566,9 +2666,11 @@ export class Agent {
     this.s3 = new LocalS3();
     this.localApi = null;
     this.bucketReports = new Map();
-    /** DynamoDB tables and SQS queues on this computer (set up in startLocal). */
+    /** DynamoDB tables, SQS queues and SNS topics and subscriptions on this computer (set up in startLocal). */
     this.tables = null;
     this.queues = null;
+    this.topics = null;
+    this.subscriptions = null;
     this.localReports = new Map();
   }
 
@@ -2772,7 +2874,7 @@ export class Agent {
 
   /** Writes local services' pending changes to disk (they're batched for speed). */
   flushLocal() {
-    for (const host of [this.tables, this.queues]) {
+    for (const host of [this.tables, this.queues, this.topics, this.subscriptions]) {
       try {
         host?.flush();
       } catch (e) {
@@ -2782,44 +2884,85 @@ export class Agent {
   }
 
   /**
-   * Services whose resources are records in CloudLab and data on this computer:
-   * their store, their routes in CloudLab, and what to call them in messages.
+   * Resource types that are records in CloudLab and data on this computer: their
+   * store, their route in CloudLab (for resources found here that it doesn't know),
+   * and what to call them in messages. Topics come before subscriptions, so a
+   * subscription's topic always exists first.
    */
   localServices() {
     return [
-      { kind: "dynamodb", host: this.tables, route: "/api/agent/dynamodb/tables", noun: "Table", spec: (r) => r.table },
-      { kind: "sqs", host: this.queues, route: "/api/agent/sqs/queues", noun: "Queue", spec: (r) => r.queue },
-    ].filter((x) => x.host);
+      { host: this.tables, route: "/api/agent/dynamodb/tables", noun: "Table", spec: (r) => r.table },
+      { host: this.queues, route: "/api/agent/sqs/queues", noun: "Queue", spec: (r) => r.queue },
+      { host: this.topics, route: "/api/agent/local/sns/topic", noun: "Topic", spec: (r) => r.resource },
+      { host: this.subscriptions, route: "/api/agent/local/sns/subscription", noun: "Subscription", spec: (r) => r.resource },
+    ]
+      .filter((x) => x.host)
+      .map((x) => ({ ...x, key: `${x.host.service}/${x.host.type}` }));
   }
 
-  /** CloudLab created, changed or deleted a table or queue on this computer. */
+  /** CloudLab created, changed or deleted a table, queue, topic or subscription on this computer. */
   handleLocalResource(r) {
-    const svc = this.localServices().find((x) => x.kind === r.kind);
-    if (!svc) throw new Error(`${r.kind} isn't running on this computer.`);
+    // Tasks say what they're for: kind "sqs", op "create-queue" → sqs/queue.
+    const type = r.op.split("-").slice(1).join("-");
+    const svc = this.localServices().find((x) => x.host.service === r.kind && x.host.type === type);
+    if (!svc) throw new Error(`${r.kind} ${type} isn't running on this computer.`);
     const spec = svc.spec(r);
     if (r.op.startsWith("delete-")) {
       svc.host.remove(spec.name);
+      // A topic's subscriptions go with it, as on AWS.
+      if (svc.key === "sns/topic") for (const n of this.subscriptions.names()) if (this.subscriptions.peek(n)?.config.topicArn === spec.id) this.subscriptions.remove(n);
       log(`${svc.noun} ${spec.name} deleted.`);
       return;
     }
+    this.upsertLocal(svc, spec);
+  }
+
+  /** Saves what CloudLab says about a local resource, and does what a new one needs (an HTTP subscription's confirmation request). */
+  upsertLocal(svc, spec) {
     const isNew = !svc.host.has(spec.name);
     const res = svc.host.upsert(spec);
     if (isNew) log(`${svc.noun} ${res.name} ready (${svc.host.pathOf(res.name)}).`);
-    this.reportLocal(svc.kind, res.name);
+    if (isNew && svc.key === "sns/subscription" && res.state !== "confirmed" && /^https?$/.test(String(res.config.protocol))) this.sendConfirmation(res);
+    this.reportLocal(svc.key, res.name);
+    return res;
+  }
+
+  /** POSTs a SubscriptionConfirmation to a new HTTP(S) subscriber, as SNS does: its app confirms by visiting the SubscribeURL. */
+  async sendConfirmation(sub) {
+    const { headers, body } = subscriptionConfirmation(String(sub.config.topicArn), sub, this.awsBase(), new Date().toISOString());
+    for (const wait of [0, 1000, 3000]) {
+      if (wait) await sleep(wait);
+      try {
+        const { status } = await deliverHttp(String(sub.config.endpoint), headers, body);
+        if (status >= 200 && status < 300) {
+          log(`SNS asked ${sub.config.endpoint} to confirm its subscription (it should visit the SubscribeURL).`);
+          return;
+        }
+      } catch {
+        // tried again below
+      }
+    }
+    log(`SNS couldn't reach ${sub.config.endpoint} to confirm its subscription. Is the app running? (Subscribe again once it is.)`);
+  }
+
+  /** The AWS endpoint's address, for links SNS sends (SubscribeURL, UnsubscribeURL). */
+  awsBase() {
+    return `http://localhost:${this.aws?.port ?? AWS_PORT}`;
   }
 
   /**
-   * A table's or queue's data changed: tell CloudLab its counts (never the data).
-   * At most once per half second, also while changes keep coming.
+   * A local resource's data changed: tell CloudLab what it shows (counts, a delivery
+   * log; never table items or queue messages). At most once per half second, also
+   * while changes keep coming.
    */
-  reportLocal(kind, name) {
-    const key = `${kind}:${name}`;
-    if (this.localReports.has(key)) return;
+  reportLocal(key, name) {
+    const id = `${key}:${name}`;
+    if (this.localReports.has(id)) return;
     this.localReports.set(
-      key,
+      id,
       setTimeout(async () => {
-        this.localReports.delete(key);
-        const svc = this.localServices().find((x) => x.kind === kind);
+        this.localReports.delete(id);
+        const svc = this.localServices().find((x) => x.key === key);
         const attributes = svc?.host.report(name);
         if (!attributes) return;
         await this.api.reportResource(svc.host.byName(name).id, { attributes });
@@ -2861,7 +3004,7 @@ export class Agent {
       }
       this.s3.deleteBucket(name);
     };
-    this.tables = new FileTableHost(path.join(HOME, "dynamodb"), (t) => this.reportLocal("dynamodb", t.name));
+    this.tables = new FileTableHost(path.join(HOME, "dynamodb"), (t) => this.reportLocal("dynamodb/table", t.name));
     const dynamodb = new DynamoApi(this.tables, {
       createTable: async (cfg) => this.tables.upsert(await this.viaCloudLab("/api/agent/dynamodb/tables", { config: cfg })),
       updateTable: async (t, patch) => this.tables.upsert(await this.viaCloudLab(`/api/agent/dynamodb/tables/${encodeURIComponent(t.name)}`, { config: patch }, "PATCH")),
@@ -2872,7 +3015,11 @@ export class Agent {
     });
     this.localApi.dynamodb = dynamodb;
 
-    this.queues = new FileQueueHost(path.join(HOME, "sqs"), (q) => this.reportLocal("sqs", q.name));
+    // A queue that changes (a send, from SNS too) wakes receives long-polling on it.
+    this.queues = new FileQueueHost(path.join(HOME, "sqs"), (q) => {
+      this.reportLocal("sqs/queue", q.name);
+      this.localApi.sqs?.waiters.notify(q.id);
+    });
     const queueRoute = (q) => `/api/agent/sqs/queues/${encodeURIComponent(q.name)}`;
     const sqs = new SqsApi(this.queues, {
       createQueue: async (cfg) => this.queues.upsert(await this.viaCloudLab("/api/agent/sqs/queues", { config: cfg })),
@@ -2885,12 +3032,35 @@ export class Agent {
     });
     this.localApi.sqs = sqs;
 
+    this.topics = new FileTopicHost(path.join(HOME, "sns", "topics"), (t) => this.reportLocal("sns/topic", t.name));
+    this.subscriptions = new FileSubscriptionHost(path.join(HOME, "sns", "subscriptions"), (x) => this.reportLocal("sns/subscription", x.name));
+    // Publishing reaches across services: topics, their subscriptions, and the queues they deliver to.
+    this.hosts = new LocalHosts([this.topics, this.subscriptions, this.queues, this.tables], () => new Date(), deliverHttp, this.awsBase());
+    const svc = (key) => this.localServices().find((x) => x.key === key);
+    const route = (r) => `/api/agent/local/${r.service}/${r.type}/${encodeURIComponent(r.id)}`;
+    const sns = new SnsApi(this.hosts, {
+      createTopic: async (cfg) => this.upsertLocal(svc("sns/topic"), await this.viaCloudLab("/api/agent/local/sns/topic", { config: cfg })),
+      updateTopic: async (t, patch) => this.upsertLocal(svc("sns/topic"), await this.viaCloudLab(route(t), { config: patch }, "PATCH")),
+      deleteTopic: async (t) => {
+        await this.viaCloudLab(route(t), {}, "DELETE");
+        this.handleLocalResource({ kind: "sns", op: "delete-topic", resource: t });
+      },
+      subscribe: async (cfg) => this.upsertLocal(svc("sns/subscription"), await this.viaCloudLab("/api/agent/local/sns/subscription", { config: cfg })),
+      updateSubscription: async (x, patch) => this.upsertLocal(svc("sns/subscription"), await this.viaCloudLab(route(x), { config: patch }, "PATCH")),
+      unsubscribe: async (x) => {
+        await this.viaCloudLab(route(x), {}, "DELETE");
+        this.subscriptions.remove(x.name);
+      },
+      confirm: async (topicArn, token) => this.upsertLocal(svc("sns/subscription"), await this.viaCloudLab("/api/agent/sns/confirm", { topicArn, token })),
+    });
+    this.localApi.sns = sns;
+
     this.aws = new AwsEndpoint({
       keys: () => keys,
-      services: { s3: new S3Api(this.s3, { createBucket, deleteBucket, onChange: (b) => this.reportBucket(b), owner: config.awsAccessKeyId }), dynamodb, sqs },
+      services: { s3: new S3Api(this.s3, { createBucket, deleteBucket, onChange: (b) => this.reportBucket(b), owner: config.awsAccessKeyId }), dynamodb, sqs, sns },
     });
     const awsPort = await this.aws.start();
-    if (awsPort) log(`AWS endpoint for SDKs and the AWS CLI: http://localhost:${awsPort} (S3, DynamoDB and SQS)`);
+    if (awsPort) log(`AWS endpoint for SDKs and the AWS CLI: http://localhost:${awsPort} (S3, DynamoDB, SQS and SNS)`);
     else log(`Couldn't open the AWS endpoint: port ${AWS_PORT} is in use by another program.`);
     this.localApi.credentials = () =>
       awsPort ? { accessKeyId: config.awsAccessKeyId, secretAccessKey: config.awsSecretAccessKey, endpoint: `http://localhost:${awsPort}`, lanEndpoint: lanAddress() ? `http://${lanAddress()}:${awsPort}` : null, region: "local-1" } : null;
@@ -2905,24 +3075,40 @@ export class Agent {
    */
   async syncLocalResources() {
     for (const svc of this.localServices()) {
+      const failed = [];
       for (const name of svc.host.names()) {
         const res = svc.host.byName(name);
         try {
           await this.api.post(`/api/agent/resources/${encodeURIComponent(res.id)}`, { attributes: svc.host.report(name) });
         } catch (e) {
-          if (e.code !== "ResourceNotFound") {
-            log(`Couldn't report ${svc.noun.toLowerCase()} ${name}:`, e.message);
-            continue;
-          }
-          try {
-            svc.host.upsert(await this.api.post(svc.route, { config: res.config }));
-            log(`${svc.noun} ${name} is on this computer but wasn't in your CloudLab account, so it was added.`);
-            this.reportLocal(svc.kind, name);
-          } catch (e2) {
-            log(`${svc.noun} ${name} is on this computer but couldn't be added to your CloudLab account: ${e2.message}`);
-          }
+          if (e.code !== "ResourceNotFound") log(`Couldn't report ${svc.noun.toLowerCase()} ${name}:`, e.message);
+          else if (!(await this.adopt(svc, res))) failed.push(res);
         }
       }
+      // A queue whose dead-letter queue was added after it: try again, pointing at that queue's new ID.
+      for (const res of failed) {
+        const ok = await this.adopt(svc, res, true);
+        if (!ok) log(`${svc.noun} ${res.name} is on this computer but couldn't be added to your CloudLab account: ${this.lastAdoptError}`);
+      }
+    }
+  }
+
+  /** Adds a resource found on this computer to the CloudLab account (made before this computer was connected to it). */
+  async adopt(svc, res, again = false) {
+    const config = { ...res.config };
+    if (again && config.deadLetterQueue) {
+      const dlq = this.queues?.peek(String(config.deadLetterQueue).split("/").pop());
+      if (dlq) config.deadLetterQueue = dlq.id;
+      else delete config.deadLetterQueue;
+    }
+    try {
+      // Same name, so the store keeps its data (items, messages) under the new ID.
+      this.upsertLocal(svc, await this.api.post(svc.route, { config }));
+      log(`${svc.noun} ${res.name} is on this computer but wasn't in your CloudLab account, so it was added.`);
+      return true;
+    } catch (e) {
+      this.lastAdoptError = e.message;
+      return false;
     }
   }
 
@@ -2956,7 +3142,7 @@ export class Agent {
       try {
         if (r.kind === "ec2") await this.ec2.handle(r);
         else if (r.kind === "s3") await this.s3.handle(r, this.api);
-        else if (r.kind === "dynamodb" || r.kind === "sqs") this.handleLocalResource(r);
+        else if (r.kind === "dynamodb" || r.kind === "sqs" || r.kind === "sns") this.handleLocalResource(r);
       } catch (e) {
         error = String(e.message ?? e);
         log(`  failed: ${error}`);

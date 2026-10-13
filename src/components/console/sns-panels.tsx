@@ -25,6 +25,7 @@ const STATUS: Record<DeliveryStatus, { label: string; variant: "success" | "dest
   failed: { label: "Failed", variant: "destructive" },
   filtered: { label: "Filtered out", variant: "secondary" },
   "pending-confirmation": { label: "Not confirmed", variant: "warning" },
+  sending: { label: "Sending", variant: "secondary" },
 };
 
 export function SubscriptionState({ state }: { state: string | null }) {
@@ -41,7 +42,7 @@ interface AttrRow {
 }
 
 function PublishCard({ topic }: { topic: ResourceDTO }) {
-  const publish = usePublish(topic.id);
+  const publish = usePublish(topic);
   const [subject, setSubject] = useState("");
   const [message, setMessage] = useState("Hello from CloudLab!");
   const [perProtocol, setPerProtocol] = useState(false);

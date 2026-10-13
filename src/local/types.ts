@@ -260,10 +260,14 @@ export interface LocalResourceSpec {
   name: string;
   config: Record<string, unknown>;
   createdAt: string;
+  /** For resources with states the agent needs (a subscription: pending-confirmation or confirmed). */
+  state?: string | null;
+  /** Details the agent needs to start with (a subscription's confirmation token and inbox). */
+  attributes?: Record<string, unknown>;
 }
 
 export interface ResourceTask {
-  kind: "ec2" | "s3" | "dynamodb" | "sqs";
+  kind: "ec2" | "s3" | "dynamodb" | "sqs" | "sns";
   op:
     | "launch"
     | "start"
@@ -280,11 +284,19 @@ export interface ResourceTask {
     | "delete-table"
     | "create-queue"
     | "configure-queue"
-    | "delete-queue";
+    | "delete-queue"
+    | "create-topic"
+    | "configure-topic"
+    | "delete-topic"
+    | "create-subscription"
+    | "configure-subscription"
+    | "delete-subscription";
   id: string;
   spec?: Ec2Spec;
   bucket?: S3BucketSpec;
   table?: LocalResourceSpec;
+  /** SNS: the topic or subscription. */
+  resource?: LocalResourceSpec;
   queue?: LocalResourceSpec;
   /** For exec: the command and an ID to report the result under. */
   command?: string;

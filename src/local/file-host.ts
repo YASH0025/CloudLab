@@ -12,12 +12,24 @@ export interface ResourceSpec {
   name: string;
   config: Record<string, unknown>;
   createdAt?: string;
+  /** Its state in CloudLab, for types that have one (a subscription's confirmation). */
+  state?: string | null;
+  /** What a new resource starts with (a subscription's token and inbox). */
+  attributes?: Record<string, unknown>;
 }
 
 /** How long changes may wait in memory before they're written to disk. */
 export const FLUSH_MS = 200;
 
-const FILE = /^[a-zA-Z0-9_.-]{1,255}\.json$/;
+const FILE = /^[a-zA-Z0-9_.~-]{1,255}\.json$/;
+const SAFE = /^[a-zA-Z0-9_.-]{1,200}$/;
+
+/**
+ * A resource's file name. Table and queue names are already safe; others (an SNS
+ * subscription is named "http: http://…") are encoded, since "/" and ":" can't be
+ * in file names (":" not at all on Windows).
+ */
+const fileName = (name: string) => (SAFE.test(name) && !name.startsWith(".") ? name : `~${Buffer.from(name).toString("base64url")}`);
 
 /**
  * One service's resources on the learner's computer (DynamoDB tables, SQS queues…):
@@ -67,7 +79,7 @@ export class FileResourceHost implements ServiceHost {
   }
 
   private file(name: string) {
-    return path.join(this.dir, `${name}.json`);
+    return path.join(this.dir, `${fileName(name)}.json`);
   }
 
   private write(name: string) {
@@ -122,11 +134,11 @@ export class FileResourceHost implements ServiceHost {
       service: this.service,
       type: this.type,
       name: spec.name,
-      state: "ACTIVE",
+      state: spec.state ?? old?.state ?? "ACTIVE",
       pendingState: null,
       transitionAt: null,
       config: { ...spec.config, name: spec.name },
-      attributes: { ...this.initialAttributes(), ...(old?.attributes ?? {}), ...this.specAttributes(spec) },
+      attributes: { ...this.initialAttributes(), ...(old ? old.attributes : (spec.attributes ?? {})), ...this.specAttributes(spec) },
       refs: [],
       createdAt: old?.createdAt ?? spec.createdAt ?? now,
       updatedAt: now,
@@ -147,6 +159,11 @@ export class FileResourceHost implements ServiceHost {
 
   has(name: string) {
     return this.resources.has(name);
+  }
+
+  /** Whether a resource (by ID or name) is in this store. */
+  owns(id: string) {
+    return this.byId.has(id) || this.resources.has(id);
   }
 
   names() {

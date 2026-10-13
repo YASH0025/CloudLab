@@ -189,11 +189,17 @@ export function useLogStreams(group: string) {
   });
 }
 
-/** Publishes a message to a topic. Errors show inline in the panel. */
-export function usePublish(id: string) {
+/** Publishes a message to a topic. Errors show inline in the panel. A topic on My computer (local) publishes from the agent, which reaches its queues and apps. */
+export function usePublish(topic: Pick<ResourceDTO, "id" | "region">) {
   const qc = useQueryClient();
+  const local = useLocalApi(topic.region);
+  const id = topic.id;
   return useMutation({
-    mutationFn: (input: Parameters<typeof api.publish>[1]) => api.publish(id, input).then((r) => r.result),
+    mutationFn: (input: Parameters<typeof api.publish>[1]) =>
+      (local.isLocal
+        ? localAgentCall<Awaited<ReturnType<typeof api.publish>>>(local.info(), "/sns/console", { ...input, action: "publish", topic: id })
+        : api.publish(id, input)
+      ).then((r) => r.result),
     // Deliveries change the topic, its subscriptions' inboxes and maybe a function.
     onSettled: () => qc.invalidateQueries({ queryKey: ["resource"] }),
   });

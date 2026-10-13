@@ -23,32 +23,13 @@ import { useQuery } from "@tanstack/react-query";
 import { useState, useSyncExternalStore } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import {
-  useDeployLocal,
-  useDisconnectComputer,
-  useLocal,
-  useLocalAction,
-  usePairComputer,
-  useSetDomain,
-} from "@/hooks/use-cloud";
+import { useDeployLocal, useDisconnectComputer, useLocal, useLocalAction, usePairComputer, useSetDomain } from "@/hooks/use-cloud";
 import { ApiError } from "@/lib/api-client";
 import { localCredentials } from "@/lib/objects-backend";
 import {
@@ -80,14 +61,8 @@ function guessOs(): Os {
 }
 
 const noSubscribe = () => () => undefined;
-const useOs = () =>
-  useSyncExternalStore(noSubscribe, guessOs, () => "windows" as Os);
-const useOrigin = () =>
-  useSyncExternalStore(
-    noSubscribe,
-    () => window.location.origin,
-    () => "",
-  );
+const useOs = () => useSyncExternalStore(noSubscribe, guessOs, () => "windows" as Os);
+const useOrigin = () => useSyncExternalStore(noSubscribe, () => window.location.origin, () => "");
 
 const gb = (bytes: number) => `${(bytes / 2 ** 30).toFixed(1)} GB`;
 
@@ -95,9 +70,7 @@ function CopyText({ text, className }: { text: string; className?: string }) {
   const [copied, setCopied] = useState(false);
   return (
     <div className={cn("relative min-w-0", className)}>
-      <pre className="overflow-x-auto rounded-md bg-muted py-2 pr-9 pl-3 font-mono text-xs leading-relaxed whitespace-pre-wrap break-all">
-        {text}
-      </pre>
+      <pre className="overflow-x-auto rounded-md bg-muted py-2 pr-9 pl-3 font-mono text-xs leading-relaxed whitespace-pre-wrap break-all">{text}</pre>
       <Button
         type="button"
         size="icon"
@@ -114,11 +87,7 @@ function CopyText({ text, className }: { text: string; className?: string }) {
           )
         }
       >
-        {copied ? (
-          <CheckIcon className="size-3.5" />
-        ) : (
-          <CopyIcon className="size-3.5" />
-        )}
+        {copied ? <CheckIcon className="size-3.5" /> : <CopyIcon className="size-3.5" />}
       </Button>
     </div>
   );
@@ -128,11 +97,7 @@ function ErrorLine({ error }: { error: unknown }) {
   if (!error) return null;
   return (
     <p className="text-sm text-destructive" role="alert">
-      {error instanceof ApiError
-        ? error.message
-        : error instanceof Error
-          ? error.message
-          : "Something went wrong."}
+      {error instanceof ApiError ? error.message : error instanceof Error ? error.message : "Something went wrong."}
     </p>
   );
 }
@@ -141,25 +106,13 @@ function ErrorLine({ error }: { error: unknown }) {
 
 /** How to start the agent with a connect code, per operating system. */
 function startCommand(os: Os, file: string, token: string, origin: string) {
-  const server =
-    origin && !origin.includes("cloud-lab-livid.vercel.app")
-      ? ` --server ${origin}`
-      : "";
-  if (os === "windows")
-    return `& "$env:USERPROFILE\\Downloads\\${file}" connect ${token}${server}`;
-  const mac = os.startsWith("mac")
-    ? ` && xattr -d com.apple.quarantine ~/Downloads/${file} 2>/dev/null`
-    : "";
+  const server = origin && !origin.includes("cloud-lab-livid.vercel.app") ? ` --server ${origin}` : "";
+  if (os === "windows") return `& "$env:USERPROFILE\\Downloads\\${file}" connect ${token}${server}`;
+  const mac = os.startsWith("mac") ? ` && xattr -d com.apple.quarantine ~/Downloads/${file} 2>/dev/null` : "";
   return `chmod +x ~/Downloads/${file}${mac}; ~/Downloads/${file} connect ${token}${server}`;
 }
 
-function ConnectSteps({
-  token,
-  agent,
-}: {
-  token: string | null;
-  agent: AgentView | null;
-}) {
+function ConnectSteps({ token, agent }: { token: string | null; agent: AgentView | null }) {
   const detected = useOs();
   const origin = useOrigin();
   const [os, setOs] = useState<Os | null>(null);
@@ -174,12 +127,7 @@ function ConnectSteps({
         <p className="font-medium">1. Install Docker</p>
         <p className="text-muted-foreground">
           Your apps run in Docker containers. Install{" "}
-          <a
-            className="text-primary hover:underline"
-            href="https://www.docker.com/products/docker-desktop/"
-            target="_blank"
-            rel="noreferrer"
-          >
+          <a className="text-primary hover:underline" href="https://www.docker.com/products/docker-desktop/" target="_blank" rel="noreferrer">
             Docker Desktop
           </a>{" "}
           (Windows, macOS) or Docker Engine (Linux), and start it.
@@ -187,10 +135,7 @@ function ConnectSteps({
       </li>
       <li className="space-y-2">
         <p className="font-medium">2. Download the CloudLab agent</p>
-        <p className="text-muted-foreground">
-          A small program that runs your apps and talks to CloudLab. It never
-          lets CloudLab into your computer: it only asks CloudLab for work.
-        </p>
+        <p className="text-muted-foreground">A small program that runs your apps and talks to CloudLab. It never lets CloudLab into your computer: it only asks CloudLab for work.</p>
         <div className="flex flex-wrap items-center gap-2">
           <Button asChild size="sm">
             <a href={`${AGENT_RELEASE}/${download.file}`}>
@@ -212,40 +157,19 @@ function ConnectSteps({
         </div>
         <p className="text-xs text-muted-foreground">
           Have Node.js 20+? You can use{" "}
-          <a
-            className="text-primary hover:underline"
-            href={`${AGENT_RELEASE}/cloudlab-agent.mjs`}
-            download
-          >
+          <a className="text-primary hover:underline" href={`${AGENT_RELEASE}/cloudlab-agent.mjs`} download>
             cloudlab-agent.mjs
           </a>{" "}
-          instead:{" "}
-          <span className="font-mono">
-            node cloudlab-agent.mjs connect &lt;code&gt;
-          </span>
-          .
+          instead: <span className="font-mono">node cloudlab-agent.mjs connect &lt;code&gt;</span>.
         </p>
       </li>
       <li className="space-y-2">
         <p className="font-medium">3. Connect it</p>
         {!code ? (
           <>
-            <p className="text-muted-foreground">
-              Get a connect code for this computer. It works for this account
-              only{agent ? ", and replaces the computer connected now" : ""}.
-            </p>
-            <Button
-              size="sm"
-              variant={agent ? "outline" : "default"}
-              onClick={() => pair.mutate()}
-              disabled={pair.isPending}
-            >
-              {pair.isPending ? (
-                <Loader2Icon className="animate-spin" />
-              ) : (
-                <PlugZapIcon />
-              )}{" "}
-              {agent ? "Connect a different computer" : "Connect my computer"}
+            <p className="text-muted-foreground">Get a connect code for this computer. It works for this account only{agent ? ", and replaces the computer connected now" : ""}.</p>
+            <Button size="sm" variant={agent ? "outline" : "default"} onClick={() => pair.mutate()} disabled={pair.isPending}>
+              {pair.isPending ? <Loader2Icon className="animate-spin" /> : <PlugZapIcon />} {agent ? "Connect a different computer" : "Connect my computer"}
             </Button>
             <ErrorLine error={pair.error} />
           </>
@@ -256,26 +180,13 @@ function ConnectSteps({
                 ? "Double-click the downloaded file and paste this code when it asks. (If Windows says it protected your PC: More info → Run anyway.)"
                 : "Open a terminal and run this (it makes the download runnable, then connects):"}
             </p>
-            {chosen === "windows" ? (
-              <CopyText text={code} />
-            ) : (
-              <CopyText
-                text={startCommand(chosen, download.file, code, origin)}
-              />
-            )}
+            {chosen === "windows" ? <CopyText text={code} /> : <CopyText text={startCommand(chosen, download.file, code, origin)} />}
             {chosen === "windows" && (
               <p className="text-xs text-muted-foreground">
-                Or from PowerShell:{" "}
-                <span className="font-mono break-all">
-                  {startCommand(chosen, download.file, code, origin)}
-                </span>
+                Or from PowerShell: <span className="font-mono break-all">{startCommand(chosen, download.file, code, origin)}</span>
               </p>
             )}
-            <p className="text-xs text-muted-foreground">
-              The code is shown only once. Keep the agent&apos;s window open
-              while you use Local mode; this page turns green when it&apos;s
-              connected.
-            </p>
+            <p className="text-xs text-muted-foreground">The code is shown only once. Keep the agent&apos;s window open while you use Local mode; this page turns green when it&apos;s connected.</p>
           </>
         )}
       </li>
@@ -297,20 +208,12 @@ function ComputerCard() {
           <CardTitle className="flex items-center gap-2">
             <LaptopIcon className="size-4" /> Connect your computer
           </CardTitle>
-          <CardDescription>
-            Three steps, once. After that, open the agent whenever you want to
-            use Local mode.
-          </CardDescription>
+          <CardDescription>Three steps, once. After that, open the agent whenever you want to use Local mode.</CardDescription>
         </CardHeader>
         <CardContent className="pb-5">
           <ConnectSteps token={null} agent={agent} />
           {reconnect && (
-            <Button
-              variant="ghost"
-              size="sm"
-              className="mt-3"
-              onClick={() => setReconnect(false)}
-            >
+            <Button variant="ghost" size="sm" className="mt-3" onClick={() => setReconnect(false)}>
               Cancel
             </Button>
           )}
@@ -337,19 +240,10 @@ function ComputerCard() {
           </CardDescription>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setReconnect(true)}
-          >
+          <Button variant="outline" size="sm" onClick={() => setReconnect(true)}>
             <PlugZapIcon /> Connect another
           </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => disconnect.mutate()}
-            disabled={disconnect.isPending}
-          >
+          <Button variant="outline" size="sm" onClick={() => disconnect.mutate()} disabled={disconnect.isPending}>
             <UnplugIcon /> Disconnect
           </Button>
         </div>
@@ -359,22 +253,15 @@ function ComputerCard() {
           <div>
             <p className="text-xs text-muted-foreground">System</p>
             <p>
-              {{ win32: "Windows", darwin: "macOS", linux: "Linux" }[
-                info.platform
-              ] ?? info.platform}{" "}
-              · {info.arch}
+              {{ win32: "Windows", darwin: "macOS", linux: "Linux" }[info.platform] ?? info.platform} · {info.arch}
             </p>
           </div>
           <div>
             <p className="text-xs text-muted-foreground">Processor</p>
             <p className="flex items-center gap-1.5">
-              <CpuIcon className="size-3.5 text-muted-foreground" /> {info.cpus}{" "}
-              cores
+              <CpuIcon className="size-3.5 text-muted-foreground" /> {info.cpus} cores
             </p>
-            <p
-              className="truncate text-xs text-muted-foreground"
-              title={info.cpuModel}
-            >
+            <p className="truncate text-xs text-muted-foreground" title={info.cpuModel}>
               {info.cpuModel}
             </p>
           </div>
@@ -390,8 +277,7 @@ function ComputerCard() {
               <p className="text-success">Ready · {info.docker.version}</p>
             ) : (
               <p className="flex items-start gap-1.5">
-                <TriangleAlertIcon className="mt-0.5 size-3.5 shrink-0 text-warning" />{" "}
-                Not available
+                <TriangleAlertIcon className="mt-0.5 size-3.5 shrink-0 text-warning" /> Not available
               </p>
             )}
           </div>
@@ -400,18 +286,14 @@ function ComputerCard() {
               <p className="font-medium">Running without Docker</p>
               <p className="text-muted-foreground">{info.docker.error}</p>
               <p className="mt-1 text-muted-foreground">
-                Without Docker, apps run straight on this computer: static sites
-                and Node.js apps work as they are, Python apps if Python is
-                installed. Code from GitHub only runs if it&apos;s a static
-                site, and projects with their own Dockerfile need Docker.
+                Without Docker, apps run straight on this computer: static sites and Node.js apps work as they are, Python apps if Python is installed. Code from
+                GitHub only runs if it&apos;s a static site, and projects with their own Dockerfile need Docker.
               </p>
             </div>
           )}
           {info.workspace && (
             <div className="sm:col-span-2 lg:col-span-4">
-              <p className="text-xs text-muted-foreground">
-                Your projects folder
-              </p>
+              <p className="text-xs text-muted-foreground">Your projects folder</p>
               <p className="font-mono text-xs break-all">{info.workspace}</p>
             </div>
           )}
@@ -429,12 +311,11 @@ const SDK_SERVICES = [
   { id: "s3", label: "S3" },
   { id: "dynamodb", label: "DynamoDB" },
   { id: "sqs", label: "SQS" },
+  { id: "sns", label: "SNS" },
 ] as const;
 type SdkService = (typeof SDK_SERVICES)[number]["id"];
 
-function sdkExamples(
-  endpoint: string,
-): Record<SdkService, { node: string; python: string; cli: string }> {
+function sdkExamples(endpoint: string): Record<SdkService, { node: string; python: string; cli: string }> {
   const e = `--endpoint-url ${endpoint}`;
   return {
     s3: {
@@ -526,12 +407,40 @@ for m in sqs.receive_message(QueueUrl=url, WaitTimeSeconds=20).get("Messages", [
 aws sqs send-message --queue-url http://localhost:4566/<account>/orders --message-body "hello" ${e}
 aws sqs receive-message --queue-url http://localhost:4566/<account>/orders --wait-time-seconds 20 ${e}`,
     },
+    sns: {
+      node: `// npm install @aws-sdk/client-sns
+import { SNSClient, CreateTopicCommand, SubscribeCommand, PublishCommand } from "@aws-sdk/client-sns";
+
+const sns = new SNSClient({ region: "local-1", endpoint: "${endpoint}" });
+const { TopicArn } = await sns.send(new CreateTopicCommand({ Name: "alerts" }));
+
+// Your app gets a POST for each message. SNS first sends a SubscriptionConfirmation:
+// confirm by visiting its SubscribeURL (fetch(body.SubscribeURL)).
+await sns.send(new SubscribeCommand({ TopicArn, Protocol: "http", Endpoint: "http://localhost:3000/sns" }));
+
+await sns.send(new PublishCommand({
+  TopicArn,
+  Message: "Disk is 91% full",
+  MessageAttributes: { severity: { DataType: "String", StringValue: "high" } },
+}));`,
+      python: `# pip install boto3
+import boto3
+
+sns = boto3.client("sns", region_name="local-1", endpoint_url="${endpoint}")
+topic = sns.create_topic(Name="alerts")["TopicArn"]
+
+# A queue subscriber: its access policy must let the topic send to it (as on AWS).
+sns.subscribe(TopicArn=topic, Protocol="sqs", Endpoint="arn:aws:sqs:local-1:<account>:alerts-inbox")
+sns.publish(TopicArn=topic, Message="Disk is 91% full", Subject="Disk")`,
+      cli: `aws sns create-topic --name alerts ${e}
+aws sns subscribe --topic-arn <topic-arn> --protocol http --notification-endpoint http://localhost:3000/sns ${e}
+aws sns publish --topic-arn <topic-arn> --message "Disk is 91% full" ${e}`,
+    },
   };
 }
 
 function keysCommand(os: Os, id: string, secret: string) {
-  if (os === "windows")
-    return `$env:AWS_ACCESS_KEY_ID="${id}"\n$env:AWS_SECRET_ACCESS_KEY="${secret}"\n$env:AWS_REGION="local-1"`;
+  if (os === "windows") return `$env:AWS_ACCESS_KEY_ID="${id}"\n$env:AWS_SECRET_ACCESS_KEY="${secret}"\n$env:AWS_REGION="local-1"`;
   return `export AWS_ACCESS_KEY_ID=${id}\nexport AWS_SECRET_ACCESS_KEY=${secret}\nexport AWS_REGION=local-1`;
 }
 
@@ -554,28 +463,18 @@ function SdkAccessCard({ info }: { info: AgentInfo }) {
 
   let body: React.ReactNode;
   if (!api || api.awsPort === undefined) {
-    body = (
-      <p className="text-muted-foreground">
-        Your agent is too old for this. Download the latest agent above and
-        start it again.
-      </p>
-    );
+    body = <p className="text-muted-foreground">Your agent is too old for this. Download the latest agent above and start it again.</p>;
   } else if (api.awsPort === null) {
     body = (
       <p className="flex items-start gap-2">
-        <TriangleAlertIcon className="mt-0.5 size-4 shrink-0 text-warning" />{" "}
-        The agent couldn&apos;t open port 4566 because another program is using
-        it (LocalStack, maybe). Close that program and restart the agent.
+        <TriangleAlertIcon className="mt-0.5 size-4 shrink-0 text-warning" /> The agent couldn&apos;t open port 4566 because another program is using it (LocalStack,
+        maybe). Close that program and restart the agent.
       </p>
     );
   } else if (creds.isLoading) {
     body = <Skeleton className="h-24 w-full" />;
   } else if (creds.error || !creds.data) {
-    body = (
-      <ErrorLine
-        error={creds.error ?? new Error("The agent didn't return keys.")}
-      />
-    );
+    body = <ErrorLine error={creds.error ?? new Error("The agent didn't return keys.")} />;
   } else {
     const c = creds.data;
     const secret = show ? c.secretAccessKey : MASK;
@@ -584,22 +483,12 @@ function SdkAccessCard({ info }: { info: AgentInfo }) {
       <div className="space-y-4">
         <div className="grid gap-3 sm:grid-cols-2 [&>*]:min-w-0">
           <div className="space-y-1">
-            <p className="text-xs text-muted-foreground">
-              Endpoint (this computer)
-            </p>
+            <p className="text-xs text-muted-foreground">Endpoint (this computer)</p>
             <CopyText text={c.endpoint} />
           </div>
           <div className="space-y-1">
-            <p className="text-xs text-muted-foreground">
-              Endpoint (other devices on the same Wi-Fi)
-            </p>
-            {c.lanEndpoint ? (
-              <CopyText text={c.lanEndpoint} />
-            ) : (
-              <p className="py-2 text-muted-foreground">
-                Not on a network right now.
-              </p>
-            )}
+            <p className="text-xs text-muted-foreground">Endpoint (other devices on the same Wi-Fi)</p>
+            {c.lanEndpoint ? <CopyText text={c.lanEndpoint} /> : <p className="py-2 text-muted-foreground">Not on a network right now.</p>}
           </div>
           <div className="space-y-1">
             <p className="text-xs text-muted-foreground">Access key ID</p>
@@ -608,11 +497,7 @@ function SdkAccessCard({ info }: { info: AgentInfo }) {
           <div className="space-y-1">
             <p className="flex items-center justify-between text-xs text-muted-foreground">
               Secret access key
-              <button
-                type="button"
-                className="text-primary hover:underline"
-                onClick={() => setShow((s) => !s)}
-              >
+              <button type="button" className="text-primary hover:underline" onClick={() => setShow((s) => !s)}>
                 {show ? "Hide" : "Show"}
               </button>
             </p>
@@ -622,8 +507,7 @@ function SdkAccessCard({ info }: { info: AgentInfo }) {
         <div className="space-y-1">
           <p className="font-medium">1. Put the keys in your terminal</p>
           <p className="text-xs text-muted-foreground">
-            Or run <span className="font-mono">aws configure</span> once with
-            them, and region <span className="font-mono">local-1</span>.
+            Or run <span className="font-mono">aws configure</span> once with them, and region <span className="font-mono">local-1</span>.
             {!show && " Click Show above to copy the real secret."}
           </p>
           <CopyText text={keysCommand(os, c.accessKeyId, secret)} />
@@ -633,14 +517,7 @@ function SdkAccessCard({ info }: { info: AgentInfo }) {
             <p className="font-medium">2. Point your code at {c.endpoint}</p>
             <div className="flex gap-1" role="group" aria-label="Service">
               {SDK_SERVICES.map((x) => (
-                <Button
-                  key={x.id}
-                  type="button"
-                  size="sm"
-                  variant={svc === x.id ? "secondary" : "ghost"}
-                  aria-pressed={svc === x.id}
-                  onClick={() => setSvc(x.id)}
-                >
+                <Button key={x.id} type="button" size="sm" variant={svc === x.id ? "secondary" : "ghost"} aria-pressed={svc === x.id} onClick={() => setSvc(x.id)}>
                   {x.label}
                 </Button>
               ))}
@@ -664,12 +541,9 @@ function SdkAccessCard({ info }: { info: AgentInfo }) {
           </Tabs>
         </div>
         <p className="text-xs text-muted-foreground">
-          Works today: S3 (buckets, uploads, downloads, multipart, copy,
-          presigned URLs), DynamoDB (tables, items, queries, indexes, batches,
-          transactions, PartiQL) and SQS (queues, batches, long polling,
-          dead-letter queues). What your code creates shows up in the console
-          under My computer (local). Keep the secret to yourself: anyone with
-          it, on your network, can use them.
+          Works today: S3 (buckets, uploads, downloads, multipart, copy, presigned URLs), DynamoDB (tables, items, queries, indexes, batches, transactions, PartiQL),
+          SQS (queues, batches, long polling, dead-letter queues) and SNS (topics, publishing to your queues and to your apps over HTTP). What your code creates shows
+          up in the console under My computer (local). Keep the secret to yourself: anyone with it, on your network, can use them.
         </p>
       </div>
     );
@@ -682,9 +556,8 @@ function SdkAccessCard({ info }: { info: AgentInfo }) {
           <KeyRoundIcon className="size-4" /> Use AWS SDKs and the AWS CLI
         </CardTitle>
         <CardDescription>
-          The agent answers AWS&apos;s own APIs on this computer, so code
-          written for AWS works here: just set the endpoint. Same requests, same
-          errors, and your files stay on this computer.
+          The agent answers AWS&apos;s own APIs on this computer, so code written for AWS works here: just set the endpoint. Same requests, same errors, and your files
+          stay on this computer.
         </CardDescription>
       </CardHeader>
       <CardContent className="pb-5 text-sm">{body}</CardContent>
@@ -716,19 +589,8 @@ function DeployCard() {
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
     setInvalid(null);
-    const source =
-      kind === "sample"
-        ? { type: "sample", sample }
-        : kind === "github"
-          ? { type: "github", repo, branch }
-          : { type: "folder", folder };
-    const parsed = deployInput.safeParse({
-      name,
-      source,
-      hostPort: port || undefined,
-      domain,
-      mode,
-    });
+    const source = kind === "sample" ? { type: "sample", sample } : kind === "github" ? { type: "github", repo, branch } : { type: "folder", folder };
+    const parsed = deployInput.safeParse({ name, source, hostPort: port || undefined, domain, mode });
     if (!parsed.success) {
       setInvalid(parsed.error.issues[0]?.message ?? "Check the form.");
       return;
@@ -741,12 +603,11 @@ function DeployCard() {
     });
   };
 
-  const tabs: { kind: SourceKind; label: string; Icon: typeof PackageIcon }[] =
-    [
-      { kind: "sample", label: "Sample app", Icon: PackageIcon },
-      { kind: "github", label: "GitHub repository", Icon: GitBranchIcon },
-      { kind: "folder", label: "A folder on my computer", Icon: FolderIcon },
-    ];
+  const tabs: { kind: SourceKind; label: string; Icon: typeof PackageIcon }[] = [
+    { kind: "sample", label: "Sample app", Icon: PackageIcon },
+    { kind: "github", label: "GitHub repository", Icon: GitBranchIcon },
+    { kind: "folder", label: "A folder on my computer", Icon: FolderIcon },
+  ];
 
   return (
     <Card>
@@ -755,28 +616,15 @@ function DeployCard() {
           <RocketIcon className="size-4" /> Deploy an app
         </CardTitle>
         <CardDescription>
-          The agent gets the code, builds a Docker image (with your Dockerfile,
-          or one it writes for Node.js, Python or a static site) and runs it.
-          Each app gets its own port on your computer.
+          The agent gets the code, builds a Docker image (with your Dockerfile, or one it writes for Node.js, Python or a static site) and runs it. Each app gets
+          its own port on your computer.
         </CardDescription>
       </CardHeader>
       <CardContent className="pb-5">
         <form onSubmit={submit} className="space-y-4">
-          <div
-            className="flex flex-wrap gap-2"
-            role="tablist"
-            aria-label="Where the code comes from"
-          >
+          <div className="flex flex-wrap gap-2" role="tablist" aria-label="Where the code comes from">
             {tabs.map(({ kind: k, label, Icon }) => (
-              <Button
-                key={k}
-                type="button"
-                role="tab"
-                aria-selected={kind === k}
-                size="sm"
-                variant={kind === k ? "secondary" : "ghost"}
-                onClick={() => setKind(k)}
-              >
+              <Button key={k} type="button" role="tab" aria-selected={kind === k} size="sm" variant={kind === k ? "secondary" : "ghost"} onClick={() => setKind(k)}>
                 <Icon /> {label}
               </Button>
             ))}
@@ -785,25 +633,14 @@ function DeployCard() {
           <div className="grid gap-4 sm:grid-cols-2 [&>*]:min-w-0">
             <div className="space-y-1.5">
               <Label htmlFor="app-name">App name</Label>
-              <Input
-                id="app-name"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="my-site"
-                autoComplete="off"
-              />
-              <p className="text-xs text-muted-foreground">
-                Lowercase letters, numbers and hyphens.
-              </p>
+              <Input id="app-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="my-site" autoComplete="off" />
+              <p className="text-xs text-muted-foreground">Lowercase letters, numbers and hyphens.</p>
             </div>
 
             {kind === "sample" && (
               <div className="space-y-1.5">
                 <Label htmlFor="app-sample">Sample</Label>
-                <Select
-                  value={sample}
-                  onValueChange={(v) => setSample(v as SampleId)}
-                >
+                <Select value={sample} onValueChange={(v) => setSample(v as SampleId)}>
                   <SelectTrigger id="app-sample" className="w-full">
                     <SelectValue />
                   </SelectTrigger>
@@ -815,9 +652,7 @@ function DeployCard() {
                     ))}
                   </SelectContent>
                 </Select>
-                <p className="text-xs text-muted-foreground">
-                  {SAMPLES.find((s) => s.id === sample)?.description}
-                </p>
+                <p className="text-xs text-muted-foreground">{SAMPLES.find((s) => s.id === sample)?.description}</p>
               </div>
             )}
 
@@ -825,23 +660,11 @@ function DeployCard() {
               <>
                 <div className="space-y-1.5">
                   <Label htmlFor="app-repo">Public repository</Label>
-                  <Input
-                    id="app-repo"
-                    value={repo}
-                    onChange={(e) => setRepo(e.target.value)}
-                    placeholder="https://github.com/owner/repo"
-                    autoComplete="off"
-                  />
+                  <Input id="app-repo" value={repo} onChange={(e) => setRepo(e.target.value)} placeholder="https://github.com/owner/repo" autoComplete="off" />
                 </div>
                 <div className="space-y-1.5">
                   <Label htmlFor="app-branch">Branch (optional)</Label>
-                  <Input
-                    id="app-branch"
-                    value={branch}
-                    onChange={(e) => setBranch(e.target.value)}
-                    placeholder="main"
-                    autoComplete="off"
-                  />
+                  <Input id="app-branch" value={branch} onChange={(e) => setBranch(e.target.value)} placeholder="main" autoComplete="off" />
                 </div>
               </>
             )}
@@ -849,17 +672,9 @@ function DeployCard() {
             {kind === "folder" && (
               <div className="space-y-1.5">
                 <Label htmlFor="app-folder">Project folder</Label>
-                <Select
-                  value={folder}
-                  onValueChange={setFolder}
-                  disabled={folders.length === 0}
-                >
+                <Select value={folder} onValueChange={setFolder} disabled={folders.length === 0}>
                   <SelectTrigger id="app-folder" className="w-full">
-                    <SelectValue
-                      placeholder={
-                        folders.length ? "Choose a folder" : "No folders yet"
-                      }
-                    />
+                    <SelectValue placeholder={folders.length ? "Choose a folder" : "No folders yet"} />
                   </SelectTrigger>
                   <SelectContent>
                     {folders.map((f) => (
@@ -870,11 +685,7 @@ function DeployCard() {
                   </SelectContent>
                 </Select>
                 <p className="text-xs text-muted-foreground">
-                  Folders inside{" "}
-                  <span className="font-mono">
-                    {agent?.info?.workspace ?? "CloudLab"}
-                  </span>{" "}
-                  on your computer. Copy a project there and it shows up here
+                  Folders inside <span className="font-mono">{agent?.info?.workspace ?? "CloudLab"}</span> on your computer. Copy a project there and it shows up here
                   within a few seconds.
                 </p>
               </div>
@@ -887,9 +698,7 @@ function DeployCard() {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="auto">
-                    Auto: Docker if it&apos;s running, else without
-                  </SelectItem>
+                  <SelectItem value="auto">Auto: Docker if it&apos;s running, else without</SelectItem>
                   <SelectItem value="docker">Docker</SelectItem>
                   <SelectItem value="native">Without Docker</SelectItem>
                 </SelectContent>
@@ -908,54 +717,24 @@ function DeployCard() {
             </div>
 
             <div className="space-y-1.5">
-              <Label htmlFor="app-domain">
-                Name on your network (optional)
-              </Label>
-              <Input
-                id="app-domain"
-                value={domain}
-                onChange={(e) => setDomain(e.target.value)}
-                placeholder="myshop.home"
-                autoComplete="off"
-              />
-              <p className="text-xs text-muted-foreground">
-                Open the app as http://myshop.home from your phone and other
-                devices on the same Wi-Fi.
-              </p>
+              <Label htmlFor="app-domain">Name on your network (optional)</Label>
+              <Input id="app-domain" value={domain} onChange={(e) => setDomain(e.target.value)} placeholder="myshop.home" autoComplete="off" />
+              <p className="text-xs text-muted-foreground">Open the app as http://myshop.home from your phone and other devices on the same Wi-Fi.</p>
             </div>
 
             <div className="space-y-1.5">
               <Label htmlFor="app-port">Port (optional)</Label>
-              <Input
-                id="app-port"
-                inputMode="numeric"
-                value={port}
-                onChange={(e) => setPort(e.target.value.replace(/\D/g, ""))}
-                placeholder="Picked for you, from 8080"
-              />
+              <Input id="app-port" inputMode="numeric" value={port} onChange={(e) => setPort(e.target.value.replace(/\D/g, ""))} placeholder="Picked for you, from 8080" />
             </div>
           </div>
 
           <div className="flex flex-wrap items-center gap-3">
             <Button type="submit" disabled={!connected || deploy.isPending}>
-              {deploy.isPending ? (
-                <Loader2Icon className="animate-spin" />
-              ) : (
-                <RocketIcon />
-              )}{" "}
-              Deploy
+              {deploy.isPending ? <Loader2Icon className="animate-spin" /> : <RocketIcon />} Deploy
             </Button>
-            {!connected && (
-              <span className="text-sm text-muted-foreground">
-                Connect your computer first.
-              </span>
-            )}
+            {!connected && <span className="text-sm text-muted-foreground">Connect your computer first.</span>}
           </div>
-          {invalid ? (
-            <p className="text-sm text-destructive">{invalid}</p>
-          ) : (
-            <ErrorLine error={deploy.error} />
-          )}
+          {invalid ? <p className="text-sm text-destructive">{invalid}</p> : <ErrorLine error={deploy.error} />}
         </form>
       </CardContent>
     </Card>
@@ -975,19 +754,12 @@ const ACTIONS: Record<LocalApp["status"], AppAction[]> = {
   missing: ["redeploy", "delete"],
 };
 
-const ACTION_LABEL: Record<AppAction, string> = {
-  start: "Start",
-  stop: "Stop",
-  restart: "Restart",
-  redeploy: "Redeploy",
-  delete: "Delete",
-};
+const ACTION_LABEL: Record<AppAction, string> = { start: "Start", stop: "Stop", restart: "Restart", redeploy: "Redeploy", delete: "Delete" };
 const BUSY = ["queued", "downloading", "building", "starting"];
 
 function sourceLabel(app: LocalApp) {
   const s = app.source;
-  if (s.type === "sample")
-    return SAMPLES.find((x) => x.id === s.sample)?.label ?? s.sample;
+  if (s.type === "sample") return SAMPLES.find((x) => x.id === s.sample)?.label ?? s.sample;
   if (s.type === "folder") return `Folder ${s.folder}`;
   return `${s.repo.replace("https://github.com/", "")}${s.branch ? ` (${s.branch})` : ""}`;
 }
@@ -996,39 +768,25 @@ function Logs({ title, text }: { title: string; text: string }) {
   if (!text) return null;
   return (
     <details className="group">
-      <summary className="cursor-pointer text-xs font-medium text-muted-foreground select-none hover:text-foreground">
-        {title}
-      </summary>
-      <pre className="mt-2 max-h-72 overflow-auto rounded-md bg-[#0d1117] p-3 font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-[#c9d1d9]">
-        {text}
-      </pre>
+      <summary className="cursor-pointer text-xs font-medium text-muted-foreground select-none hover:text-foreground">{title}</summary>
+      <pre className="mt-2 max-h-72 overflow-auto rounded-md bg-[#0d1117] p-3 font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-[#c9d1d9]">{text}</pre>
     </details>
   );
 }
 
 /** The app's name on the home network: shown as a link, editable in place. */
-function DomainLine({
-  app,
-  gateway,
-}: {
-  app: LocalApp;
-  gateway: AgentInfo["gateway"];
-}) {
+function DomainLine({ app, gateway }: { app: LocalApp; gateway: AgentInfo["gateway"] }) {
   const set = useSetDomain(app.id);
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState(app.domain ?? "");
   const [invalid, setInvalid] = useState<string | null>(null);
-  const port =
-    gateway?.httpPort && gateway.httpPort !== 80 ? `:${gateway.httpPort}` : "";
+  const port = gateway?.httpPort && gateway.httpPort !== 80 ? `:${gateway.httpPort}` : "";
 
   const save = (domain: string | null) => {
     setInvalid(null);
     if (domain !== null) {
       const parsed = domainSchema.safeParse(domain);
-      if (!parsed.success)
-        return setInvalid(
-          parsed.error.issues[0]?.message ?? "Not a valid name.",
-        );
+      if (!parsed.success) return setInvalid(parsed.error.issues[0]?.message ?? "Not a valid name.");
       domain = parsed.data;
     }
     set.mutate(domain, { onSuccess: () => setEditing(false) });
@@ -1044,31 +802,15 @@ function DomainLine({
         }}
       >
         <div className="flex flex-wrap items-center gap-2">
-          <Input
-            aria-label="Name on your network"
-            value={value}
-            onChange={(e) => setValue(e.target.value)}
-            placeholder="myshop.home"
-            className="h-8 w-56"
-            autoFocus
-          />
+          <Input aria-label="Name on your network" value={value} onChange={(e) => setValue(e.target.value)} placeholder="myshop.home" className="h-8 w-56" autoFocus />
           <Button type="submit" size="sm" disabled={set.isPending}>
             Save
           </Button>
-          <Button
-            type="button"
-            size="sm"
-            variant="ghost"
-            onClick={() => setEditing(false)}
-          >
+          <Button type="button" size="sm" variant="ghost" onClick={() => setEditing(false)}>
             Cancel
           </Button>
         </div>
-        {invalid ? (
-          <p className="text-sm text-destructive">{invalid}</p>
-        ) : (
-          <ErrorLine error={set.error} />
-        )}
+        {invalid ? <p className="text-sm text-destructive">{invalid}</p> : <ErrorLine error={set.error} />}
       </form>
     );
   }
@@ -1076,34 +818,18 @@ function DomainLine({
     <p className="flex flex-wrap items-center gap-2 text-sm">
       <GlobeIcon className="size-3.5 text-muted-foreground" />
       {app.domain ? (
-        <a
-          className="font-mono text-primary hover:underline"
-          href={`http://${app.domain}${port}`}
-          target="_blank"
-          rel="noreferrer"
-        >
+        <a className="font-mono text-primary hover:underline" href={`http://${app.domain}${port}`} target="_blank" rel="noreferrer">
           {app.domain}
           {port}
         </a>
       ) : (
         <span className="text-muted-foreground">No name on your network</span>
       )}
-      <Button
-        size="sm"
-        variant="ghost"
-        className="h-7 px-2"
-        onClick={() => (setValue(app.domain ?? ""), setEditing(true))}
-      >
+      <Button size="sm" variant="ghost" className="h-7 px-2" onClick={() => (setValue(app.domain ?? ""), setEditing(true))}>
         {app.domain ? "Change" : "Add a name"}
       </Button>
       {app.domain && (
-        <Button
-          size="sm"
-          variant="ghost"
-          className="h-7 px-2"
-          disabled={set.isPending}
-          onClick={() => save(null)}
-        >
+        <Button size="sm" variant="ghost" className="h-7 px-2" disabled={set.isPending} onClick={() => save(null)}>
           Remove
         </Button>
       )}
@@ -1116,15 +842,8 @@ function AddressLine({ label, url }: { label: string; url: string }) {
   const [copied, setCopied] = useState(false);
   return (
     <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
-      <span className="w-full text-xs text-muted-foreground sm:w-52">
-        {label}
-      </span>
-      <a
-        className="font-mono text-primary hover:underline"
-        href={url}
-        target="_blank"
-        rel="noreferrer"
-      >
+      <span className="w-full text-xs text-muted-foreground sm:w-52">{label}</span>
+      <a className="font-mono text-primary hover:underline" href={url} target="_blank" rel="noreferrer">
         {url}
       </a>
       <Button
@@ -1143,25 +862,13 @@ function AddressLine({ label, url }: { label: string; url: string }) {
           )
         }
       >
-        {copied ? (
-          <CheckIcon className="size-3.5" />
-        ) : (
-          <CopyIcon className="size-3.5" />
-        )}
+        {copied ? <CheckIcon className="size-3.5" /> : <CopyIcon className="size-3.5" />}
       </Button>
     </p>
   );
 }
 
-function AppCard({
-  app,
-  gateway,
-  lanIp,
-}: {
-  app: LocalApp;
-  gateway: AgentInfo["gateway"];
-  lanIp: string | null;
-}) {
+function AppCard({ app, gateway, lanIp }: { app: LocalApp; gateway: AgentInfo["gateway"]; lanIp: string | null }) {
   const action = useLocalAction();
   const busy = BUSY.includes(app.status);
   return (
@@ -1171,10 +878,7 @@ function AppCard({
           <div className="min-w-0 space-y-1">
             <p className="flex flex-wrap items-center gap-2 font-medium">
               {app.name}
-              <StateBadge
-                state={app.status}
-                pending={busy ? app.status : null}
-              />
+              <StateBadge state={app.status} pending={busy ? app.status : null} />
             </p>
             <p className="text-xs text-muted-foreground">
               {sourceLabel(app)}
@@ -1191,42 +895,17 @@ function AppCard({
               </Button>
             )}
             {ACTIONS[app.status].map((a) => (
-              <Button
-                key={a}
-                size="sm"
-                variant={a === "delete" ? "ghost" : "outline"}
-                disabled={action.isPending}
-                onClick={() => action.mutate({ id: app.id, action: a })}
-              >
+              <Button key={a} size="sm" variant={a === "delete" ? "ghost" : "outline"} disabled={action.isPending} onClick={() => action.mutate({ id: app.id, action: a })}>
                 {ACTION_LABEL[a]}
               </Button>
             ))}
           </div>
         </div>
-        {app.detail && (
-          <p
-            className={cn(
-              "text-sm",
-              app.status === "failed"
-                ? "text-destructive"
-                : "text-muted-foreground",
-            )}
-          >
-            {app.detail}
-          </p>
-        )}
+        {app.detail && <p className={cn("text-sm", app.status === "failed" ? "text-destructive" : "text-muted-foreground")}>{app.detail}</p>}
         {app.url && (
           <div className="space-y-1">
-            <AddressLine
-              label="On the computer running the agent"
-              url={app.url}
-            />
-            {lanIp && app.hostPort && (
-              <AddressLine
-                label="On other devices on the same Wi-Fi"
-                url={`http://${lanIp}:${app.hostPort}`}
-              />
-            )}
+            <AddressLine label="On the computer running the agent" url={app.url} />
+            {lanIp && app.hostPort && <AddressLine label="On other devices on the same Wi-Fi" url={`http://${lanIp}:${app.hostPort}`} />}
           </div>
         )}
         <DomainLine app={app} gateway={gateway} />
@@ -1240,13 +919,7 @@ function AppCard({
 }
 
 /** How to use app names on other devices: the gateway's state and the DNS setting to change. */
-function NetworkCard({
-  info,
-  apps,
-}: {
-  info: AgentInfo | null | undefined;
-  apps: LocalApp[];
-}) {
+function NetworkCard({ info, apps }: { info: AgentInfo | null | undefined; apps: LocalApp[] }) {
   const named = apps.filter((a) => a.domain);
   if (named.length === 0 || !info) return null;
   const gw = info.gateway;
@@ -1264,61 +937,44 @@ function NetworkCard({
           )}
         </CardTitle>
         <CardDescription>
-          The agent runs a small DNS server on this computer: it answers{" "}
-          {named.map((a) => a.domain).join(", ")} with this computer&apos;s
-          address
-          {ip ? ` (${ip})` : ""}, and passes every other name on to the internet
-          as usual. Devices on the same network that use it as their DNS server
-          can open your apps by name. Nothing is reachable from outside your
-          network.
+          The agent runs a small DNS server on this computer: it answers {named.map((a) => a.domain).join(", ")} with this computer&apos;s address
+          {ip ? ` (${ip})` : ""}, and passes every other name on to the internet as usual. Devices on the same network that use it as their DNS server can open
+          your apps by name. Nothing is reachable from outside your network.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4 pb-5 text-sm">
         {gw?.error && (
           <p className="flex items-start gap-2">
-            <TriangleAlertIcon className="mt-0.5 size-4 shrink-0 text-warning" />{" "}
-            {gw.error}
+            <TriangleAlertIcon className="mt-0.5 size-4 shrink-0 text-warning" /> {gw.error}
           </p>
         )}
-        {!gw && (
-          <p className="text-muted-foreground">
-            Starting the gateway… (the first time, the agent builds it, which
-            takes a minute.)
-          </p>
-        )}
+        {!gw && <p className="text-muted-foreground">Starting the gateway… (the first time, the agent builds it, which takes a minute.)</p>}
         {ip && gw?.dns && (
           <div className="grid gap-4 md:grid-cols-3 [&>*]:min-w-0">
             <div className="space-y-1">
               <p className="font-medium">Phone or tablet</p>
               <p className="text-muted-foreground">
-                Wi-Fi settings → your network → DNS → Manual. Add{" "}
-                <span className="font-mono">{ip}</span> as the DNS server.
+                Wi-Fi settings → your network → DNS → Manual. Add <span className="font-mono">{ip}</span> as the DNS server.
               </p>
             </div>
             <div className="space-y-1">
               <p className="font-medium">Another computer</p>
               <p className="text-muted-foreground">
-                Network settings → your connection → DNS servers:{" "}
-                <span className="font-mono">{ip}</span>.
+                Network settings → your connection → DNS servers: <span className="font-mono">{ip}</span>.
               </p>
             </div>
             <div className="space-y-1">
               <p className="font-medium">Every device at once</p>
               <p className="text-muted-foreground">
-                In your router&apos;s settings (DHCP), set the DNS server to{" "}
-                <span className="font-mono">{ip}</span>. Turn it back if you
-                switch this computer off.
+                In your router&apos;s settings (DHCP), set the DNS server to <span className="font-mono">{ip}</span>. Turn it back if you switch this computer off.
               </p>
             </div>
           </div>
         )}
         {ip && (
           <p className="text-xs text-muted-foreground">
-            On this computer itself, either point its DNS at {ip} too, or add a
-            line like{" "}
-            <span className="font-mono">127.0.0.1 {named[0].domain}</span> to
-            its hosts file. If {ip} changes (a different network, or the router
-            hands out a new address), update the DNS settings.
+            On this computer itself, either point its DNS at {ip} too, or add a line like <span className="font-mono">127.0.0.1 {named[0].domain}</span> to its hosts file.
+            If {ip} changes (a different network, or the router hands out a new address), update the DNS settings.
           </p>
         )}
       </CardContent>
@@ -1334,9 +990,8 @@ export function LocalView() {
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">Local mode</h1>
         <p className="text-sm text-muted-foreground">
-          Run real apps on your own computer with Docker, using its CPU, memory
-          and disk. CloudLab is the remote control: nothing is billed, and
-          nothing leaves your computer except status and logs.
+          Run real apps on your own computer with Docker, using its CPU, memory and disk. CloudLab is the remote control: nothing is billed, and nothing leaves your
+          computer except status and logs.
         </p>
       </div>
       {isLoading ? (
@@ -1345,20 +1000,13 @@ export function LocalView() {
         <>
           <ComputerCard />
           <DeployCard />
-          {data?.agent?.online && data.agent.info && (
-            <SdkAccessCard info={data.agent.info} />
-          )}
+          {data?.agent?.online && data.agent.info && <SdkAccessCard info={data.agent.info} />}
           <NetworkCard info={data?.agent?.info} apps={data?.apps ?? []} />
           {data && data.apps.length > 0 && (
             <section className="space-y-3">
               <h2 className="font-medium">Your apps ({data.apps.length})</h2>
               {data.apps.map((a) => (
-                <AppCard
-                  key={a.id}
-                  app={a}
-                  gateway={data.agent?.info?.gateway ?? null}
-                  lanIp={data.agent?.info?.lanIp ?? null}
-                />
+                <AppCard key={a.id} app={a} gateway={data.agent?.info?.gateway ?? null} lanIp={data.agent?.info?.lanIp ?? null} />
               ))}
             </section>
           )}

@@ -11,3 +11,6 @@ export { FileTableHost } from "./dynamodb-host";
 export { QueueWaiters, sqsApi, sqsErrorNames } from "@/engine/sqs/api";
 export { queueConsole } from "@/engine/sqs/console";
 export { FileQueueHost } from "./sqs-host";
+export { snsApi, snsErrorXml, snsResponseXml, SNS_UNSIGNED } from "@/engine/sns/api";
+export { publish, subscriptionConfirmation } from "@/engine/sns/publish";
+export { FileSubscriptionHost, FileTopicHost, LocalHosts } from "./sns-host";

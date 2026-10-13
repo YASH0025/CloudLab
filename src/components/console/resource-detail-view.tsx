@@ -4,6 +4,7 @@ import { format } from "date-fns";
 import { ChevronLeftIcon, Trash2Icon } from "lucide-react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
+import { useEffect, useRef } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -13,6 +14,7 @@ import type { FieldDef, ResolvedTypeDef, ResourceDTO } from "@/engine/types";
 import { useResource, useTypeDef, useUpdateResource } from "@/hooks/use-cloud";
 import { ApiError } from "@/lib/api-client";
 import { routes } from "@/lib/routes";
+import { useConsoleStore } from "@/stores/console-store";
 import { formatValue } from "@/lib/utils";
 import { ConfirmDialog } from "./confirm-dialog";
 import { AutoScalingPanel, LoadBalancerPanel, TargetHealthPanel } from "./load-balancing-panels";
@@ -148,6 +150,18 @@ export function ResourceDetailView() {
   const query = useResource(id);
   const update = useUpdateResource(id);
   const commands = useResourceCommands(typeDef, () => router.push(routes.list(params.service, params.type)));
+
+  // Opening a resource (from a link, Local mode…) switches the console to its region, like AWS's
+  // console does, so panels that list the region's resources (a topic's subscriptions) show the right ones.
+  const region = useConsoleStore((s) => s.region);
+  const setRegion = useConsoleStore((s) => s.setRegion);
+  const itemRegion = query.data?.item.region;
+  const synced = useRef<string | null>(null);
+  useEffect(() => {
+    if (!itemRegion || synced.current === id) return;
+    synced.current = id;
+    if (itemRegion !== region) setRegion(itemRegion);
+  }, [id, itemRegion, region, setRegion]);
 
   if (query.isLoading || !typeDef) return <Skeleton className="h-96" />;
   if (query.error) {

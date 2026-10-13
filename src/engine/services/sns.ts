@@ -1,4 +1,5 @@
 import { randomBytes, randomUUID } from "node:crypto";
+import { LOCAL_REGION } from "../catalog";
 import { EngineError } from "../errors";
 import { accountNumber } from "../ids";
 import type { Resource, ResourceTypeDef, ServiceDef } from "../types";
@@ -11,7 +12,7 @@ import type { Resource, ResourceTypeDef, ServiceDef } from "../types";
  * straight away, as on AWS.
  */
 
-export const PROTOCOLS = ["email", "email-json", "lambda", "sqs"] as const;
+export const PROTOCOLS = ["email", "email-json", "lambda", "sqs", "http", "https"] as const;
 export type Protocol = (typeof PROTOCOLS)[number];
 
 /** Recent deliveries kept on a topic, and emails kept in a subscription's inbox. */
@@ -253,6 +254,8 @@ const subscription: ResourceTypeDef = {
         { value: "email-json", label: "Email-JSON", hint: "The full SNS message as JSON, for programs reading a mailbox" },
         { value: "lambda", label: "AWS Lambda", hint: "Runs a function with each message" },
         { value: "sqs", label: "Amazon SQS", hint: "Puts each message in a queue, for a worker to process at its own pace" },
+        { value: "http", label: "HTTP", hint: "POSTs each message to your app (My computer (local) only)" },
+        { value: "https", label: "HTTPS", hint: "POSTs each message to your app over HTTPS (My computer (local) only)" },
       ],
     },
     {
@@ -263,8 +266,9 @@ const subscription: ResourceTypeDef = {
       immutable: true,
       maxLength: 512,
       param: "Endpoint",
-      placeholder: "you@example.com  or  arn:aws:lambda:…:function:hello  or  arn:aws:sqs:…:orders-queue",
-      description: "For email: the address. For Lambda: the function's ARN. For SQS: the queue's ARN (both on their pages). In CloudLab no real email is sent: it lands in the subscription's inbox.",
+      placeholder: "you@example.com  or  arn:aws:sqs:…:orders-queue  or  http://localhost:3000/sns",
+      description:
+        "For email: the address. For Lambda: the function's ARN. For SQS: the queue's ARN (both on their pages). For HTTP(S): your app's URL; SNS first POSTs a SubscriptionConfirmation, and your app confirms by visiting its SubscribeURL. In CloudLab no real email is sent: it lands in the subscription's inbox.",
     },
     {
       key: "rawMessageDelivery",
@@ -302,7 +306,7 @@ const subscription: ResourceTypeDef = {
     arn: (r) => r.id,
   },
   invalidValue({ field }) {
-    if (field.key === "protocol") return invalid("Invalid protocol type (CloudLab supports email, email-json, lambda and sqs)");
+    if (field.key === "protocol") return invalid("Invalid protocol type (CloudLab supports email, email-json, lambda, sqs, and http/https on My computer (local))");
     if (field.key === "endpoint") return invalid("Endpoint");
     if (field.key === "filterPolicy") return invalid("FilterPolicy: failed to parse JSON.");
     return undefined;
@@ -316,8 +320,21 @@ const subscription: ResourceTypeDef = {
       if (!EMAIL.test(endpoint)) throw invalid("Email address");
     } else if (config.protocol === "lambda") {
       if (!LAMBDA_ARN.test(endpoint)) throw invalid("Lambda endpoint ARN");
+      if (ctx.region === LOCAL_REGION) throw invalid("Lambda endpoint: functions don't run on My computer (local) yet. Subscribe a queue or an HTTP endpoint.");
     } else if (config.protocol === "sqs") {
       if (!/^arn:aws:sqs:[a-z0-9-]+:\d{12}:[A-Za-z0-9_-]{1,80}$/.test(endpoint)) throw invalid("SQS endpoint ARN");
+    } else if (config.protocol === "http" || config.protocol === "https") {
+      let url: URL | null = null;
+      try {
+        url = new URL(endpoint);
+      } catch {
+        url = null;
+      }
+      if (!url || url.protocol !== `${config.protocol}:`) throw invalid(`Endpoint must match the specified protocol (${config.protocol}://…)`);
+      // CloudLab's servers don't call out to the internet: the agent delivers, to apps on the learner's network.
+      if (ctx.region !== LOCAL_REGION) {
+        throw invalid("HTTP(S) endpoints: CloudLab delivers to them only from My computer (local), where they reach your own apps. Switch to that region.");
+      }
     }
     if (config.filterPolicy) checkFilterPolicy(String(config.filterPolicy));
     if (!existing) {
@@ -344,6 +361,8 @@ const subscription: ResourceTypeDef = {
       await system.runAction(resource.id, "confirm");
       return;
     }
+    // HTTP(S): the agent POSTs a SubscriptionConfirmation to the endpoint; the app confirms.
+    if (resource.config.protocol === "http" || resource.config.protocol === "https") return;
     const topic = await system.get(String(resource.config.topicArn));
     await system.setAttributes(resource.id, { inbox: [confirmationEmail(resource, topic)] });
   },

@@ -4,6 +4,7 @@ import { EngineError, errors } from "./errors";
 import { buildSchema, collectRefs, type IssueKind } from "./fields";
 import { generateId } from "./ids";
 import { scheduleTransition, settle } from "./lifecycle";
+import { allowsService, invokeFunction } from "./lambda/invoke";
 import { ObjectStorage } from "./objects";
 import { Metrics } from "./telemetry/metrics";
 import { Logs } from "./telemetry/logs";
@@ -135,6 +136,11 @@ export class Engine {
   readonly objects: ObjectStorage;
   /** CloudWatch metrics. */
   readonly metrics: Metrics;
+  /** Lambda, for services that invoke functions (SNS). */
+  readonly lambda = {
+    allows: allowsService,
+    invoke: (accountId: string, fn: Resource, event: unknown, source: string) => invokeFunction(this, accountId, fn, event, source),
+  };
   /** CloudWatch Logs events. */
   readonly logs: Logs;
 

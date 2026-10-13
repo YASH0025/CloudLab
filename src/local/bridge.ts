@@ -17,7 +17,7 @@ export const LOCAL_IMAGES: Record<string, string> = {
  * Types that run for real on the learner's computer. EC2 joins once it's been
  * tried on real Docker; until then the local region refuses it like other services.
  */
-const REAL = new Set(["storage/bucket", "dynamodb/table", "sqs/queue"]);
+export const REAL = new Set(["storage/bucket", "dynamodb/table", "sqs/queue", "sns/topic", "sns/subscription"]);
 
 export function bucketSpec(r: Resource): S3BucketSpec {
   const c = r.config;
@@ -32,7 +32,20 @@ export function bucketSpec(r: Resource): S3BucketSpec {
   };
 }
 
-export const localSpec = (r: Resource): LocalResourceSpec => ({ id: r.id, name: r.name, config: r.config, createdAt: r.createdAt });
+export const localSpec = (r: Resource): LocalResourceSpec => ({
+  id: r.id,
+  name: r.name,
+  config: r.config,
+  createdAt: r.createdAt,
+  state: r.state,
+  // A subscription's token (to build its SubscribeURL) and the inbox it starts with.
+  ...(r.service === "sns" && r.type === "subscription" ? { attributes: { token: r.attributes.token, inbox: r.attributes.inbox ?? [], topicName: r.attributes.topicName } } : {}),
+});
+
+/** A type the agent may create through CloudLab: one that really runs on the learner's computer. */
+export function localType(service: string, type: string) {
+  if (!REAL.has(`${service}/${type}`)) throw new EngineError("NotAvailableLocally", `${service}/${type} doesn't run on My computer (local).`, 400);
+}
 
 /** Ports opened when a rule allows all traffic (a container can't publish every port). */
 export const ALL_TRAFFIC_PORTS = [22, 80, 443, 3000, 5000, 8000, 8080];
@@ -94,7 +107,7 @@ export class AgentBridge implements LocalBridge {
       const def = getTypeDef(r.service, r.type);
       throw new EngineError(
         "NotAvailableLocally",
-        `${def.pluralLabel} don't run on My computer (local) yet. There, today: S3 buckets, DynamoDB tables and SQS queues, for real, with their data on your computer. Use another region to practise with simulated ${def.pluralLabel.toLowerCase()}.`,
+        `${def.pluralLabel} don't run on My computer (local) yet. There, today: S3 buckets, DynamoDB tables, SQS queues and SNS topics, for real, with their data on your computer. Use another region to practise with simulated ${def.pluralLabel.toLowerCase()}.`,
         400,
       );
     }
@@ -131,7 +144,10 @@ export class AgentBridge implements LocalBridge {
   }
 
   async notify(e: { kind: "create" | "update" | "action" | "delete"; resource: Resource; previous?: Resource; action?: string }) {
-    const r = e.resource;
+    // Tasks carry the resource as it is now: hooks may have moved it on already (a queue
+    // subscription is confirmed while it's being created), and an older picture arriving
+    // later would undo that on the computer.
+    const r = e.kind === "delete" || e.resource.service === "compute" ? e.resource : await this.engine.get(e.resource.accountId, e.resource.id).catch(() => e.resource);
     if (r.service === "storage" && r.type === "bucket") {
       const op = e.kind === "create" ? "create-bucket" : e.kind === "delete" ? "delete-bucket" : "configure-bucket";
       try {
@@ -155,6 +171,16 @@ export class AgentBridge implements LocalBridge {
       const op = e.kind === "create" ? "create-queue" : e.kind === "delete" ? "delete-queue" : "configure-queue";
       try {
         await this.local.queueResource(r.accountId, { kind: "sqs", op, id: r.id, queue: localSpec(r) });
+      } catch (err) {
+        if (e.kind !== "delete") throw err;
+      }
+      return;
+    }
+    if (r.service === "sns") {
+      // Topics and subscriptions; confirming a subscription is an action, sent as its new settings and state.
+      const op = `${e.kind === "create" ? "create" : e.kind === "delete" ? "delete" : "configure"}-${r.type}` as ResourceTask["op"];
+      try {
+        await this.local.queueResource(r.accountId, { kind: "sns", op, id: r.id, resource: localSpec(r) });
       } catch (err) {
         if (e.kind !== "delete") throw err;
       }

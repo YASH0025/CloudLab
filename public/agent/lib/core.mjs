@@ -500,13 +500,13 @@ var Parser = class {
     if (this.isKw("IN")) {
       this.next();
       this.expect("(");
-      const list = [this.operand()];
+      const list2 = [this.operand()];
       while (this.peek().text === ",") {
         this.next();
-        list.push(this.operand());
+        list2.push(this.operand());
       }
       this.expect(")");
-      return { type: "in", operand: left, list };
+      return { type: "in", operand: left, list: list2 };
     }
     return this.syntax(op);
   }
@@ -1424,13 +1424,13 @@ var P = class {
       this.next();
       const close = this.is("[") ? "]" : ")";
       this.next();
-      const list = [this.operand().text];
+      const list2 = [this.operand().text];
       while (this.is(",")) {
         this.next();
-        list.push(this.operand().text);
+        list2.push(this.operand().text);
       }
       this.expect(close);
-      return { text: `${left.text} IN (${list.join(", ")})` };
+      return { text: `${left.text} IN (${list2.join(", ")})` };
     }
     const op = this.next();
     if (!["=", "<>", "!=", "<", "<=", ">", ">="].includes(op.v)) throw malformed(`Unexpected token: ${op.v}`);
@@ -1776,8 +1776,8 @@ var ops = {
     const limit = body.Limit === void 0 ? 100 : Number(body.Limit);
     if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw validation(`1 validation error detected: Value '${body.Limit}' at 'limit' failed to satisfy constraint: Member must have value less than or equal to 100`);
     const rest = after ? names.filter((n) => n > after) : names;
-    const page2 = rest.slice(0, limit);
-    return { TableNames: page2, ...rest.length > limit ? { LastEvaluatedTableName: page2[page2.length - 1] } : {} };
+    const page3 = rest.slice(0, limit);
+    return { TableNames: page3, ...rest.length > limit ? { LastEvaluatedTableName: page3[page3.length - 1] } : {} };
   },
   async UpdateTable(ctx, body) {
     const { t, patch } = await updateTableInput(ctx, body);
@@ -1906,10 +1906,10 @@ var ops = {
     return { Responses: responses, UnprocessedKeys: {} };
   },
   async TransactWriteItems(ctx, body) {
-    const list = body.TransactItems ?? [];
-    if (!list.length || list.length > MAX_TRANSACT) throw validation(`1 validation error detected: Value at 'transactItems' failed to satisfy constraint: Member must have length less than or equal to ${MAX_TRANSACT}`);
+    const list2 = body.TransactItems ?? [];
+    if (!list2.length || list2.length > MAX_TRANSACT) throw validation(`1 validation error detected: Value at 'transactItems' failed to satisfy constraint: Member must have length less than or equal to ${MAX_TRANSACT}`);
     const steps = await Promise.all(
-      list.map(async (x) => {
+      list2.map(async (x) => {
         const kind = ["Put", "Update", "Delete", "ConditionCheck"].find((k) => x[k]);
         if (!kind) throw validation("TransactItems can only contain one of Check, Put, Update or Delete");
         const op = x[kind];
@@ -1965,10 +1965,10 @@ var ops = {
     return {};
   },
   async TransactGetItems(ctx, body) {
-    const list = body.TransactItems ?? [];
-    if (!list.length || list.length > MAX_TRANSACT) throw validation(`1 validation error detected: Value at 'transactItems' failed to satisfy constraint: Member must have length less than or equal to ${MAX_TRANSACT}`);
+    const list2 = body.TransactItems ?? [];
+    if (!list2.length || list2.length > MAX_TRANSACT) throw validation(`1 validation error detected: Value at 'transactItems' failed to satisfy constraint: Member must have length less than or equal to ${MAX_TRANSACT}`);
     const out = [];
-    for (const x of list) {
+    for (const x of list2) {
       if (!x.Get) throw validation("TransactItems can only contain Get");
       const t = await table(ctx, x.Get.TableName);
       const r = await getItem(ctx.host, t, x.Get.Key, { names: x.Get.ExpressionAttributeNames, projection: x.Get.ProjectionExpression, consistentRead: true });
@@ -1981,10 +1981,10 @@ var ops = {
     return { Items: r.Items ?? [] };
   },
   async BatchExecuteStatement(ctx, body) {
-    const list = body.Statements ?? [];
-    if (!list.length || list.length > 25) throw validation("1 validation error detected: Value at 'statements' failed to satisfy constraint: Member must have length less than or equal to 25");
+    const list2 = body.Statements ?? [];
+    if (!list2.length || list2.length > 25) throw validation("1 validation error detected: Value at 'statements' failed to satisfy constraint: Member must have length less than or equal to 25");
     const out = [];
-    for (const s of list) {
+    for (const s of list2) {
       try {
         const r = await executeStatement(ctx.host, ctx.accountId, ctx.region, s.Statement, s.Parameters ?? []);
         out.push(r.Items?.[0] ? { Item: r.Items[0] } : {});
@@ -2069,13 +2069,15 @@ async function explore(host, t, input) {
 import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 var FLUSH_MS = 200;
-var FILE = /^[a-zA-Z0-9_.-]{1,255}\.json$/;
+var FILE = /^[a-zA-Z0-9_.~-]{1,255}\.json$/;
+var SAFE = /^[a-zA-Z0-9_.-]{1,200}$/;
+var fileName = (name) => SAFE.test(name) && !name.startsWith(".") ? name : `~${Buffer.from(name).toString("base64url")}`;
 var FileResourceHost = class {
-  constructor(dir, service, type, notFound, onChange = () => void 0, now = () => /* @__PURE__ */ new Date()) {
+  constructor(dir, service, type, notFound3, onChange = () => void 0, now = () => /* @__PURE__ */ new Date()) {
     this.dir = dir;
     this.service = service;
     this.type = type;
-    this.notFound = notFound;
+    this.notFound = notFound3;
     this.onChange = onChange;
     this.now = now;
     this.holdsLocalItems = true;
@@ -2102,7 +2104,7 @@ var FileResourceHost = class {
     this.byId.set(r.id, r);
   }
   file(name) {
-    return path.join(this.dir, `${name}.json`);
+    return path.join(this.dir, `${fileName(name)}.json`);
   }
   write(name) {
     const r = this.resources.get(name);
@@ -2150,11 +2152,11 @@ var FileResourceHost = class {
       service: this.service,
       type: this.type,
       name: spec.name,
-      state: "ACTIVE",
+      state: spec.state ?? old?.state ?? "ACTIVE",
       pendingState: null,
       transitionAt: null,
       config: { ...spec.config, name: spec.name },
-      attributes: { ...this.initialAttributes(), ...old?.attributes ?? {}, ...this.specAttributes(spec) },
+      attributes: { ...this.initialAttributes(), ...old ? old.attributes : spec.attributes ?? {}, ...this.specAttributes(spec) },
       refs: [],
       createdAt: old?.createdAt ?? spec.createdAt ?? now,
       updatedAt: now
@@ -2172,6 +2174,10 @@ var FileResourceHost = class {
   }
   has(name) {
     return this.resources.has(name);
+  }
+  /** Whether a resource (by ID or name) is in this store. */
+  owns(id) {
+    return this.byId.has(id) || this.resources.has(id);
   }
   names() {
     return [...this.resources.keys()];
@@ -2583,6 +2589,40 @@ async function purgeQueue(engine, q) {
   }
   await save2(engine, fresh, [], { lastPurgeAt: now });
 }
+var arr = (v) => v === void 0 ? [] : Array.isArray(v) ? v : [v];
+var globMatch = (pattern, value) => new RegExp(`^${pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".")}$`, "i").test(value);
+function conditionHolds(cond, sourceArn) {
+  if (!cond) return true;
+  for (const [op, entries] of Object.entries(cond)) {
+    for (const [key, val] of Object.entries(entries)) {
+      if (key.toLowerCase() !== "aws:sourcearn") return false;
+      const values = arr(val);
+      const ok = /^(ArnEquals|StringEquals)$/i.test(op) ? values.some((v) => v === sourceArn) : /^(ArnLike|StringLike)$/i.test(op) ? values.some((v) => globMatch(v, sourceArn)) : false;
+      if (!ok) return false;
+    }
+  }
+  return true;
+}
+function policyAllowsService(q, service, action, sourceArn) {
+  if (!q.config.policy) return false;
+  let doc;
+  try {
+    doc = JSON.parse(String(q.config.policy));
+  } catch {
+    return false;
+  }
+  const arn = arnOf(q);
+  const applies = (s) => {
+    const p = s.Principal;
+    const principalOk = p === "*" || typeof p === "object" && (arr(p.Service).includes(service) || arr(p.AWS).includes("*"));
+    const actionOk = arr(s.Action).some((a) => globMatch(a, action));
+    const resourceOk = s.Resource === void 0 || arr(s.Resource).some((r) => globMatch(r, arn));
+    return principalOk && actionOk && resourceOk && conditionHolds(s.Condition, sourceArn);
+  };
+  const statements = arr(doc.Statement);
+  if (statements.some((s) => s.Effect === "Deny" && applies(s))) return false;
+  return statements.some((s) => s.Effect === "Allow" && applies(s));
+}
 
 // src/engine/sqs/attributes.ts
 var SETTING_BY_ATTR = Object.fromEntries(Object.entries(QUEUE_SETTINGS).map(([key, s]) => [s.attr, key]));
@@ -2750,18 +2790,18 @@ function nextVisible(q, now) {
 var MAX_BATCH = 10;
 var BATCH_ID = /^[A-Za-z0-9_-]{1,80}$/;
 function checkBatch(entries) {
-  const list = Array.isArray(entries) ? entries : [];
-  if (list.length === 0) throw new EngineError("AWS.SimpleQueueService.EmptyBatchRequest", "There should be at least one SendMessageBatchRequestEntry in the request.", 400);
-  if (list.length > MAX_BATCH) throw new EngineError("AWS.SimpleQueueService.TooManyEntriesInBatchRequest", `Maximum number of entries per request are ${MAX_BATCH}. You have sent ${list.length}.`, 400);
+  const list2 = Array.isArray(entries) ? entries : [];
+  if (list2.length === 0) throw new EngineError("AWS.SimpleQueueService.EmptyBatchRequest", "There should be at least one SendMessageBatchRequestEntry in the request.", 400);
+  if (list2.length > MAX_BATCH) throw new EngineError("AWS.SimpleQueueService.TooManyEntriesInBatchRequest", `Maximum number of entries per request are ${MAX_BATCH}. You have sent ${list2.length}.`, 400);
   const ids = /* @__PURE__ */ new Set();
-  for (const e of list) {
+  for (const e of list2) {
     if (!e.Id || !BATCH_ID.test(e.Id)) {
       throw new EngineError("AWS.SimpleQueueService.InvalidBatchEntryId", "A batch entry id can only contain alphanumeric characters, hyphens and underscores. It can be at most 80 letters long.", 400);
     }
     if (ids.has(e.Id)) throw new EngineError("AWS.SimpleQueueService.BatchEntryIdsNotDistinct", `Id ${e.Id} repeated.`, 400);
     ids.add(e.Id);
   }
-  return list;
+  return list2;
 }
 async function eachEntry(entries, run2) {
   const Successful = [];
@@ -2817,10 +2857,10 @@ var ops2 = {
     if (!Number.isInteger(max) || max < 1 || max > 1e3) throw new EngineError("InvalidParameterValue", "Value for parameter MaxResults is invalid. Reason: MaxResults must be an integer between 1 and 1000.", 400);
     const after = typeof body.NextToken === "string" ? Buffer.from(body.NextToken, "base64").toString("utf8") : "";
     const all = (await queues(ctx)).filter((q) => q.name.startsWith(prefix) && q.name > after).sort((a, b) => a.name.localeCompare(b.name));
-    const page2 = all.slice(0, max);
+    const page3 = all.slice(0, max);
     return {
-      ...page2.length ? { QueueUrls: page2.map((q) => ctx.urlOf(q)) } : {},
-      ...body.MaxResults !== void 0 && all.length > max ? { NextToken: Buffer.from(page2[page2.length - 1].name).toString("base64") } : {}
+      ...page3.length ? { QueueUrls: page3.map((q) => ctx.urlOf(q)) } : {},
+      ...body.MaxResults !== void 0 && all.length > max ? { NextToken: Buffer.from(page3[page3.length - 1].name).toString("base64") } : {}
     };
   },
   async DeleteQueue(ctx, body) {
@@ -2989,15 +3029,678 @@ var FileQueueHost = class extends FileResourceHost {
     };
   }
 };
+
+// src/engine/services/sns.ts
+var PROTOCOLS = ["email", "email-json", "lambda", "sqs", "http", "https"];
+var KEEP_DELIVERIES = 50;
+var KEEP_INBOX = 25;
+var topicNameOf = (arn) => arn.split(":").pop() ?? arn;
+var invalid2 = (what) => new EngineError("InvalidParameter", `Invalid parameter: ${what}`);
+var functionArnOf = (endpoint) => endpoint.split(":").slice(0, 7).join(":");
+var NUMERIC_OPS = ["=", "<", "<=", ">", ">="];
+function checkFilterPolicy(text) {
+  const bad = (why) => invalid2(`FilterPolicy: ${why}`);
+  let policy;
+  try {
+    policy = JSON.parse(text);
+  } catch {
+    throw bad("failed to parse JSON.");
+  }
+  if (!policy || typeof policy !== "object" || Array.isArray(policy)) throw bad("Filter policy must be a JSON object");
+  const keys = Object.keys(policy);
+  if (keys.length === 0) throw bad("Filter policy can not be empty");
+  if (keys.length > 5) throw bad("Filter policy can not have more than 5 keys");
+  let combinations = 1;
+  for (const [key, value] of Object.entries(policy)) {
+    if (!Array.isArray(value)) throw bad(`"${key}" must be an object or an array`);
+    if (value.length === 0) throw bad(`Empty arrays are not allowed`);
+    combinations *= value.length;
+    for (const c of value) {
+      if (c === null || typeof c !== "object") continue;
+      const [op, arg] = Object.entries(c)[0] ?? [];
+      if (Object.keys(c).length !== 1) throw bad(`Unrecognized match type in "${key}"`);
+      if (op === "prefix" || op === "suffix" || op === "equals-ignore-case") {
+        if (typeof arg !== "string") throw bad(`${op} match pattern must be a string`);
+      } else if (op === "exists") {
+        if (typeof arg !== "boolean") throw bad("exists match pattern must be either true or false.");
+      } else if (op === "anything-but") {
+        const ok = typeof arg === "string" || typeof arg === "number" || Array.isArray(arg) && arg.length > 0 || arg && typeof arg === "object" && "prefix" in arg;
+        if (!ok) throw bad("Value of anything-but must be an array or single string/number value.");
+      } else if (op === "numeric") {
+        if (!Array.isArray(arg) || arg.length === 0 || arg.length > 4 || arg.length % 2 !== 0) throw bad("Value of numeric must be an array.");
+        for (let i = 0; i < arg.length; i += 2) {
+          if (!NUMERIC_OPS.includes(String(arg[i]))) throw bad(`Unrecognized numeric range operator: ${arg[i]}`);
+          if (typeof arg[i + 1] !== "number") throw bad(`Value of ${arg[i]} must be numeric`);
+        }
+      } else {
+        throw bad(`Unrecognized match type ${op}`);
+      }
+    }
+  }
+  if (combinations > 150) throw bad("Filter policy is too complex");
+  return policy;
+}
+function matchOne(c, value, present) {
+  if (c === null || typeof c !== "object") return present && value !== void 0 && String(value) === String(c);
+  const [op, arg] = Object.entries(c)[0];
+  if (op === "exists") return arg === present;
+  if (!present || value === void 0) return false;
+  const s = String(value);
+  if (op === "prefix") return s.startsWith(String(arg));
+  if (op === "suffix") return s.endsWith(String(arg));
+  if (op === "equals-ignore-case") return s.toLowerCase() === String(arg).toLowerCase();
+  if (op === "anything-but") {
+    if (Array.isArray(arg)) return !arg.map(String).includes(s);
+    if (arg && typeof arg === "object") return !s.startsWith(String(arg.prefix));
+    return s !== String(arg);
+  }
+  if (op === "numeric") {
+    const n = Number(value);
+    if (Number.isNaN(n)) return false;
+    const a = arg;
+    for (let i = 0; i < a.length; i += 2) {
+      const t = Number(a[i + 1]);
+      const ok = { "=": n === t, "<": n < t, "<=": n <= t, ">": n > t, ">=": n >= t }[String(a[i])];
+      if (!ok) return false;
+    }
+    return true;
+  }
+  return false;
+}
+function matchesFilter(policy, attributes) {
+  for (const [key, conditions] of Object.entries(policy)) {
+    const attr = attributes[key];
+    let values = [void 0];
+    if (attr) {
+      if (attr.DataType === "String.Array") {
+        try {
+          const arr2 = JSON.parse(attr.StringValue ?? "[]");
+          values = Array.isArray(arr2) ? arr2 : [attr.StringValue];
+        } catch {
+          values = [attr.StringValue];
+        }
+      } else if (attr.DataType.startsWith("Number")) values = [Number(attr.StringValue)];
+      else values = [attr.StringValue];
+    }
+    const ok = conditions.some((c) => values.some((v) => matchOne(c, v, !!attr)));
+    if (!ok) return { match: false, failedKey: key };
+  }
+  return { match: true };
+}
+var senderOf = (topic) => `${topic?.config.displayName || "AWS Notifications"} <no-reply@sns.amazonaws.com>`;
+
+// src/engine/sns/publish.ts
+import { randomUUID as randomUUID2 } from "node:crypto";
+var MAX_MESSAGE_BYTES = 256 * 1024;
+function checkInput(input) {
+  if (input.message === void 0 || input.message === null || input.message === "") throw invalid2("Empty message");
+  if (Buffer.byteLength(input.message) > MAX_MESSAGE_BYTES) throw invalid2("Message too long");
+  if (input.subject !== void 0) {
+    if (input.subject.length === 0 || input.subject.length > 100 || !/^[\x20-\x7E]+$/.test(input.subject)) throw invalid2("Subject");
+  }
+  for (const [name, a] of Object.entries(input.attributes ?? {})) {
+    if (!a || typeof a.DataType !== "string") throw new EngineError("ParameterValueInvalid", `The message attribute '${name}' must contain non-empty message attribute type.`);
+    if (!/^(String|Number|Binary|String\.Array)(\..+)?$/.test(a.DataType)) {
+      throw new EngineError("ParameterValueInvalid", `The message attribute '${name}' has an invalid message attribute type, the set of supported type prefixes is Binary, Number, and String.`);
+    }
+    if (a.StringValue === void 0 || a.StringValue === "") throw new EngineError("ParameterValueInvalid", `The message attribute '${name}' must contain non-empty message attribute value for message attribute type '${a.DataType}'.`);
+    if (a.DataType.startsWith("Number") && Number.isNaN(Number(a.StringValue))) {
+      throw new EngineError("ParameterValueInvalid", `Could not cast message attribute '${name}' value to number.`);
+    }
+  }
+  if (input.messageStructure === void 0) return { perProtocol: null };
+  if (input.messageStructure !== "json") throw invalid2("MessageStructure");
+  let parsed;
+  try {
+    parsed = JSON.parse(input.message);
+  } catch {
+    throw invalid2("Message Structure - JSON message body failed to parse");
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw invalid2("Message Structure - JSON message body failed to parse");
+  const map = parsed;
+  if (typeof map.default !== "string") throw invalid2("Message Structure - No default entry in JSON message body");
+  return { perProtocol: Object.fromEntries(Object.entries(map).map(([k, v]) => [k, typeof v === "string" ? v : JSON.stringify(v)])) };
+}
+function envelope(topic, messageId, message, subject, attributes, at, sub, base) {
+  const host = base ?? `https://sns.${topic.region}.amazonaws.com`;
+  return {
+    Type: "Notification",
+    MessageId: messageId,
+    TopicArn: topic.id,
+    ...subject !== void 0 ? { Subject: subject } : {},
+    Message: message,
+    Timestamp: at,
+    SignatureVersion: "1",
+    Signature: "EXAMPLE",
+    SigningCertURL: `${host}/SimpleNotificationService-0000000000000000000000.pem`,
+    UnsubscribeURL: `${host}/?Action=Unsubscribe&SubscriptionArn=${sub.id}`,
+    ...Object.keys(attributes).length ? { MessageAttributes: Object.fromEntries(Object.entries(attributes).map(([k, a]) => [k, { Type: a.DataType, Value: a.StringValue }])) } : {}
+  };
+}
+async function deliverEmail(engine, sub, topic, email) {
+  const inbox = sub.attributes.inbox ?? [];
+  const item = { id: randomUUID2(), from: senderOf(topic), kind: "notification", ...email };
+  await engine.setAttributes(sub.accountId, sub.id, { inbox: [item, ...inbox].slice(0, KEEP_INBOX) });
+}
+var footer = (sub) => `
+
+--
+If you wish to stop receiving notifications from this topic, please click or visit the link below to unsubscribe:
+https://sns.${sub.region}.amazonaws.com/unsubscribe.html?SubscriptionArn=${sub.id}
+
+Please do not reply directly to this email.`;
+async function postWithRetries(engine, url, headers, body) {
+  let last = "";
+  for (const wait of [0, 1e3, 3e3]) {
+    if (wait) await new Promise((r) => setTimeout(r, wait));
+    try {
+      const { status } = await engine.deliverHttp(url, headers, body);
+      if (status >= 200 && status < 300) return { status: "delivered" };
+      last = `The endpoint answered HTTP ${status}.`;
+    } catch (e) {
+      last = `Couldn't reach the endpoint: ${e instanceof Error ? e.message : String(e)}`;
+    }
+  }
+  return { status: "failed", reason: `${last} (tried 3 times)` };
+}
+async function deliverOne(engine, topic, sub, m) {
+  if (sub.state !== "confirmed") return { status: "pending-confirmation", reason: "Not confirmed yet: open the subscription's inbox and confirm it." };
+  if (sub.config.filterPolicy) {
+    const f = matchesFilter(checkFilterPolicy(String(sub.config.filterPolicy)), m.attributes);
+    if (!f.match) {
+      const attr = m.attributes[f.failedKey];
+      return {
+        status: "filtered",
+        reason: attr ? `Filter policy: the message's "${f.failedKey}" (${attr.StringValue}) isn't one the subscription wants.` : `Filter policy: the message has no "${f.failedKey}" attribute.`
+      };
+    }
+  }
+  const protocol = String(sub.config.protocol);
+  const text = m.text(protocol);
+  if (protocol === "email") {
+    await deliverEmail(engine, sub, topic, { at: m.at, subject: m.subject ?? "AWS Notification Message", body: text + footer(sub), messageId: m.messageId });
+    return { status: "delivered" };
+  }
+  if (protocol === "email-json") {
+    const doc = envelope(topic, m.messageId, text, m.subject, m.attributes, m.at, sub, engine.snsEndpoint);
+    await deliverEmail(engine, sub, topic, { at: m.at, subject: m.subject ?? "AWS Notification Message", body: JSON.stringify(doc, null, 2), messageId: m.messageId });
+    return { status: "delivered" };
+  }
+  if (protocol === "http" || protocol === "https") {
+    if (!engine.deliverHttp) return { status: "failed", reason: "HTTP(S) endpoints get messages only from My computer (local)." };
+    const raw = sub.config.rawMessageDelivery === true;
+    const headers = {
+      "content-type": "text/plain; charset=UTF-8",
+      "user-agent": "Amazon Simple Notification Service Agent",
+      "x-amz-sns-message-type": "Notification",
+      "x-amz-sns-message-id": m.messageId,
+      "x-amz-sns-topic-arn": topic.id,
+      "x-amz-sns-subscription-arn": sub.id,
+      ...raw ? { "x-amz-sns-rawdelivery": "true" } : {}
+    };
+    const body = raw ? text : JSON.stringify(envelope(topic, m.messageId, text, m.subject, m.attributes, m.at, sub, engine.snsEndpoint), null, 2);
+    return { status: "sending", later: postWithRetries(engine, String(sub.config.endpoint), headers, body) };
+  }
+  if (protocol === "lambda") {
+    const lambda = engine.lambda;
+    if (!lambda) return { status: "failed", reason: "Lambda functions don't run on My computer (local) yet." };
+    const fnArn = functionArnOf(String(sub.config.endpoint));
+    const fn = await engine.get(sub.accountId, fnArn).catch(() => null);
+    if (!fn || fn.type !== "function") return { status: "failed", reason: `The function ${fnArn.split(":").pop()} doesn't exist (or is in another account).` };
+    if (!lambda.allows(fn, "sns.amazonaws.com", topic.id)) {
+      return {
+        status: "failed",
+        reason: `SNS isn't allowed to invoke ${fn.name}: its resource-based policy needs a statement for sns.amazonaws.com with this topic as the source ARN (aws lambda add-permission).`
+      };
+    }
+    const event = {
+      Records: [{ EventSource: "aws:sns", EventVersion: "1.0", EventSubscriptionArn: sub.id, Sns: envelope(topic, m.messageId, text, m.subject, m.attributes, m.at, sub) }]
+    };
+    try {
+      const r = await lambda.invoke(sub.accountId, fn, event, `sns:${topicNameOf(topic.id)}`);
+      return r.functionError ? { status: "delivered", reason: `Delivered, but the function failed (see its logs, request ${r.requestId}).` } : { status: "delivered" };
+    } catch (e) {
+      return { status: "failed", reason: e instanceof EngineError ? `${e.code}: ${e.message}` : String(e) };
+    }
+  }
+  if (protocol === "sqs") {
+    const arn = String(sub.config.endpoint);
+    const q = await engine.get(sub.accountId, urlFromArn(arn)).catch(() => null);
+    if (!q || q.type !== "queue") return { status: "failed", reason: `The queue ${arn.split(":").pop()} doesn't exist (or is in another account).` };
+    if (!policyAllowsService(q, "sns.amazonaws.com", "sqs:SendMessage", topic.id)) {
+      return {
+        status: "failed",
+        reason: `SNS isn't allowed to send to ${q.name}: the queue's access policy needs to allow sns.amazonaws.com to sqs:SendMessage, with this topic as aws:SourceArn.`
+      };
+    }
+    const raw = sub.config.rawMessageDelivery === true;
+    try {
+      await sendMessage(engine, q, {
+        body: raw ? text : JSON.stringify(envelope(topic, m.messageId, text, m.subject, m.attributes, m.at, sub, engine.snsEndpoint), null, 2),
+        attributes: raw ? Object.fromEntries(Object.entries(m.attributes).filter(([, a]) => a.DataType !== "String.Array")) : {},
+        senderId: SNS_SENDER,
+        delaySeconds: void 0
+      });
+      return { status: "delivered" };
+    } catch (e) {
+      return { status: "failed", reason: e instanceof EngineError ? `${e.code}: ${e.message}` : String(e) };
+    }
+  }
+  return { status: "failed", reason: `CloudLab can't deliver to the ${protocol} protocol yet.` };
+}
+async function publish(engine, accountId, topic, input) {
+  if (topic.region === LOCAL_REGION && !engine.holdsLocalItems) {
+    throw new EngineError(
+      "LocalTopic",
+      `${topic.name} is on your computer (My computer (local)): its subscribers (your queues and apps) are there, so publish from the console on that computer, or with an AWS SDK or the AWS CLI and the endpoint http://localhost:4566.`,
+      400
+    );
+  }
+  const { perProtocol } = checkInput(input);
+  const messageId = randomUUID2();
+  const at = engine.now().toISOString();
+  const attributes = input.attributes ?? {};
+  const text = (protocol) => perProtocol ? perProtocol[protocol] ?? perProtocol.default : input.message;
+  const subs = (await engine.list(accountId, { service: "sns", type: "subscription", region: topic.region })).filter((s) => s.config.topicArn === topic.id);
+  const deliveries = [];
+  const later = [];
+  for (const sub of subs) {
+    const { later: pending, ...outcome } = await deliverOne(engine, topic, sub, { messageId, at, subject: input.subject, text, attributes });
+    const d = { at, messageId, subject: input.subject, subscriptionArn: sub.id, protocol: String(sub.config.protocol), endpoint: String(sub.config.endpoint), ...outcome };
+    deliveries.push(d);
+    if (pending) later.push(pending.then((done) => recordLater(engine, accountId, topic, d, done)));
+  }
+  await updateTopicLog(engine, accountId, topic.id, (fresh) => {
+    const previous = fresh.attributes.deliveries ?? [];
+    const published = fresh.attributes.published?.count ?? 0;
+    return {
+      deliveries: [...deliveries, ...previous].slice(0, KEEP_DELIVERIES),
+      published: { count: published + 1, lastAt: at, lastMessageId: messageId }
+    };
+  });
+  const dims = { TopicName: topic.name };
+  const count = (s) => deliveries.filter((d) => d.status === s).length;
+  await engine.metrics.record(accountId, topic.region, "AWS/SNS", "NumberOfMessagesPublished", dims, 1, "Count");
+  await engine.metrics.record(accountId, topic.region, "AWS/SNS", "PublishSize", dims, Buffer.byteLength(input.message), "Bytes");
+  if (count("delivered")) await engine.metrics.record(accountId, topic.region, "AWS/SNS", "NumberOfNotificationsDelivered", dims, count("delivered"), "Count");
+  if (count("failed")) await engine.metrics.record(accountId, topic.region, "AWS/SNS", "NumberOfNotificationsFailed", dims, count("failed"), "Count");
+  if (count("filtered")) await engine.metrics.record(accountId, topic.region, "AWS/SNS", "NumberOfNotificationsFilteredOut", dims, count("filtered"), "Count");
+  return { messageId, deliveries, settled: Promise.all(later).then(() => void 0) };
+}
+var topicLogs = /* @__PURE__ */ new Map();
+function updateTopicLog(engine, accountId, topicId, change) {
+  const run2 = (topicLogs.get(topicId) ?? Promise.resolve()).then(async () => {
+    const fresh = await engine.get(accountId, topicId).catch(() => null);
+    if (fresh) await engine.setAttributes(accountId, topicId, change(fresh));
+  });
+  const tail = run2.catch(() => void 0);
+  topicLogs.set(topicId, tail);
+  void tail.then(() => {
+    if (topicLogs.get(topicId) === tail) topicLogs.delete(topicId);
+  });
+  return run2;
+}
+async function recordLater(engine, accountId, topic, d, done) {
+  Object.assign(d, done);
+  await updateTopicLog(engine, accountId, topic.id, (fresh) => ({
+    deliveries: (fresh.attributes.deliveries ?? []).map((x) => x.messageId === d.messageId && x.subscriptionArn === d.subscriptionArn ? { ...x, ...done } : x)
+  }));
+  const metric = done.status === "delivered" ? "NumberOfNotificationsDelivered" : "NumberOfNotificationsFailed";
+  await engine.metrics.record(accountId, topic.region, "AWS/SNS", metric, { TopicName: topic.name }, 1, "Count");
+}
+function subscriptionConfirmation(topicArn, sub, base, at) {
+  const token = String(sub.attributes.token ?? "");
+  const messageId = randomUUID2();
+  const body = {
+    Type: "SubscriptionConfirmation",
+    MessageId: messageId,
+    Token: token,
+    TopicArn: topicArn,
+    Message: `You have chosen to subscribe to the topic ${topicArn}.
+To confirm the subscription, visit the SubscribeURL included in this message.`,
+    SubscribeURL: `${base}/?Action=ConfirmSubscription&TopicArn=${encodeURIComponent(topicArn)}&Token=${token}`,
+    Timestamp: at,
+    SignatureVersion: "1",
+    Signature: "EXAMPLE",
+    SigningCertURL: `${base}/SimpleNotificationService-0000000000000000000000.pem`
+  };
+  const headers = {
+    "content-type": "text/plain; charset=UTF-8",
+    "user-agent": "Amazon Simple Notification Service Agent",
+    "x-amz-sns-message-type": "SubscriptionConfirmation",
+    "x-amz-sns-message-id": messageId,
+    "x-amz-sns-topic-arn": topicArn
+  };
+  return { headers, body: JSON.stringify(body, null, 2) };
+}
+
+// src/engine/sns/api.ts
+function list(p, prefix) {
+  const out = [];
+  for (let i = 1; ; i++) {
+    const head = `${prefix}.${i}.`;
+    const entry = new Map([...p].filter(([k]) => k.startsWith(head)).map(([k, v]) => [k.slice(head.length), v]));
+    if (entry.size === 0) return out;
+    out.push(entry);
+  }
+}
+var attributeMap = (p, prefix = "Attributes.entry") => Object.fromEntries(list(p, prefix).map((e) => [e.get("key") ?? "", e.get("value") ?? ""]));
+function messageAttributes2(p, prefix = "MessageAttributes.entry") {
+  const out = {};
+  for (const e of list(p, prefix)) {
+    const name = e.get("Name") ?? "";
+    if (e.has("Value.BinaryValue")) throw new EngineError("ParameterValueInvalid", `The message attribute '${name}' is Binary: CloudLab keeps String and Number message attributes.`);
+    out[name] = { DataType: e.get("Value.DataType") ?? "", StringValue: e.get("Value.StringValue") };
+  }
+  return out;
+}
+var XmlMap = class {
+  constructor(entries) {
+    this.entries = entries;
+  }
+};
+var esc = (s) => String(s).replace(/[<>&'"]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", "'": "&apos;", '"': "&quot;" })[c]);
+function toXml(name, v) {
+  if (v === void 0 || v === null) return "";
+  if (v instanceof XmlMap) return `<${name}>${Object.entries(v.entries).map(([k, x]) => `<entry><key>${esc(k)}</key><value>${esc(x)}</value></entry>`).join("")}</${name}>`;
+  if (Array.isArray(v)) return `<${name}>${v.map((x) => toXml("member", x)).join("")}</${name}>`;
+  if (typeof v === "object") return `<${name}>${Object.entries(v).map(([k, x]) => toXml(k, x)).join("")}</${name}>`;
+  return `<${name}>${esc(v)}</${name}>`;
+}
+var XMLNS = "http://sns.amazonaws.com/doc/2010-03-31/";
+function snsResponseXml(action, result, requestId) {
+  const inner = Object.keys(result).length ? toXml(`${action}Result`, result) : "";
+  return `<?xml version="1.0"?>
+<${action}Response xmlns="${XMLNS}">${inner}<ResponseMetadata><RequestId>${requestId}</RequestId></ResponseMetadata></${action}Response>`;
+}
+function snsErrorXml(code, message, status, requestId) {
+  return `<?xml version="1.0"?>
+<ErrorResponse xmlns="${XMLNS}"><Error><Type>${status >= 500 ? "Receiver" : "Sender"}</Type><Code>${esc(code)}</Code><Message>${esc(message)}</Message></Error><RequestId>${requestId}</RequestId></ErrorResponse>`;
+}
+var notFound = (what) => new EngineError("NotFound", `${what} does not exist`, 404);
+function required(p, name) {
+  const v = p.get(name);
+  if (v === void 0 || v === "") throw invalid2(name);
+  return v;
+}
+var ownerOf = (arn) => arn.split(":")[4] ?? "";
+async function topics(ctx) {
+  return ctx.host.list(ctx.accountId, { service: "sns", type: "topic", region: ctx.region });
+}
+async function subscriptions(ctx) {
+  return ctx.host.list(ctx.accountId, { service: "sns", type: "subscription", region: ctx.region });
+}
+async function topicByArn(ctx, arn) {
+  const t = (await topics(ctx)).find((x) => x.id === arn);
+  if (!t) throw notFound("Topic");
+  return t;
+}
+async function subByArn(ctx, arn) {
+  const s = (await subscriptions(ctx)).find((x) => x.id === arn);
+  if (!s) throw notFound("Subscription");
+  return s;
+}
+function defaultPolicy(t) {
+  const account = ownerOf(t.id);
+  return JSON.stringify({
+    Version: "2008-10-17",
+    Id: "__default_policy_ID",
+    Statement: [
+      {
+        Sid: "__default_statement_ID",
+        Effect: "Allow",
+        Principal: { AWS: "*" },
+        Action: ["SNS:GetTopicAttributes", "SNS:SetTopicAttributes", "SNS:AddPermission", "SNS:RemovePermission", "SNS:DeleteTopic", "SNS:Subscribe", "SNS:ListSubscriptionsByTopic", "SNS:Publish"],
+        Resource: t.id,
+        Condition: { StringEquals: { "AWS:SourceOwner": account } }
+      }
+    ]
+  });
+}
+var listedArn = (s) => s.state === "confirmed" ? s.id : "PendingConfirmation";
+var subMember = (s) => ({ SubscriptionArn: listedArn(s), Owner: ownerOf(s.id), Protocol: s.config.protocol, Endpoint: s.config.endpoint, TopicArn: s.config.topicArn });
+function page2(items, p) {
+  const start = Number(p.get("NextToken") ?? 0) || 0;
+  const slice = items.slice(start, start + 100);
+  return { slice, next: start + 100 < items.length ? String(start + 100) : void 0 };
+}
+function subscriptionSettings(attrs) {
+  const out = {};
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "FilterPolicy") {
+      if (v) checkFilterPolicy(v);
+      out.filterPolicy = v || void 0;
+    } else if (k === "RawMessageDelivery") {
+      if (!/^(true|false)$/i.test(v)) throw invalid2("RawMessageDelivery: Invalid value [" + v + "]. Must be true or false.");
+      out.rawMessageDelivery = v.toLowerCase() === "true";
+    } else if (k === "FilterPolicyScope") {
+      if (v !== "MessageAttributes") throw invalid2("FilterPolicyScope: CloudLab filters on MessageAttributes.");
+    } else {
+      throw invalid2(`AttributeName (CloudLab supports FilterPolicy and RawMessageDelivery)`);
+    }
+  }
+  return out;
+}
+async function publishOne(ctx, topic, p, attrsPrefix = "MessageAttributes.entry") {
+  const message = p.get("Message");
+  if (message === void 0) throw invalid2("Message");
+  const r = await publish(ctx.host, ctx.accountId, topic, {
+    message,
+    subject: p.get("Subject"),
+    messageStructure: p.get("MessageStructure"),
+    attributes: messageAttributes2(p, attrsPrefix)
+  });
+  return r.messageId;
+}
+var ops3 = {
+  async CreateTopic(ctx, p) {
+    const name = required(p, "Name");
+    const attrs = attributeMap(p);
+    if (attrs.FifoTopic === "true" || name.endsWith(".fifo")) throw invalid2("Topic Name (CloudLab simulates standard topics; FIFO topics aren't available yet)");
+    const existing = (await topics(ctx)).find((t2) => t2.name === name);
+    if (existing) {
+      if (attrs.DisplayName !== void 0 && attrs.DisplayName !== (existing.config.displayName ?? "")) throw invalid2("Topic already exists with different attributes");
+      return { TopicArn: existing.id };
+    }
+    for (const k of Object.keys(attrs)) if (!["DisplayName", "FifoTopic"].includes(k)) throw invalid2(`Attributes Reason: ${k} (CloudLab supports DisplayName)`);
+    const t = await ctx.createTopic({ name, ...attrs.DisplayName ? { displayName: attrs.DisplayName } : {} });
+    return { TopicArn: t.id };
+  },
+  async ListTopics(ctx, p) {
+    const all = (await topics(ctx)).sort((a, b) => a.id.localeCompare(b.id));
+    const { slice, next } = page2(all, p);
+    return { Topics: slice.map((t) => ({ TopicArn: t.id })), ...next ? { NextToken: next } : {} };
+  },
+  async DeleteTopic(ctx, p) {
+    const arn = required(p, "TopicArn");
+    const t = (await topics(ctx)).find((x) => x.id === arn);
+    if (t) await ctx.deleteTopic(t);
+    return {};
+  },
+  async GetTopicAttributes(ctx, p) {
+    const t = await topicByArn(ctx, required(p, "TopicArn"));
+    const subs = (await subscriptions(ctx)).filter((s) => s.config.topicArn === t.id);
+    return {
+      Attributes: new XmlMap({
+        TopicArn: t.id,
+        Owner: ownerOf(t.id),
+        DisplayName: String(t.config.displayName ?? ""),
+        Policy: defaultPolicy(t),
+        SubscriptionsConfirmed: String(subs.filter((s) => s.state === "confirmed").length),
+        SubscriptionsPending: String(subs.filter((s) => s.state !== "confirmed").length),
+        SubscriptionsDeleted: "0",
+        EffectiveDeliveryPolicy: JSON.stringify({ http: { defaultHealthyRetryPolicy: { minDelayTarget: 1, maxDelayTarget: 3, numRetries: 2, numMaxDelayRetries: 0, numNoDelayRetries: 0, numMinDelayRetries: 0, backoffFunction: "linear" }, disableSubscriptionOverrides: false } })
+      })
+    };
+  },
+  async SetTopicAttributes(ctx, p) {
+    const t = await topicByArn(ctx, required(p, "TopicArn"));
+    const name = required(p, "AttributeName");
+    if (name !== "DisplayName") throw invalid2(`AttributeName (CloudLab supports DisplayName)`);
+    await ctx.updateTopic(t, { displayName: p.get("AttributeValue") ?? "" });
+    return {};
+  },
+  async Subscribe(ctx, p) {
+    const topic = await topicByArn(ctx, required(p, "TopicArn"));
+    const protocol = required(p, "Protocol").toLowerCase();
+    if (!PROTOCOLS.includes(protocol)) throw invalid2("Invalid protocol type: " + protocol);
+    const endpoint = p.get("Endpoint");
+    if (!endpoint) throw invalid2("Endpoint");
+    const settings = subscriptionSettings(attributeMap(p));
+    const same = (await subscriptions(ctx)).find((s) => s.config.topicArn === topic.id && s.config.protocol === protocol && s.config.endpoint === endpoint);
+    const sub = same ?? await ctx.subscribe({ topicArn: topic.id, protocol, endpoint, ...settings });
+    const returnArn = (p.get("ReturnSubscriptionArn") ?? "false").toLowerCase() === "true";
+    return { SubscriptionArn: sub.state === "confirmed" || returnArn ? sub.id : "pending confirmation" };
+  },
+  async ConfirmSubscription(ctx, p) {
+    const topic = await topicByArn(ctx, required(p, "TopicArn"));
+    const sub = await ctx.confirm(topic.id, required(p, "Token"));
+    return { SubscriptionArn: sub.id };
+  },
+  async Unsubscribe(ctx, p) {
+    const sub = await subByArn(ctx, required(p, "SubscriptionArn"));
+    await ctx.unsubscribe(sub);
+    return {};
+  },
+  async ListSubscriptions(ctx, p) {
+    const { slice, next } = page2((await subscriptions(ctx)).sort((a, b) => a.id.localeCompare(b.id)), p);
+    return { Subscriptions: slice.map(subMember), ...next ? { NextToken: next } : {} };
+  },
+  async ListSubscriptionsByTopic(ctx, p) {
+    const topic = await topicByArn(ctx, required(p, "TopicArn"));
+    const { slice, next } = page2((await subscriptions(ctx)).filter((s) => s.config.topicArn === topic.id), p);
+    return { Subscriptions: slice.map(subMember), ...next ? { NextToken: next } : {} };
+  },
+  async GetSubscriptionAttributes(ctx, p) {
+    const s = await subByArn(ctx, required(p, "SubscriptionArn"));
+    return {
+      Attributes: new XmlMap({
+        SubscriptionArn: s.id,
+        TopicArn: String(s.config.topicArn),
+        Owner: ownerOf(s.id),
+        Protocol: String(s.config.protocol),
+        Endpoint: String(s.config.endpoint),
+        ConfirmationWasAuthenticated: "false",
+        PendingConfirmation: String(s.state !== "confirmed"),
+        RawMessageDelivery: String(s.config.rawMessageDelivery === true),
+        ...s.config.filterPolicy ? { FilterPolicy: String(s.config.filterPolicy), FilterPolicyScope: "MessageAttributes" } : {}
+      })
+    };
+  },
+  async SetSubscriptionAttributes(ctx, p) {
+    const s = await subByArn(ctx, required(p, "SubscriptionArn"));
+    await ctx.updateSubscription(s, subscriptionSettings({ [required(p, "AttributeName")]: p.get("AttributeValue") ?? "" }));
+    return {};
+  },
+  async Publish(ctx, p) {
+    const arn = p.get("TopicArn") ?? p.get("TargetArn");
+    if (!arn) throw invalid2("TopicArn or TargetArn Reason: no value for required parameter");
+    if (p.get("PhoneNumber")) throw invalid2("PhoneNumber (CloudLab doesn't send SMS)");
+    return { MessageId: await publishOne(ctx, await topicByArn(ctx, arn), p) };
+  },
+  async PublishBatch(ctx, p) {
+    const topic = await topicByArn(ctx, required(p, "TopicArn"));
+    const entries = list(p, "PublishBatchRequestEntries.member");
+    if (entries.length === 0) throw new EngineError("EmptyBatchRequest", "The batch request doesn't contain any entries.", 400);
+    if (entries.length > 10) throw new EngineError("TooManyEntriesInBatchRequest", "The batch request contains more entries than permissible.", 400);
+    const ids = entries.map((e) => e.get("Id") ?? "");
+    if (new Set(ids).size !== ids.length) throw new EngineError("BatchEntryIdsNotDistinct", "Two or more batch entries in the request have the same Id.", 400);
+    const Successful = [];
+    const Failed = [];
+    for (const e of entries) {
+      try {
+        Successful.push({ Id: e.get("Id"), MessageId: await publishOne(ctx, topic, e) });
+      } catch (err) {
+        if (!(err instanceof EngineError)) throw err;
+        Failed.push({ Id: e.get("Id"), Code: err.code, Message: err.message, SenderFault: true });
+      }
+    }
+    return { Successful, Failed };
+  },
+  async ListTagsForResource() {
+    return { Tags: [] };
+  }
+};
+var SNS_OPERATIONS = Object.keys(ops3);
+var SNS_UNSIGNED = ["ConfirmSubscription", "Unsubscribe"];
+async function snsApi(params, ctx) {
+  const action = params.get("Action") ?? "";
+  const handler = ops3[action];
+  if (!handler) throw new EngineError("InvalidAction", action ? `CloudLab's SNS doesn't support ${action} yet.` : "Could not find operation", 400);
+  return { action, result: await handler(ctx, params) };
+}
+
+// src/local/sns-host.ts
+var notFound2 = (what) => () => new EngineError("NotFound", `${what} does not exist`, 404);
+var FileTopicHost = class extends FileResourceHost {
+  constructor(dir, onChange = () => void 0, now = () => /* @__PURE__ */ new Date()) {
+    super(dir, "sns", "topic", notFound2("Topic"), onChange, now);
+  }
+  /** What CloudLab shows on the topic's page: the delivery log (who got what, no message bodies) and counts. */
+  report(name) {
+    const t = this.peek(name);
+    return t ? { deliveries: t.attributes.deliveries ?? [], published: t.attributes.published ?? null } : null;
+  }
+};
+var FileSubscriptionHost = class extends FileResourceHost {
+  constructor(dir, onChange = () => void 0, now = () => /* @__PURE__ */ new Date()) {
+    super(dir, "sns", "subscription", notFound2("Subscription"), onChange, now);
+  }
+  specAttributes(spec) {
+    return spec.attributes?.token ? { token: spec.attributes.token, topicName: spec.attributes.topicName } : {};
+  }
+  report(name) {
+    const s = this.peek(name);
+    return s ? { inbox: s.attributes.inbox ?? [] } : null;
+  }
+};
+var LocalHosts = class {
+  constructor(hosts, now = () => /* @__PURE__ */ new Date(), deliverHttp, snsEndpoint) {
+    this.hosts = hosts;
+    this.now = now;
+    this.deliverHttp = deliverHttp;
+    this.snsEndpoint = snsEndpoint;
+    this.holdsLocalItems = true;
+    this.metrics = { record: async () => void 0 };
+  }
+  owner(id) {
+    const h = this.hosts.find((x) => x.owns(id));
+    if (!h) throw new EngineError("NotFound", `${id.split(/[/:]/).pop()} does not exist`, 404);
+    return h;
+  }
+  get(accountId, id) {
+    return this.owner(id).get(accountId, id);
+  }
+  async list(accountId, filter) {
+    const all = await Promise.all(this.hosts.filter((h) => (!filter.service || h.service === filter.service) && (!filter.type || h.type === filter.type)).map((h) => h.list(accountId, filter)));
+    return all.flat();
+  }
+  async setAttributes(accountId, id, patch) {
+    const h = this.hosts.find((x) => x.owns(id));
+    if (h) await h.setAttributes(accountId, id, patch);
+  }
+  countInWindow(key, windowMs) {
+    return this.hosts[0].countInWindow(key, windowMs);
+  }
+};
 export {
   DYNAMODB_OPERATIONS,
   EngineError,
   FileQueueHost,
+  FileSubscriptionHost,
   FileTableHost,
+  FileTopicHost,
+  LocalHosts,
   QueueWaiters,
+  SNS_UNSIGNED,
   dynamodbApi,
   explore,
+  publish,
   queueConsole,
+  snsApi,
+  snsErrorXml,
+  snsResponseXml,
   sqsApi,
-  sqsErrorNames
+  sqsErrorNames,
+  subscriptionConfirmation
 };

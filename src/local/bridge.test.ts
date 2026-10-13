@@ -61,7 +61,7 @@ describe("My computer (local)", () => {
     const vpcs = await engine.list(ACCOUNT, { service: "networking", type: "vpc", region: LOCAL });
     expect(vpcs).toHaveLength(1);
     await expect(
-      engine.create(ACCOUNT, { service: "sns", type: "topic", region: LOCAL, config: { name: "t" } }),
+      engine.create(ACCOUNT, { service: "lambda", type: "function", region: LOCAL, config: { name: "f" } }),
     ).rejects.toMatchObject({ code: "NotAvailableLocally" });
   });
 
@@ -98,6 +98,22 @@ describe("My computer (local)", () => {
     await expect(sendMessage(engine, q, { body: "hi" })).rejects.toMatchObject({ code: "LocalQueue" });
     await engine.remove(ACCOUNT, q.id);
     expect((await local.sync(agent, { info, apps: [], complete: false })).tasks.map((x) => x.payload.resource?.op)).toEqual(["delete-queue"]);
+  });
+
+  it("sends SNS topics and subscriptions with their current state", async () => {
+    const agent = await connect();
+    const topic = await engine.create(ACCOUNT, { service: "sns", type: "topic", region: LOCAL, config: { name: "alerts" } });
+    const q = await engine.create(ACCOUNT, { service: "sqs", type: "queue", region: LOCAL, config: { name: "inbox" } });
+    await engine.create(ACCOUNT, { service: "sns", type: "subscription", region: LOCAL, config: { topicArn: topic.id, protocol: "sqs", endpoint: String(q.attributes.arn) } });
+    const subTasks = (await local.sync(agent, { info, apps: [], complete: false })).tasks.map((t) => t.payload.resource!).filter((r) => r.kind === "sns" && r.op.endsWith("-subscription"));
+    // Confirmed while being created: every task says so, whichever arrives last.
+    expect(subTasks.length).toBeGreaterThan(0);
+    for (const t of subTasks) expect(t.resource).toMatchObject({ state: "confirmed", attributes: { token: expect.any(String) } });
+    await expect(
+      engine.create(ACCOUNT, { service: "sns", type: "subscription", region: "us-east-1", config: { topicArn: topic.id, protocol: "http", endpoint: "http://localhost:3000/hook" } }),
+    ).rejects.toBeTruthy();
+    const { publish } = await import("@/engine/sns/publish");
+    await expect(publish(engine, ACCOUNT, topic, { message: "hi" })).rejects.toMatchObject({ code: "LocalTopic" });
   });
 
   it("leaves other regions simulated", async () => {

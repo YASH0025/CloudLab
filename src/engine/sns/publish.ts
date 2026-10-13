@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { REGIONS } from "../catalog";
+import { LOCAL_REGION, REGIONS } from "../catalog";
 import type { Engine } from "../engine";
+import type { ServiceHost } from "../host";
 import { EngineError } from "../errors";
 import { accountNumber } from "../ids";
-import { allowsService, invokeFunction } from "../lambda/invoke";
 import {
   checkFilterPolicy,
   functionArnOf,
@@ -29,7 +29,7 @@ import type { Resource } from "../types";
 
 export const MAX_MESSAGE_BYTES = 256 * 1024;
 
-export type DeliveryStatus = "delivered" | "failed" | "filtered" | "pending-confirmation";
+export type DeliveryStatus = "delivered" | "failed" | "filtered" | "pending-confirmation" | "sending";
 
 export interface Delivery {
   at: string;
@@ -54,6 +54,8 @@ export interface PublishInput {
 export interface PublishResult {
   messageId: string;
   deliveries: Delivery[];
+  /** Resolves once background deliveries (HTTP endpoints) have finished and been recorded. */
+  settled: Promise<void>;
 }
 
 const regionName = (code: string) => REGIONS.find((r) => r.code === code)?.name ?? code;
@@ -89,8 +91,17 @@ function checkInput(input: PublishInput): { perProtocol: Record<string, string> 
 }
 
 /** The JSON document SNS sends to email-json, Lambda and (raw delivery off) queues. */
-export function envelope(topic: Resource, messageId: string, message: string, subject: string | undefined, attributes: Record<string, MessageAttribute>, at: string, sub: Resource) {
-  const host = `https://sns.${topic.region}.amazonaws.com`;
+export function envelope(
+  topic: Resource,
+  messageId: string,
+  message: string,
+  subject: string | undefined,
+  attributes: Record<string, MessageAttribute>,
+  at: string,
+  sub: Resource,
+  base?: string,
+) {
+  const host = base ?? `https://sns.${topic.region}.amazonaws.com`;
   return {
     Type: "Notification",
     MessageId: messageId,
@@ -108,7 +119,7 @@ export function envelope(topic: Resource, messageId: string, message: string, su
   };
 }
 
-async function deliverEmail(engine: Engine, sub: Resource, topic: Resource, email: Omit<InboxEmail, "id" | "from" | "kind">) {
+async function deliverEmail(engine: ServiceHost, sub: Resource, topic: Resource, email: Omit<InboxEmail, "id" | "from" | "kind">) {
   const inbox = (sub.attributes.inbox as InboxEmail[] | undefined) ?? [];
   const item: InboxEmail = { id: randomUUID(), from: senderOf(topic), kind: "notification", ...email };
   await engine.setAttributes(sub.accountId, sub.id, { inbox: [item, ...inbox].slice(0, KEEP_INBOX) });
@@ -117,12 +128,31 @@ async function deliverEmail(engine: Engine, sub: Resource, topic: Resource, emai
 const footer = (sub: Resource) =>
   `\n\n--\nIf you wish to stop receiving notifications from this topic, please click or visit the link below to unsubscribe:\nhttps://sns.${sub.region}.amazonaws.com/unsubscribe.html?SubscriptionArn=${sub.id}\n\nPlease do not reply directly to this email.`;
 
+/** How a copy turned out; HTTP deliveries finish in the background (`later`). */
+type Outcome = Omit<Delivery, "at" | "messageId" | "subject" | "subscriptionArn" | "protocol" | "endpoint"> & { later?: Promise<Omit<Outcome, "later">> };
+
+/** POSTs to an HTTP(S) subscription like SNS: a few tries, each with a 15-second limit. */
+async function postWithRetries(engine: ServiceHost, url: string, headers: Record<string, string>, body: string): Promise<Omit<Outcome, "later">> {
+  let last = "";
+  for (const wait of [0, 1_000, 3_000]) {
+    if (wait) await new Promise((r) => setTimeout(r, wait));
+    try {
+      const { status } = await engine.deliverHttp!(url, headers, body);
+      if (status >= 200 && status < 300) return { status: "delivered" };
+      last = `The endpoint answered HTTP ${status}.`;
+    } catch (e) {
+      last = `Couldn't reach the endpoint: ${e instanceof Error ? e.message : String(e)}`;
+    }
+  }
+  return { status: "failed", reason: `${last} (tried 3 times)` };
+}
+
 async function deliverOne(
-  engine: Engine,
+  engine: ServiceHost,
   topic: Resource,
   sub: Resource,
   m: { messageId: string; at: string; subject?: string; text: (protocol: string) => string; attributes: Record<string, MessageAttribute> },
-): Promise<Omit<Delivery, "at" | "messageId" | "subject" | "subscriptionArn" | "protocol" | "endpoint">> {
+): Promise<Outcome> {
   if (sub.state !== "confirmed") return { status: "pending-confirmation", reason: "Not confirmed yet: open the subscription's inbox and confirm it." };
   if (sub.config.filterPolicy) {
     const f = matchesFilter(checkFilterPolicy(String(sub.config.filterPolicy)), m.attributes);
@@ -143,15 +173,33 @@ async function deliverOne(
     return { status: "delivered" };
   }
   if (protocol === "email-json") {
-    const doc = envelope(topic, m.messageId, text, m.subject, m.attributes, m.at, sub);
+    const doc = envelope(topic, m.messageId, text, m.subject, m.attributes, m.at, sub, engine.snsEndpoint);
     await deliverEmail(engine, sub, topic, { at: m.at, subject: m.subject ?? "AWS Notification Message", body: JSON.stringify(doc, null, 2), messageId: m.messageId });
     return { status: "delivered" };
   }
+  if (protocol === "http" || protocol === "https") {
+    if (!engine.deliverHttp) return { status: "failed", reason: "HTTP(S) endpoints get messages only from My computer (local)." };
+    const raw = sub.config.rawMessageDelivery === true;
+    const headers = {
+      "content-type": "text/plain; charset=UTF-8",
+      "user-agent": "Amazon Simple Notification Service Agent",
+      "x-amz-sns-message-type": "Notification",
+      "x-amz-sns-message-id": m.messageId,
+      "x-amz-sns-topic-arn": topic.id,
+      "x-amz-sns-subscription-arn": sub.id,
+      ...(raw ? { "x-amz-sns-rawdelivery": "true" } : {}),
+    };
+    const body = raw ? text : JSON.stringify(envelope(topic, m.messageId, text, m.subject, m.attributes, m.at, sub, engine.snsEndpoint), null, 2);
+    // Publish doesn't wait for slow apps: the copy is "sending" until the endpoint answers.
+    return { status: "sending", later: postWithRetries(engine, String(sub.config.endpoint), headers, body) };
+  }
   if (protocol === "lambda") {
+    const lambda = engine.lambda;
+    if (!lambda) return { status: "failed", reason: "Lambda functions don't run on My computer (local) yet." };
     const fnArn = functionArnOf(String(sub.config.endpoint));
     const fn = await engine.get(sub.accountId, fnArn).catch(() => null);
     if (!fn || fn.type !== "function") return { status: "failed", reason: `The function ${fnArn.split(":").pop()} doesn't exist (or is in another account).` };
-    if (!allowsService(fn, "sns.amazonaws.com", topic.id)) {
+    if (!lambda.allows(fn, "sns.amazonaws.com", topic.id)) {
       return {
         status: "failed",
         reason: `SNS isn't allowed to invoke ${fn.name}: its resource-based policy needs a statement for sns.amazonaws.com with this topic as the source ARN (aws lambda add-permission).`,
@@ -161,7 +209,7 @@ async function deliverOne(
       Records: [{ EventSource: "aws:sns", EventVersion: "1.0", EventSubscriptionArn: sub.id, Sns: envelope(topic, m.messageId, text, m.subject, m.attributes, m.at, sub) }],
     };
     try {
-      const r = await invokeFunction(engine, sub.accountId, fn, event, `sns:${topicNameOf(topic.id)}`);
+      const r = await lambda.invoke(sub.accountId, fn, event, `sns:${topicNameOf(topic.id)}`);
       // An asynchronous invoke: SNS's job is done once Lambda accepts the event, even if the code throws.
       return r.functionError ? { status: "delivered", reason: `Delivered, but the function failed (see its logs, request ${r.requestId}).` } : { status: "delivered" };
     } catch (e) {
@@ -181,7 +229,7 @@ async function deliverOne(
     const raw = sub.config.rawMessageDelivery === true;
     try {
       await sendMessage(engine, q, {
-        body: raw ? text : JSON.stringify(envelope(topic, m.messageId, text, m.subject, m.attributes, m.at, sub), null, 2),
+        body: raw ? text : JSON.stringify(envelope(topic, m.messageId, text, m.subject, m.attributes, m.at, sub, engine.snsEndpoint), null, 2),
         attributes: raw ? Object.fromEntries(Object.entries(m.attributes).filter(([, a]) => a.DataType !== "String.Array")) : {},
         senderId: SNS_SENDER,
         delaySeconds: undefined,
@@ -195,7 +243,14 @@ async function deliverOne(
 }
 
 /** Publish: checks the message, fans it out, records deliveries and metrics. */
-export async function publish(engine: Engine, accountId: string, topic: Resource, input: PublishInput): Promise<PublishResult> {
+export async function publish(engine: ServiceHost, accountId: string, topic: Resource, input: PublishInput): Promise<PublishResult> {
+  if (topic.region === LOCAL_REGION && !engine.holdsLocalItems) {
+    throw new EngineError(
+      "LocalTopic",
+      `${topic.name} is on your computer (My computer (local)): its subscribers (your queues and apps) are there, so publish from the console on that computer, or with an AWS SDK or the AWS CLI and the endpoint http://localhost:4566.`,
+      400,
+    );
+  }
   const { perProtocol } = checkInput(input);
   const messageId = randomUUID();
   const at = engine.now().toISOString();
@@ -204,17 +259,21 @@ export async function publish(engine: Engine, accountId: string, topic: Resource
 
   const subs = (await engine.list(accountId, { service: "sns", type: "subscription", region: topic.region })).filter((s) => s.config.topicArn === topic.id);
   const deliveries: Delivery[] = [];
+  const later: Promise<void>[] = [];
   for (const sub of subs) {
-    const outcome = await deliverOne(engine, topic, sub, { messageId, at, subject: input.subject, text, attributes });
-    deliveries.push({ at, messageId, subject: input.subject, subscriptionArn: sub.id, protocol: String(sub.config.protocol), endpoint: String(sub.config.endpoint), ...outcome });
+    const { later: pending, ...outcome } = await deliverOne(engine, topic, sub, { messageId, at, subject: input.subject, text, attributes });
+    const d: Delivery = { at, messageId, subject: input.subject, subscriptionArn: sub.id, protocol: String(sub.config.protocol), endpoint: String(sub.config.endpoint), ...outcome };
+    deliveries.push(d);
+    if (pending) later.push(pending.then((done) => recordLater(engine, accountId, topic, d, done)));
   }
 
-  const fresh = await engine.get(accountId, topic.id);
-  const previous = (fresh.attributes.deliveries as Delivery[] | undefined) ?? [];
-  const published = (fresh.attributes.published as { count?: number } | undefined)?.count ?? 0;
-  await engine.setAttributes(accountId, topic.id, {
-    deliveries: [...deliveries, ...previous].slice(0, KEEP_DELIVERIES),
-    published: { count: published + 1, lastAt: at, lastMessageId: messageId },
+  await updateTopicLog(engine, accountId, topic.id, (fresh) => {
+    const previous = (fresh.attributes.deliveries as Delivery[] | undefined) ?? [];
+    const published = (fresh.attributes.published as { count?: number } | undefined)?.count ?? 0;
+    return {
+      deliveries: [...deliveries, ...previous].slice(0, KEEP_DELIVERIES),
+      published: { count: published + 1, lastAt: at, lastMessageId: messageId },
+    };
   });
 
   const dims = { TopicName: topic.name };
@@ -225,7 +284,36 @@ export async function publish(engine: Engine, accountId: string, topic: Resource
   if (count("failed")) await engine.metrics.record(accountId, topic.region, "AWS/SNS", "NumberOfNotificationsFailed", dims, count("failed"), "Count");
   if (count("filtered")) await engine.metrics.record(accountId, topic.region, "AWS/SNS", "NumberOfNotificationsFilteredOut", dims, count("filtered"), "Count");
 
-  return { messageId, deliveries };
+  return { messageId, deliveries, settled: Promise.all(later).then(() => undefined) };
+}
+
+/**
+ * Changes to a topic's delivery log, one at a time per topic: each reads the log and
+ * writes it back, so two at once (a publish, and an HTTP delivery finishing) would
+ * otherwise lose one of the changes.
+ */
+const topicLogs = new Map<string, Promise<void>>();
+function updateTopicLog(engine: ServiceHost, accountId: string, topicId: string, change: (fresh: Resource) => Record<string, unknown>): Promise<void> {
+  const run = (topicLogs.get(topicId) ?? Promise.resolve()).then(async () => {
+    const fresh = await engine.get(accountId, topicId).catch(() => null);
+    if (fresh) await engine.setAttributes(accountId, topicId, change(fresh));
+  });
+  const tail = run.catch(() => undefined);
+  topicLogs.set(topicId, tail);
+  void tail.then(() => {
+    if (topicLogs.get(topicId) === tail) topicLogs.delete(topicId);
+  });
+  return run;
+}
+
+/** A background delivery finished: update its line in the topic's deliveries. */
+async function recordLater(engine: ServiceHost, accountId: string, topic: Resource, d: Delivery, done: Omit<Outcome, "later">) {
+  Object.assign(d, done);
+  await updateTopicLog(engine, accountId, topic.id, (fresh) => ({
+    deliveries: ((fresh.attributes.deliveries as Delivery[] | undefined) ?? []).map((x) => (x.messageId === d.messageId && x.subscriptionArn === d.subscriptionArn ? { ...x, ...done } : x)),
+  }));
+  const metric = done.status === "delivered" ? "NumberOfNotificationsDelivered" : "NumberOfNotificationsFailed";
+  await engine.metrics.record(accountId, topic.region, "AWS/SNS", metric, { TopicName: topic.name }, 1, "Count");
 }
 
 /** ConfirmSubscription: the token from the confirmation email. */
@@ -309,4 +397,36 @@ export async function runAlarmActions(engine: Engine, alarm: Resource, oldState:
       console.error("[cloudlab] alarm action failed", arn, e);
     }
   }
+}
+
+// ---------- HTTP(S) subscriptions ----------
+
+/**
+ * What SNS POSTs to a new HTTP(S) subscriber: a SubscriptionConfirmation with a
+ * SubscribeURL. The app confirms by visiting that URL (or calling ConfirmSubscription
+ * with the token); until then it gets nothing else.
+ */
+export function subscriptionConfirmation(topicArn: string, sub: Resource, base: string, at: string) {
+  const token = String(sub.attributes.token ?? "");
+  const messageId = randomUUID();
+  const body = {
+    Type: "SubscriptionConfirmation",
+    MessageId: messageId,
+    Token: token,
+    TopicArn: topicArn,
+    Message: `You have chosen to subscribe to the topic ${topicArn}.\nTo confirm the subscription, visit the SubscribeURL included in this message.`,
+    SubscribeURL: `${base}/?Action=ConfirmSubscription&TopicArn=${encodeURIComponent(topicArn)}&Token=${token}`,
+    Timestamp: at,
+    SignatureVersion: "1",
+    Signature: "EXAMPLE",
+    SigningCertURL: `${base}/SimpleNotificationService-0000000000000000000000.pem`,
+  };
+  const headers = {
+    "content-type": "text/plain; charset=UTF-8",
+    "user-agent": "Amazon Simple Notification Service Agent",
+    "x-amz-sns-message-type": "SubscriptionConfirmation",
+    "x-amz-sns-message-id": messageId,
+    "x-amz-sns-topic-arn": topicArn,
+  };
+  return { headers, body: JSON.stringify(body, null, 2) };
 }
